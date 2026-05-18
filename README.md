@@ -13,6 +13,10 @@ WX Viewer is a real-time weather visualization site for model guidance, GOES sat
 
 Generated data is intentionally not tracked. The production instance writes large GRIB, satellite, radar, log, cache, and rendered image files under `data/`, `logs/`, and related runtime paths.
 
+## Monitor Dashboard
+
+The production monitor at `/wx/monitor` is included in this repository. The dashboard page lives at `web/static/dashboard.html`, with a redirect stub at `web/static/monitor/index.html`. Runtime data for the dashboard is served by FastAPI through `/api/dashboard`, `/api/logs`, and related status endpoints in `web/app.py`; nginx maps `/wx/monitor` to the dashboard HTML in `nginx/weather.conf`.
+
 ## Local Development
 
 ```bash
