@@ -1,0 +1,17 @@
+[Unit]
+Description=Weather Model Viewer Web API
+After=network.target
+
+[Service]
+User=wx
+Group=wx
+WorkingDirectory=/home/main/weather-viewer
+Environment="PYTHONPATH=/home/main/weather-viewer"
+ExecStart=/home/main/weather-viewer/.venv/bin/python -m uvicorn web.app:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

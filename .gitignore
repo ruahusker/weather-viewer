@@ -1,0 +1,41 @@
+# Python/runtime
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Local editor, OS, and agent state
+.DS_Store
+.env
+.env.*
+.agents/
+.claude/
+.codex/
+.gitdir/
+
+# Live weather data, rendered products, caches, and scheduler state
+data/
+logs/
+*.log
+*.log.*
+*.lock
+scheduler.log
+scheduler*.log
+scheduler.log.old.*
+
+# Local backup/restore artifacts
+home/
+wx-viewer-export/
+=0.9.0
+*.bak
+*.tmp
+*.swp
+*.pre_refactor_bak
+web/static/js/app.js.test
+
+# Local certificates/keys
+*.key
+*.pem
+*.crt

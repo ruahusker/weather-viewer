@@ -1,0 +1,554 @@
+ Weather Viewer Project — Complete Architecture Reference                      
+                                                                                
+  Overview                                                                      
+                                                                                
+  Weather Viewer is a self-hosted NWP (Numerical Weather Prediction) pipeline
+  and web viewer. It automatically downloads GRIB2 forecast data from NOAA/ECMWF
+   servers, extracts meteorological fields, renders them as transparent PNG     
+  overlays, and serves them on a dark-themed Leaflet map with NWS alert         
+  polygons.                                                                     
+                                                                                
+  Location: /home/main/weather-viewer/
+  Server: 4 CPU cores, 16GB RAM, no swap, ~232GB disk, Ubuntu (Linux 6.8.0)
+  User: wx (no sudo)
+
+  ---
+  Directory Structure
+
+  /home/main/weather-viewer/
+  ├── pipeline/                    # Python pipeline (download → process →
+  render)
+  │   ├── __init__.py
+  │   ├── config.py                # Central config: paths, retention, color
+  scales, DPI
+  │   ├── unified_scheduler.py     # Main entry point — single process managing
+  all 3 models
+  │   ├── processor.py             # V2: eccodes GRIB extraction + unit
+  conversion
+  │   ├── renderer.py              # V2: PIL + pre-rasterized overlay rendering
+  │   ├── cleanup.py               # Disk retention enforcement + pressure
+  cleanup
+  │   ├── processor_v1_cfgrib.py   # Backup: original cfgrib/xarray processor
+  │   ├── renderer_v1_matplotlib.py # Backup: original pure-matplotlib renderer
+  │   ├── downloader.py            # (legacy, unused — downloads handled by
+  scheduler)
+  │   ├── scheduler.py             # (legacy — replaced by unified_scheduler)
+  │   ├── scheduler_nam3km.py      # (legacy — replaced by unified_scheduler)
+  │   ├── scheduler_ifs.py         # (legacy — replaced by unified_scheduler)
+  │   └── models/                  # Per-model constants and field mappings
+  │       ├── hrrr.py              # HRRR: 36 params, hourly, fxx 0-18 or 0-48
+  │       ├── nam3km.py            # NAM 3km CONUS Nest: 22 params, 4x daily,
+  fxx 0-60
+  │       └── ecmwf.py             # ECMWF IFS: 13 params, 2x daily, fxx 0-144
+  step 3h
+  ├── web/                         # FastAPI backend + vanilla JS frontend
+  │   ├── app.py                   # FastAPI: REST API + NWS alerts + dashboard
+  API
+  │   ├── __init__.py
+  │   └── static/                  # Frontend assets (served by nginx or
+  uvicorn)
+  │       ├── index.html           # Main viewer SPA
+  │       ├── dashboard.html       # Pipeline monitor page (/wx/monitor)
+  │       ├── monitor/
+  │       │   └── index.html       # Alternate monitor page
+  │       ├── css/                 # Stylesheets
+  │       └── js/
+  │           └── app.js           # Leaflet map viewer (vanilla JS, no
+  framework)
+  ├── data/                        # All runtime data (no sudo needed)
+  │   ├── rendered/                # Output PNGs organized by model/run/param
+  │   │   ├── hrrr/YYYYMMDDHH/param/fXX.png
+  │   │   ├── nam3km/YYYYMMDDHH/param/fXX.png
+  │   │   └── ecmwf/YYYYMMDDHH/param/fXX.png
+  │   ├── grib_cache/              # Downloaded GRIB2 subsets (managed by
+  Herbie)
+  │   ├── pipeline_state.json      # Current scheduler state (for dashboard)
+  │   └── worker_status/           # Per-PID JSON files showing active render
+  work
+  ├── logs/
+  │   └── pipeline.log             # Rotating log (50MB × 3 backups)
+  ├── nginx/
+  │   └── weather.conf             # Nginx config: static serving + API proxy
+  ├── systemd/
+  │   ├── weather-pipeline.service # Runs unified_scheduler as user wx
+  │   ├── weather-web.service      # Runs uvicorn on 127.0.0.1:8000
+  │   └── weather-pipeline-ifs.service # (legacy)
+  ├── setup.sh                     # Deployment: apt, pip, cartopy shapefiles,
+  systemd, nginx
+  ├── requirements.txt             # Python deps
+  └── monitor_schedulers.sh        # (legacy cron monitor — disabled)
+
+  ---
+  The Three Models
+
+  Model: HRRR
+  Config File: models/hrrr.py
+  Herbie Model/Product: hrrr / sfc
+  Run Hours (UTC): Every hour (0-23)
+  Forecast Range: 0-18 (off-cycle), 0-48 (00/06/12/18Z)
+  Grid Type: Lambert Conformal (2D lat/lon)
+  Params: 36 base + 3 derived + 2 composite + 3 snow = ~40
+  ────────────────────────────────────────
+  Model: NAM 3km
+  Config File: models/nam3km.py
+  Herbie Model/Product: nam / conusnest.hiresf
+  Run Hours (UTC): 00, 06, 12, 18Z
+  Forecast Range: 0-60 hourly
+  Grid Type: Lambert Conformal (2D lat/lon)
+  Params: 22 base + 3 derived = ~23
+  ────────────────────────────────────────
+  Model: ECMWF IFS
+  Config File: models/ecmwf.py
+  Herbie Model/Product: ifs / oper
+  Run Hours (UTC): 00, 12Z
+  Forecast Range: 0-144, every 3h (49 steps)
+  Grid Type: Regular lat/lon (1D arrays)
+  Params: 13 base + 1 derived = ~15
+
+  Model Priority
+
+  1. HRRR (highest) — most time-critical, hourly updates
+  2. NAM 3km (medium)
+  3. ECMWF IFS (lowest) — longest range but least urgent
+
+  Per-Model Field Mapping
+
+  Each model file defines:
+  - PARAM_SEARCH_STRINGS — Herbie .idx regex patterns for partial GRIB download
+  (e.g., ":TMP:2 m above ground:")
+  - GRIB_SHORTNAMES — eccodes shortName keys for field identification (e.g.,
+  "temp_2m": "2t")
+  - LEVEL_TYPES — eccodes level filter dicts (e.g., {"typeOfLevel":
+  "heightAboveGround", "level": 2})
+  - DERIVED_PARAMS — fields computed from u/v component pairs (wind_speed, shear
+   magnitudes)
+  - COMPOSITE_PARAMS — multi-field indices (STP, SCP — HRRR only)
+  - get_run_fxx(run_hour) — returns the range() of forecast hours for that cycle
+  - SOURCES_PRIORITY — Herbie download source order (e.g., ["aws", "nomads"])
+
+  ---
+  Pipeline Architecture (V2 — Current)
+
+  High-Level Flow
+
+  Herbie Download → eccodes Extract → Unit Convert → Regrid to Mercator →
+  Colormap → PIL Save
+       ↓                  ↓                                    ↓
+    GRIB2 subset    Single-pass scan                    Pre-rasterized overlay
+    from AWS/NOMADS  with lat/lon cache                 composited via numpy
+  alpha blend
+
+  1. Unified Scheduler (pipeline/unified_scheduler.py)
+
+  Single process, one ProcessPoolExecutor(6) shared across all models.
+
+  Main loop:
+  1. _detect_all_pending() — scans all 3 models for incomplete or new runs
+  2. Sorts by priority (HRRR first)
+  3. Launches up to 3 concurrent model runs via ThreadPoolExecutor
+  4. Each model run gets a slot allocation:
+    - 2 models: HRRR gets 4 slots, other gets 2
+    - 3 models: HRRR=3, NAM=2, ECMWF=1
+    - Single model: gets all 6 slots
+
+  Pipelined download + render:
+  - Downloads prefetch DOWNLOAD_AHEAD=6 forecast hours ahead of the render
+  cursor
+  - 4 concurrent download threads per model (ThreadPoolExecutor)
+  - As each GRIB downloads, it's immediately submitted to the render pool
+  - No "download all then render" — interleaved for throughput
+
+  Preemption and rebalancing:
+  - Lower-priority models check every 6 fxx if higher-priority work appeared →
+  yield
+  - stop_event (threading.Event): when one concurrent job finishes, signals
+  others to break out so the main loop re-detects and reallocates all 6 slots
+
+  Crash recovery:
+  - BrokenProcessPool caught → pool recreated with _create_pool()
+  - Run resumes from checkpoint (skips fxx where all PNGs exist on disk)
+
+  Run detection:
+  - HRRR lookback: 3 hours (won't chase stale runs)
+  - NAM/ECMWF lookback: 24 hours
+  - Checks run_meta.json for incomplete runs to resume
+  - Checks Herbie fxx=0 availability for new runs
+
+  State tracking:
+  - data/pipeline_state.json — current scheduler status
+  (idle/processing/model/progress)
+  - data/rendered/{model}/{run_id}/run_meta.json — per-run metadata (completed
+  fxx list, is_complete flag)
+  - data/worker_status/{pid}.json — per-subprocess current task
+
+  2. Processor (pipeline/processor.py) — V2 eccodes
+
+  Replaces V1's cfgrib + xarray. ~45x faster.
+
+  Key design:
+  - Single-pass GRIB scan: Opens file once, iterates messages sequentially,
+  matches against all requested params simultaneously. V1 opened the file N
+  times (once per param) with xr.open_dataset(filter_by_keys=...).
+  - GribField dataclass replaces xr.DataArray — lightweight container with just
+  values, lat, lon, valid_time.
+  - Lat/lon cache (_latlon_cache): Keyed by (gridType, nj, ni). Since all
+  messages in a model share the same grid, lat/lon is extracted from the first
+  message only (~0.45s saved per subsequent message).
+  - Grid type detection: regular_ll grids (ECMWF/GFS) store lat/lon as 1D
+  vectors. All others (Lambert Conformal: HRRR/NAM/RAP) store as 2D arrays. This
+   distinction flows through to the renderer's regrid method.
+
+  Multi-model matching:
+  - _build_match_candidates(params) builds a list of (param_name,
+  [criteria_dicts]) by iterating all model shortName/level dicts
+  - _msg_matches(msgid, criteria) checks every key in the criteria dict against
+  the GRIB message
+  - Handles fields that share shortName but differ by level (e.g., cape at
+  surface vs cape at 90-0mb vs cape at 180-0mb)
+
+  Unit conversions (_convert_units):
+  - K → °F (temp_2m, dewpoint_2m)
+  - m/s → mph (winds, gusts)
+  - kg/m² → inches (precip)
+  - Pa → mb (MSLP)
+  - m → miles (visibility)
+  - m → feet (freezing level, LCL)
+  - m → inches (snow depth)
+
+  Derived products:
+  - Wind speed, shear magnitudes: sqrt(u² + v²) from u/v component pairs
+  - Composite indices (HRRR only):
+    - STP (Significant Tornado Parameter): (CAPE/1500) × (SRH/150) × (Shear/40)
+  × CIN_term
+    - SCP (Supercell Composite Parameter): (CAPE/1000) × (SRH/50) × (Shear/40)
+  - Snow accumulation products (HRRR only):
+    - kuchera_6hr / kuchera_12hr: Kuchera (2003) variable snow-to-liquid ratio
+  based on T850 and T2m
+    - snow10_12hr: Fixed 10:1 ratio
+    - Require lookback GRIB files (fxx minus 6 or 12 hours) for accumulated
+  precip differencing
+
+  Hourly precip: For HRRR, precip is accumulated — the processor subtracts the
+  previous fxx's accumulated value to get hourly.
+
+  3. Renderer (pipeline/renderer.py) — V2 PIL + pre-rasterized overlays
+
+  Replaces V1's pure matplotlib. ~10-21x faster overall.
+
+  Two rendering paths:
+  1. Fast path (PIL) — Used for all fill parameters (~35 of ~40 params). Numpy
+  colormap application → PIL Image.save(). ~0.3s per param.
+  2. Matplotlib path — Used only for mslp (contour lines + labels) and
+  wind_speed (fill + wind barbs). These require vector drawing that PIL can't
+  do. ~3-4s per param.
+
+  Pre-rasterized overlay (_build_overlay_rgba):
+  Called ONCE when each render worker subprocess initializes. Uses matplotlib to
+   render all geographic overlays into a single RGBA numpy array:
+  - USA mask — 50m Natural Earth country boundary. Drawn as an inverted polygon
+  (rectangle with USA shape cut out), filled with #1a2332 (dark blue-gray).
+  Hides data outside the US.
+  - Great Lakes — 50m Natural Earth lakes, filled #4a90b8
+  - State boundaries — 50m Natural Earth admin_1 lines, black 80% opacity, 1px
+  - Roads — 10m Natural Earth roads (Major Highway + Beltway, USA only), black
+  50% opacity, 0.5px
+
+  This overlay is then composited onto every rendered frame via numpy alpha
+  blending:
+  output[:] = (overlay_rgb * alpha + output * (1.0 - alpha)).astype(np.uint8)
+
+  Regridding (two methods, auto-detected):
+
+  1. Irregular grids (HRRR, NAM, RAP — Lambert Conformal Conic):
+    - 2D lat/lon arrays → scipy.spatial.cKDTree nearest-neighbor lookup
+    - Index map cached per source grid shape (_regrid_cache)
+    - One-time cost: ~2s to build KDTree. Subsequent regrids: ~0.05s (just array
+   indexing)
+  2. Regular grids (ECMWF IFS, GFS — equirectangular lat/lon):
+    - 1D lat/lon vectors → cached nearest-neighbor index lookup
+    - Preserves native pixel edges instead of blending adjacent grid cells
+    - Rebuilt per output grid shape (cheap for 1D coordinate arrays)
+
+  Web Mercator Y-space:
+  All rendering is done in Mercator projection so tiles align with Leaflet's Web
+   Mercator base map. Latitude is converted via:
+  merc_y = degrees(log(tan(pi/4 + radians(lat)/2)))
+
+  Output grid:
+  - Width: 1920px at 100 DPI
+  - Height: computed from aspect ratio of Mercator-projected domain
+  (~1050-1159px)
+  - Domain: 138°W–57°W, 17°N–55°N (slightly larger than HRRR coverage)
+  - HRRR data bounds: 135°W–60°W, 21°N–53°N (with 0.5° inset for edge masking)
+
+  Wind barbs (matplotlib path only):
+  - HRRR/NAM (Lambert Conformal): Grid-relative u/v rotated to earth-relative
+  using:
+  angle = sin(38.5°) × radians(lon - (-97.5°))
+  - Then converted m/s → knots (÷ 1.151 for mph→kt after rotation)
+  - ECMWF/GFS (regular grid): No rotation needed, converted m/s → knots (÷
+  0.5144)
+  - Barb spacing: every 18th grid point (HRRR/NAM), every 4th (IFS)
+
+  Output format: PNG with compress_level=1 (fast compression, reasonable size)
+
+  4. V1 Architecture (Backup — for reference/revert)
+
+  V1 Processor (processor_v1_cfgrib.py):
+  - Used xr.open_dataset(engine="cfgrib", filter_by_keys={...})
+  - Opened the GRIB file N times (once per parameter) with different
+  filter_by_keys
+  - Each open: cfgrib scans entire file, builds index, filters → ~0.5s per param
+  - 10 params × 0.5s = ~5s per forecast hour just for extraction
+
+  V1 Renderer (renderer_v1_matplotlib.py):
+  - Every single parameter rendered through matplotlib's full pipeline:
+    - Create figure + axes with Cartopy CRS projection
+    - ax.pcolormesh() for fill
+    - Render USA mask polygon (52 polygons), Great Lakes, state boundaries,
+  roads — for every single frame
+    - fig.savefig() → ~6.9s per param
+  - 10 params × 6.9s = ~69s per forecast hour
+  - Total for 9 params benchmark: ~102s
+
+  V2 performance (same 9 params): ~4.9s — a 21x speedup.
+
+  The key insight: V1 rebuilt all geographic overlays (mask, lakes, states,
+  roads) from shapefile polygons on every single render call. V2 does this ONCE
+  per worker init and reuses the rasterized result via numpy alpha blending.
+
+  ---
+  Web Frontend
+
+  Leaflet Map Viewer (web/static/index.html + js/app.js)
+
+  - Dark-themed Leaflet map with CartoDB Dark Matter base tiles
+  - Rendered PNGs loaded as L.imageOverlay positioned by bounds from
+  /api/bounds/{model}/{run_id}
+  - Scrubber/timeline for stepping through forecast hours
+  - Play/animate mode with configurable speed
+  - Parameter selector — grouped categories (Surface, Precip, Instability, Wind
+  Shear, Winter, Storm Chase)
+  - Model selector — HRRR, NAM 3km, ECMWF (Euro)
+  - Run selector — lists available runs with completion status
+  - Image preloading — adjacent fxx frames preloaded for smooth scrubbing
+  - Hover value query — click on map → /api/value/... looks up raw GRIB value at
+   lat/lon
+  - NWS Alerts overlay — fetches active warnings/watches from api.weather.gov,
+  renders as colored GeoJSON polygons with zone geometry resolution
+
+  Map constraints:
+  - minZoom: 5 — prevents zooming out to see Canada/South America
+  - maxBounds: usaBounds.pad(0.02) — tight pan bounds around CONUS
+  - usaBounds: 23–49.5°N, 125–66°W
+  - hrrrBounds: 21–53°N, 135–60°W
+
+  FastAPI Backend (web/app.py)
+
+  Runs as uvicorn web.app:app --host 127.0.0.1 --port 8000
+
+  Endpoints:
+
+  ┌────────────────────────────────────────────────────┬────────────────────┐
+  │                      Endpoint                      │      Purpose       │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │                                                    │ List available     │
+  │ GET /api/runs?model=hrrr                           │ runs with          │
+  │                                                    │ completion status  │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │                                                    │ Run metadata       │
+  │ GET /api/runs/{model}/{run_id}                     │ (params, fxx list, │
+  │                                                    │  completion)       │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │                                                    │ Lat/lon bounds for │
+  │ GET /api/bounds/{model}/{run_id}                   │  overlay           │
+  │                                                    │ positioning        │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │ GET /api/available/{model}/{run_id}                │ Which params × fxx │
+  │                                                    │  have PNGs on disk │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │                                                    │ Color scale        │
+  │ GET /api/colorscales                               │ metadata for       │
+  │                                                    │ frontend colorbar  │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │ GET /api/value/{model}/{run_id}/{fxx}/{param}?lat= │ Point query from   │
+  │ &lon=                                              │ raw GRIB           │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │                                                    │ NWS active alerts  │
+  │ GET /api/alerts                                    │ (cached 60s) with  │
+  │                                                    │ resolved zone      │
+  │                                                    │ geometries         │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │                                                    │ Current pipeline   │
+  │ GET /api/status                                    │ state from pipelin │
+  │                                                    │ e_state.json       │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │                                                    │ Tail of            │
+  │ GET /api/logs?lines=50                             │ pipeline.log with  │
+  │                                                    │ human-readable     │
+  │                                                    │ translations       │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │                                                    │ System resources,  │
+  │ GET /api/dashboard                                 │ worker status,     │
+  │                                                    │ model progress,    │
+  │                                                    │ disk usage         │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │ GET /wx/monitor                                    │ Serves dashboard   │
+  │                                                    │ HTML page          │
+  ├────────────────────────────────────────────────────┼────────────────────┤
+  │ GET /health                                        │ Health check       │
+  └────────────────────────────────────────────────────┴────────────────────┘
+
+  NWS Alerts handling:
+  - Fetches from https://api.weather.gov/alerts/active
+  - Many alerts have no inline geometry — only affectedZones URLs
+  - Backend resolves zone geometries via batch async HTTP calls (batches of 20)
+  - Zone geometries cached in memory (_zone_geom_cache)
+  - Certain events excluded (marine, air quality, fog, etc.)
+  - Each alert type has a defined color/weight/opacity/z-index style
+
+  Dashboard API (/api/dashboard):
+  - Uses psutil for CPU, memory, disk stats
+  - Finds pipeline worker processes by scanning for "unified_scheduler" in
+  cmdline
+  - Reads worker_status/{pid}.json for what each subprocess is currently
+  rendering
+
+  Pipeline Monitor (web/static/dashboard.html, web/static/monitor/index.html)
+
+  - Real-time dashboard showing:
+    - System resources (CPU, RAM, disk)
+    - 6 render worker cards with PID, CPU%, RSS, current task
+    - Per-model status (HRRR/NAM/ECMWF) with progress bars
+    - Disk breakdown (rendered, GRIB cache, logs)
+    - Live log tail
+
+  ---
+  Deployment
+
+  Systemd Services
+
+  - weather-pipeline.service — Runs python3 -m pipeline.unified_scheduler as
+  user wx. Restarts on failure (30s delay).
+  - weather-web.service — Runs uvicorn web.app:app on 127.0.0.1:8000. Restarts
+  on failure (10s delay).
+
+  Nginx (nginx/weather.conf)
+
+  - /rendered/ → direct file serving from data/rendered/ (1h cache, CORS
+  enabled)
+  - /static/ → direct file serving from web/static/ (gzipped CSS/JS)
+  - /api/ → proxy to uvicorn on port 8000
+  - /wx/monitor → dashboard HTML
+  - / → SPA fallback to index.html
+
+  Note: Nginx static serving has been unreliable; uvicorn/FastAPI actually
+  serves static files as fallback.
+
+  Dependencies (requirements.txt)
+
+  herbie-data>=2025.11.0   # GRIB download (partial .idx subsetting)
+  cfgrib>=0.9.14           # V1 backup (still installed, not used by V2)
+  xarray>=2024.6.0         # V1 backup + hover value query endpoint
+  numpy>=1.26.0            # Core array operations
+  scipy>=1.13.0            # cKDTree (regrid)
+  matplotlib>=3.9.0        # Pre-rasterized overlays, MSLP contours, wind barbs
+  cartopy>=0.23.0          # Natural Earth shapefile access
+  eccodes>=2.38.0          # V2 GRIB extraction (ECMWF reference C library)
+  fastapi>=0.115.0         # Web API
+  uvicorn[standard]>=0.30.0 # ASGI server
+  aiofiles>=23.0.0         # Async file serving
+  Pillow>=10.4.0           # V2 fast PNG output
+
+  Also implicitly uses: psutil (dashboard), httpx (NWS alerts), shapely
+  (geometry operations).
+
+  ---
+  Disk Management
+
+  Retention Policy (pipeline/cleanup.py + config.py)
+
+  RETENTION = {
+      "full_rendered": 6,     # Keep all PNGs for 6 most recent runs
+      "partial_rendered": 0,  # Keep only temp_2m/reflectivity/precip for older
+  runs
+      "grib_cache": 2,        # Keep GRIB files for 2 most recent runs
+  }
+
+  - enforce_retention() — called after each completed run
+  - aggressive_cleanup() — called when free disk drops below 5GB (keeps only
+  newest run)
+  - check_disk_pressure() — polled during rendering loop
+
+  Output Path Convention
+
+  data/rendered/{model}/{YYYYMMDDHH}/{param}/f{XX}.png
+
+  Example: data/rendered/hrrr/2026030705/temp_2m/f06.png
+
+  Each run directory also contains:
+  - run_meta.json — metadata (completed fxx, is_complete, params list)
+  - bounds.json — {south, north, west, east} for Leaflet overlay positioning
+
+  ---
+  Key Technical Details
+
+  Snow Accumulation Products (HRRR only)
+
+  ┌──────────────┬──────────┬───────────────────────────────────────────────┐
+  │   Product    │ Lookback │                    Method                     │
+  ├──────────────┼──────────┼───────────────────────────────────────────────┤
+  │ kuchera_6hr  │ 6 hours  │ Kuchera (2003) variable SLR based on T850/T2m │
+  ├──────────────┼──────────┼───────────────────────────────────────────────┤
+  │ kuchera_12hr │ 12 hours │ Same Kuchera method, longer accumulation      │
+  ├──────────────┼──────────┼───────────────────────────────────────────────┤
+  │ snow10_12hr  │ 12 hours │ Fixed 10:1 snow-to-liquid ratio               │
+  └──────────────┴──────────┴───────────────────────────────────────────────┘
+
+  - Front end shows "Accumulation begins at F06/F12" for early fxx where
+  lookback isn't possible
+  - Scrubber shows full fxx range (uses longest available param's list)
+  - On resume, lookback GRIBs are re-downloaded (Herbie returns cached file
+  instantly)
+
+  Download Strategy
+
+  - Herbie handles partial GRIB download via .idx index files — only downloads
+  the byte ranges matching the search string patterns
+  - overwrite=False — uses cached files if they exist (but can cause stale
+  subset issues if param list changes)
+  - Sources tried in priority order (typically AWS first, then NOMADS)
+  - 503 rate-limit retries with exponential backoff (5s, 10s, 20s)
+
+  Known Warnings (Harmless)
+
+  - "Shape mismatch in _regrid" — data has an extra leading dimension, handled
+  by while data.ndim > 2 and data.shape[0] <= 2: data = data[0]
+  - "Skipping visibility — not found in subset..." — NAM visibility field not in
+   GRIB subsets
+  - "Skipping vgrd_10m — not found in subset..." — Some NAM subsets missing wind
+   components
+
+  Memory Profile
+
+  - Each render worker: ~2GB RSS (pre-rasterized overlay + regrid cache + active
+   arrays)
+  - 6 workers × 2GB = ~12GB active
+  - Scheduler main process: ~200MB
+  - Remaining ~4GB for OS + web server + downloads
+  - No swap configured — OOM kills are possible if workers spike simultaneously
+
+  ---
+  How to Revert to V1
+
+  The V1 backup files are preserved:
+  - pipeline/processor_v1_cfgrib.py → rename to processor.py
+  - pipeline/renderer_v1_matplotlib.py → rename to renderer.py
+
+  Then restart: sudo systemctl restart weather-pipeline
+
+  ---
+  This covers the complete system as of March 2026. The V2 pipeline is
+  model-agnostic — adding a new model (GFS, RAP, etc.) requires only creating a
+  new pipeline/models/{model}.py with the standard field mappings and adding a
+  ModelConfig entry to unified_scheduler.py.

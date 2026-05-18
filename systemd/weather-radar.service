@@ -1,0 +1,24 @@
+[Unit]
+Description=NEXRAD Level II Radar Pipeline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=wx
+Group=wx
+WorkingDirectory=/home/main/weather-viewer
+Environment="PYTHONPATH=/home/main/weather-viewer"
+Environment="MALLOC_MMAP_THRESHOLD_=131072"
+Environment="MALLOC_TRIM_THRESHOLD_=131072"
+Environment="PYTHONWARNINGS=ignore::UserWarning:multiprocessing.resource_tracker"
+ExecStart=/home/main/weather-viewer/.venv/bin/python -m pipeline.radar.scheduler_pipeline
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65536
+# OS-level CPU cap: 250% = 2.5 cores shared across all radar workers
+CPUQuota=250%
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WX Pipeline Dashboard</title>
+<link rel="stylesheet" href="css/fonts.css?v=20260413">
+<style>
+:root {
+  --bg-deep:    #08090e;
+  --bg:         #0e1017;
+  --bg2:        #14161f;
+  --bg3:        #1a1d28;
+  --bg-raised:  #1e2130;
+  --accent:     #7b9fce;
+  --accent-dim: rgba(123, 159, 206, 0.5);
+  --accent-bg:  rgba(123, 159, 206, 0.07);
+  --accent-bright: #a3c4eb;
+  --hot:        #c48a5a;
+  --hot-dim:    rgba(196, 138, 90, 0.12);
+  --green:      #6a9b6a;
+  --green-dim:  rgba(106, 155, 106, 0.15);
+  --yellow:     #e8b84a;
+  --yellow-dim: rgba(232, 184, 74, 0.15);
+  --red:        #d9534f;
+  --red-dim:    rgba(217, 83, 79, 0.15);
+  --text:       #c8cdd6;
+  --text-mid:   #7a8294;
+  --text-dim:   #454b5c;
+  --border:     rgba(255, 255, 255, 0.06);
+  --radius:     4px;
+  --radius-lg:  8px;
+  --font-data:  'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+  --font-ui:    'Inter', -apple-system, 'Segoe UI', sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: var(--font-ui);
+  background: var(--bg-deep);
+  color: var(--text);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body { padding: 20px; overflow-y: auto; }
+
+h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent-bright);
+  margin-bottom: 4px;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.header-right {
+  font-family: var(--font-data);
+  font-size: 11px;
+  color: var(--text-mid);
+}
+
+.header-right .live { color: var(--green); }
+
+.footer-note {
+  margin-top: 16px;
+  text-align: right;
+}
+
+.footer-note a {
+  color: var(--text-mid);
+  text-decoration: none;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.footer-note a:hover {
+  color: var(--accent);
+}
+
+/* Grid layout — 7 columns by default */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.grid-full { grid-template-columns: 1fr; }
+
+/* Section dividers — collapsible */
+.section-header {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-mid);
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.section-header:hover { color: var(--accent); }
+.section-header .chevron {
+  display: inline-block;
+  font-size: 8px;
+  transition: transform 0.2s ease;
+}
+.section-header.collapsed .chevron { transform: rotate(-90deg); }
+.section-content.collapsed { display: none; }
+
+/* Radar site cards */
+.radar-region-header {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin: 10px 0 4px;
+  padding: 2px 0;
+}
+.radar-region-header:first-child { margin-top: 0; }
+.radar-site-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 5px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.radar-site-id {
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 600;
+  color: #5b9bd5;
+  min-width: 38px;
+}
+.radar-site-id.ne { color: #ff6b6b; }
+.radar-site-name {
+  font-size: 9px;
+  color: var(--text-mid);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.radar-site-age {
+  font-family: var(--font-data);
+  font-size: 9px;
+  color: var(--text-dim);
+  min-width: 42px;
+  text-align: right;
+}
+.radar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+  margin-bottom: 4px;
+}
+
+/* Cards */
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+}
+
+.card-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-mid);
+  margin-bottom: 8px;
+}
+
+/* System gauges */
+.gauge-row {
+  display: flex;
+  gap: 20px;
+}
+
+.gauge {
+  flex: 1;
+  text-align: center;
+}
+
+.gauge-ring {
+  position: relative;
+  width: 70px;
+  height: 70px;
+  margin: 0 auto 6px;
+}
+
+.gauge-ring svg {
+  width: 70px;
+  height: 70px;
+  transform: rotate(-90deg);
+}
+
+.gauge-ring circle {
+  fill: none;
+  stroke-width: 6;
+  stroke-linecap: round;
+}
+
+.gauge-ring .bg { stroke: var(--bg-raised); }
+.gauge-ring .fill { transition: stroke-dashoffset 0.6s ease, stroke 0.3s ease; }
+
+.gauge-value {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-data);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.gauge-label {
+  font-size: 11px;
+  color: var(--text-mid);
+  font-weight: 500;
+}
+
+.gauge-detail {
+  font-family: var(--font-data);
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+/* Model / satellite cards */
+.model-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.model-name {
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.model-name.hrrr   { color: #7a9ab5; }
+.model-name.nam3km { color: #9a8b7a; }
+.model-name.nam    { color: #a87a5a; }
+.model-name.ecmwf  { color: #8a8aa5; }
+.model-name.rap    { color: #c4854a; }
+.model-name.gfs    { color: #7a9a8a; }
+.model-name.gdps   { color: #7a8a9a; }
+.model-name.rtma   { color: #8a7a6a; }
+.model-name.href   { color: #d4a84a; }
+.model-name.rrfs   { color: #8a7ab5; }
+.model-name.gefs   { color: #9a9a7a; }
+.model-name.sat    { color: var(--text-mid); }
+
+.process-name {
+  font-weight: 600;
+}
+
+.process-name.pipeline {
+  color: #7db0ff;
+}
+
+.process-name.satellite {
+  color: #f5b942;
+}
+
+.process-name.radar {
+  color: #5ed3a6;
+}
+
+.process-name.lowpri {
+  color: #b87ab5;
+}
+
+.badge {
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 500;
+  padding: 1px 5px;
+  border-radius: 10px;
+}
+
+.badge-idle       { background: var(--bg3);       color: var(--text-mid); }
+.badge-processing { background: var(--green-dim);  color: var(--green); }
+.badge-waiting    { background: var(--yellow-dim); color: var(--yellow); }
+.badge-complete   { background: var(--accent-bg);  color: var(--accent); }
+.badge-live       { background: rgba(74,222,128,0.15); color: #4ade80; }
+.badge-stale      { background: var(--yellow-dim); color: var(--yellow); }
+.badge-old        { background: var(--red-dim);    color: var(--red); }
+.badge-burst      { background: rgba(163, 196, 235, 0.14); color: var(--accent-bright); }
+
+.model-run {
+  font-family: var(--font-data);
+  font-size: 9px;
+  color: var(--text-mid);
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress-bar {
+  height: 2px;
+  background: var(--bg-raised);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 1px;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+.progress-fill.hrrr   { background: #7a9ab5; }
+.progress-fill.nam3km { background: #9a8b7a; }
+.progress-fill.nam    { background: #a87a5a; }
+.progress-fill.ecmwf  { background: #8a8aa5; }
+.progress-fill.rap    { background: #c4854a; }
+.progress-fill.gfs    { background: #7a9a8a; }
+.progress-fill.gdps   { background: #7a8a9a; }
+.progress-fill.rtma   { background: #8a7a6a; }
+.progress-fill.href   { background: #d4a84a; }
+.progress-fill.rrfs   { background: #8a7ab5; }
+.progress-fill.gefs   { background: #9a9a7a; }
+
+.progress-text {
+  font-family: var(--font-data);
+  font-size: 9px;
+  color: var(--text-dim);
+  text-align: right;
+}
+
+/* Satellite product cards */
+.sat-card-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sat-src-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+
+.sat-src-label {
+  font-family: var(--font-data);
+  font-size: 9px;
+  color: var(--text-mid);
+  width: 24px;
+  flex-shrink: 0;
+}
+
+.sat-src-bar {
+  flex: 1;
+  height: 3px;
+  background: var(--bg-raised);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.sat-src-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #4a9ab8;
+  transition: width 0.4s ease;
+}
+
+.sat-src-txt {
+  font-family: var(--font-data);
+  font-size: 9px;
+  color: var(--text-dim);
+  width: 42px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.sat-meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-data);
+  font-size: 9px;
+  color: var(--text-dim);
+}
+
+.sat-card-subtitle {
+  font-family: var(--font-data);
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.sat-region-products {
+  display: grid;
+  gap: 2px;
+}
+
+.sat-region-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px;
+  background: rgba(255, 255, 255, 0.025);
+  border-radius: 3px;
+}
+
+.sat-region-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.sat-region-product {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  min-width: 50px;
+}
+
+.sat-region-bar {
+  flex: 1;
+  min-width: 0;
+}
+
+.sat-region-meta {
+  display: flex;
+  gap: 6px;
+  font-family: var(--font-data);
+  font-size: 8px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Worker table */
+.worker-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-data);
+  font-size: 11px;
+}
+
+.worker-table th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.worker-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.worker-table tr:last-child td { border-bottom: none; }
+
+.worker-table .pid     { color: var(--text-mid); }
+.worker-table .cpu-val { color: var(--hot);    font-weight: 500; }
+.worker-table .mem-val { color: var(--accent); font-weight: 500; }
+
+.worker-status {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.worker-status.active     { background: var(--green);    box-shadow: 0 0 6px var(--green); }
+.worker-status.low-priority { background: #b87ab5;        box-shadow: 0 0 6px #b87ab5; }
+.worker-status.processing { background: var(--yellow);   box-shadow: 0 0 6px var(--yellow); }
+.worker-status.idle       { background: var(--text-dim); }
+
+.worker-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.queue-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--accent-bright);
+  background: rgba(123, 159, 206, 0.14);
+  border: 1px solid rgba(123, 159, 206, 0.25);
+  vertical-align: middle;
+}
+
+/* Scheduler log */
+.log-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  max-height: 400px;
+  overflow-y: auto;
+  font-family: var(--font-data);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-mid);
+}
+
+.log-box::-webkit-scrollbar { width: 4px; }
+.log-box::-webkit-scrollbar-track { background: transparent; }
+.log-box::-webkit-scrollbar-thumb { background: var(--text-dim); border-radius: 2px; }
+
+.log-line { white-space: nowrap; }
+.log-ts   { color: var(--text-dim); }
+.log-tag { font-weight: 600; }
+.log-tag.dl { color: #7fcf8a; }
+.log-model { font-weight: 500; }
+.log-model.hrrr   { color: #7a9ab5; }
+.log-model.nam3km { color: #9a8b7a; }
+.log-model.nam    { color: #a87a5a; }
+.log-model.ecmwf  { color: #8a8aa5; }
+.log-model.rap    { color: #c4854a; }
+.log-model.gfs    { color: #7a9a8a; }
+.log-model.gdps   { color: #7a8a9a; }
+.log-model.rtma   { color: #8a7a6a; }
+.log-model.href   { color: #d4a84a; }
+.log-model.rrfs   { color: #8a7ab5; }
+.log-model.gefs   { color: #9a9a7a; }
+.log-model.goes19 { color: #4a9ab8; }
+.log-site { color: #5b9bd5; font-weight: 500; }
+.log-site.ne { color: #ff6b6b; }
+
+/* Disk breakdown */
+.disk-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-family: var(--font-data);
+  font-size: 11px;
+}
+
+.disk-row .label { color: var(--text-mid); }
+.disk-row .value { color: var(--text); font-weight: 500; }
+.disk-group-gap {
+  height: 8px;
+}
+
+@media (max-width: 1100px) {
+  .grid { grid-template-columns: repeat(2, 1fr); }
+  .radar-grid { grid-template-columns: repeat(3, 1fr); }
+  .gauge-row { flex-wrap: wrap; }
+}
+@media (max-width: 600px) {
+  .grid { grid-template-columns: 1fr; }
+  .radar-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Service summary bars */
+.svc-card {
+  flex: 1 1 140px;
+  max-width: 200px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  text-align: center;
+}
+.svc-card .svc-name {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.svc-bar-wrap {
+  background: var(--bg);
+  border-radius: 4px;
+  height: 14px;
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+.svc-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease, background-color 0.5s ease;
+}
+.svc-bar-label {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  text-shadow: 0 0 3px var(--bg);
+}
+.svc-mem {
+  font-size: 10px;
+  color: var(--text-mid);
+}
+.svc-throttled {
+  font-size: 9px;
+  color: var(--hot);
+  font-weight: 600;
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>Pipeline Dashboard</h1>
+    <span id="scheduler-subtitle" style="font-size:11px; color:var(--text-dim)">Unified Scheduler</span>
+  </div>
+  <div class="header-right">
+    <span class="live">LIVE</span> &middot; <span id="zulu-clock" style="color:var(--accent-bright);font-weight:500;">--:--:--Z</span>
+    &middot; refreshing every <span id="interval">3</span>s
+    &middot; <a href="/wx/" style="color:var(--accent);text-decoration:none">Map Viewer</a>
+  </div>
+</div>
+
+<!-- System Resources -->
+<div class="grid grid-full">
+  <div class="card">
+    <div class="card-title">System Resources</div>
+    <div class="gauge-row">
+      <div class="gauge">
+        <div class="gauge-ring">
+          <svg viewBox="0 0 90 90">
+            <circle class="bg" cx="45" cy="45" r="38"/>
+            <circle class="fill" id="cpu-ring" cx="45" cy="45" r="38"
+              stroke-dasharray="238.76" stroke-dashoffset="238.76"/>
+          </svg>
+          <div class="gauge-value" id="cpu-pct">--</div>
+        </div>
+        <div class="gauge-label">CPU</div>
+        <div class="gauge-detail" id="cpu-detail">8 cores</div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-ring">
+          <svg viewBox="0 0 90 90">
+            <circle class="bg" cx="45" cy="45" r="38"/>
+            <circle class="fill" id="mem-ring" cx="45" cy="45" r="38"
+              stroke-dasharray="238.76" stroke-dashoffset="238.76"/>
+          </svg>
+          <div class="gauge-value" id="mem-pct">--</div>
+        </div>
+        <div class="gauge-label">Memory</div>
+        <div class="gauge-detail" id="mem-detail">-- / 16 GB</div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-ring">
+          <svg viewBox="0 0 90 90">
+            <circle class="bg" cx="45" cy="45" r="38"/>
+            <circle class="fill" id="disk-ring" cx="45" cy="45" r="38"
+              stroke-dasharray="238.76" stroke-dashoffset="238.76"/>
+          </svg>
+          <div class="gauge-value" id="disk-pct">--</div>
+        </div>
+        <div class="gauge-label">Disk</div>
+        <div class="gauge-detail" id="disk-detail">-- / -- GB</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Service Summary -->
+<div class="grid grid-full">
+  <div class="card">
+    <div class="card-title">Service CPU &amp; Memory</div>
+    <div id="service-summary" style="display:flex; gap:12px; flex-wrap:wrap; justify-content:center; padding:8px 0;">
+      <div style="color:var(--text-dim);font-size:11px;">Loading...</div>
+    </div>
+  </div>
+</div>
+
+<!-- ASOS Status -->
+<div class="grid grid-full">
+  <div class="card">
+    <div class="card-title">ASOS Surface Observations</div>
+    <div style="display:flex; gap:24px; align-items:center; flex-wrap:wrap;">
+      <div>
+        <div style="font-family:var(--font-data);font-size:22px;font-weight:600;line-height:1;" id="asos-count">--</div>
+        <div style="font-size:10px;color:var(--text-mid);margin-top:3px;">stations reporting</div>
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+          <span class="badge badge-idle" id="asos-badge">--</span>
+          <span style="font-family:var(--font-data);font-size:10px;color:var(--text-mid);" id="asos-updated">--</span>
+        </div>
+        <div style="height:4px;background:var(--bg-raised);border-radius:2px;overflow:hidden;">
+          <div id="asos-bar" style="height:100%;border-radius:2px;background:var(--accent);transition:width 0.6s ease;width:0%"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:4px;">
+          <span style="font-family:var(--font-data);font-size:10px;color:var(--text-dim);" id="asos-total">-- available</span>
+          <span style="font-family:var(--font-data);font-size:10px;color:var(--text-dim);" id="asos-avgage">avg age --</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Model Status -->
+<div class="section-header" onclick="toggleSection('models')"><span class="chevron">&#9660;</span> Models</div>
+<div class="section-content" id="section-models">
+<div class="grid" id="model-cards">
+  <div class="card" id="card-ecmwf">
+    <div class="model-header">
+      <span class="model-name ecmwf">ECMWF</span>
+      <span class="badge badge-idle" id="badge-ecmwf">IDLE</span>
+    </div>
+    <div class="model-run" id="run-ecmwf">--</div>
+    <div class="progress-bar"><div class="progress-fill ecmwf" id="prog-ecmwf" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-ecmwf">--</div>
+  </div>
+  <div class="card" id="card-gfs">
+    <div class="model-header">
+      <span class="model-name gfs">GFS</span>
+      <span class="badge badge-idle" id="badge-gfs">IDLE</span>
+    </div>
+    <div class="model-run" id="run-gfs">--</div>
+    <div class="progress-bar"><div class="progress-fill gfs" id="prog-gfs" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-gfs">--</div>
+  </div>
+  <div class="card" id="card-gdps">
+    <div class="model-header">
+      <span class="model-name gdps">GDPS</span>
+      <span class="badge badge-idle" id="badge-gdps">IDLE</span>
+    </div>
+    <div class="model-run" id="run-gdps">--</div>
+    <div class="progress-bar"><div class="progress-fill gdps" id="prog-gdps" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-gdps">--</div>
+  </div>
+  <div class="card" id="card-hrrr">
+    <div class="model-header">
+      <span class="model-name hrrr">HRRR</span>
+      <span class="badge badge-idle" id="badge-hrrr">IDLE</span>
+    </div>
+    <div class="model-run" id="run-hrrr">--</div>
+    <div class="progress-bar"><div class="progress-fill hrrr" id="prog-hrrr" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-hrrr">--</div>
+  </div>
+  <div class="card" id="card-nam12km">
+    <div class="model-header">
+      <span class="model-name nam">NAM 12km</span>
+      <span class="badge badge-idle" id="badge-nam12km">IDLE</span>
+    </div>
+    <div class="model-run" id="run-nam12km">--</div>
+    <div class="progress-bar"><div class="progress-fill nam" id="prog-nam12km" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-nam12km">--</div>
+  </div>
+  <div class="card" id="card-nam3km">
+    <div class="model-header">
+      <span class="model-name nam3km">NAM 3km</span>
+      <span class="badge badge-idle" id="badge-nam3km">IDLE</span>
+    </div>
+    <div class="model-run" id="run-nam3km">--</div>
+    <div class="progress-bar"><div class="progress-fill nam3km" id="prog-nam3km" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-nam3km">--</div>
+  </div>
+  <div class="card" id="card-rap">
+    <div class="model-header">
+      <span class="model-name rap">RAP 13km</span>
+      <span class="badge badge-idle" id="badge-rap">IDLE</span>
+    </div>
+    <div class="model-run" id="run-rap">--</div>
+    <div class="progress-bar"><div class="progress-fill rap" id="prog-rap" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-rap">--</div>
+  </div>
+  <div class="card" id="card-rtma">
+    <div class="model-header">
+      <span class="model-name rtma">RTMA</span>
+      <span class="badge badge-idle" id="badge-rtma">IDLE</span>
+    </div>
+    <div class="model-run" id="run-rtma">--</div>
+    <div class="progress-bar"><div class="progress-fill rtma" id="prog-rtma" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-rtma">--</div>
+  </div>
+  <div class="card" id="card-href">
+    <div class="model-header">
+      <span class="model-name href">HREF Ensemble</span>
+      <span class="badge badge-idle" id="badge-href">IDLE</span>
+    </div>
+    <div class="model-run" id="run-href">--</div>
+    <div class="progress-bar"><div class="progress-fill href" id="prog-href" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-href">--</div>
+  </div>
+  <div class="card" id="card-rrfs">
+    <div class="model-header">
+      <span class="model-name rrfs">RRFS</span>
+      <span class="badge badge-idle" id="badge-rrfs">IDLE</span>
+    </div>
+    <div class="model-run" id="run-rrfs">--</div>
+    <div class="progress-bar"><div class="progress-fill rrfs" id="prog-rrfs" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-rrfs">--</div>
+  </div>
+  <div class="card" id="card-gefs">
+    <div class="model-header">
+      <span class="model-name gefs">GEFS Ensemble</span>
+      <span class="badge badge-idle" id="badge-gefs">IDLE</span>
+    </div>
+    <div class="model-run" id="run-gefs">--</div>
+    <div class="progress-bar"><div class="progress-fill gefs" id="prog-gefs" style="width:0%"></div></div>
+    <div class="progress-text" id="progtxt-gefs">--</div>
+  </div>
+</div>
+</div><!-- /section-models -->
+
+<!-- Satellite Status -->
+<div class="section-header" onclick="toggleSection('satellite')"><span class="chevron">&#9660;</span> GOES Satellite &mdash; Archive Status</div>
+<div class="section-content" id="section-satellite">
+<div class="grid" id="sat-cards">
+  <div class="card">
+    <div class="sat-card-title">Loading satellite status...</div>
+  </div>
+</div>
+</div><!-- /section-satellite -->
+
+<!-- Radar Sites -->
+<div class="section-header" onclick="toggleSection('radar')"><span class="chevron">&#9660;</span> NEXRAD Radar Sites</div>
+<div class="section-content" id="section-radar">
+  <div id="radar-sites-container">
+    <div style="color:var(--text-dim);font-size:11px;padding:10px;">Loading radar status...</div>
+  </div>
+</div>
+
+<!-- Workers -->
+<div class="grid grid-full">
+  <div class="card">
+    <div class="card-title">Processes</div>
+    <table class="worker-table">
+      <thead>
+        <tr>
+          <th>Process</th>
+          <th>PID</th>
+          <th>Status</th>
+          <th>Working On</th>
+          <th>CPU %</th>
+          <th>Memory</th>
+          <th>Uptime</th>
+        </tr>
+      </thead>
+      <tbody id="worker-body">
+        <tr><td colspan="7" style="color:var(--text-dim);text-align:center">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Disk Breakdown + Scheduler Log -->
+<div class="grid" style="grid-template-columns: 1fr 2fr;">
+  <div class="card">
+    <div class="card-title">Storage Usage</div>
+    <div id="disk-breakdown">
+      <div class="disk-row"><span class="label">Loading...</span></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Scheduler Log</span>
+      <div style="display:flex;gap:4px;align-items:center;">
+        <button class="log-tab active" onclick="switchLogTab('all',this)" style="font-size:10px;color:var(--accent);background:rgba(74,144,184,0.15);border:1px solid var(--accent);border-radius:3px;padding:2px 8px;cursor:pointer;">All</button>
+        <button class="log-tab" onclick="switchLogTab('models',this)" style="font-size:10px;color:var(--text-dim);background:transparent;border:1px solid var(--border);border-radius:3px;padding:2px 8px;cursor:pointer;">Models</button>
+        <button class="log-tab" onclick="switchLogTab('satellite',this)" style="font-size:10px;color:var(--text-dim);background:transparent;border:1px solid var(--border);border-radius:3px;padding:2px 8px;cursor:pointer;">Satellite</button>
+        <button class="log-tab" onclick="switchLogTab('radar',this)" style="font-size:10px;color:var(--text-dim);background:transparent;border:1px solid var(--border);border-radius:3px;padding:2px 8px;cursor:pointer;">Radar</button>
+      </div>
+    </div>
+    <div class="log-box" id="log-box"></div>
+  </div>
+</div>
+
+<script>
+const CIRC = 2 * Math.PI * 38; // ~238.76
+const BASE = location.pathname.startsWith('/wx/') ? '/wx' : '';
+
+// --- Collapsible sections ---
+function toggleSection(name) {
+  const content = document.getElementById('section-' + name);
+  const header = content.previousElementSibling;
+  content.classList.toggle('collapsed');
+  header.classList.toggle('collapsed');
+}
+
+// --- Radar site status ---
+const _NE_RADAR_SITES = ['KOAX', 'KUEX', 'KLNX'];
+const _RADAR_REGIONS = {
+  'Central Plains': ['KOAX','KUEX','KLNX','KDMX','KDVN','KARX','KEAX','KLSX','KSGF','KDDC','KGLD','KICT','KFTG','KGJX','KPUX','KABR','KFSD','KUDX'],
+  'Northern Plains': ['KMVX','KMBX','KBIS','KBLX','KGGW','KMSX','KTFX','KCBX'],
+  'Southern Plains': ['KTLX','KINX','KAMA','KFWS','KGRK','KHGX','KMRX','KSRX','KLZK','KPOE','KSHV','KLCH','KLBB','KMAF','KSJT','KDYX','KFDR'],
+  'Midwest': ['KLOT','KILX','KIND','KIWX','KMKX','KGRR','KDTX','KAPX','KCLE','KILN'],
+  'Southeast': ['KBMX','KEOX','KMXX','KHTX','KGWX','KDGX','KHDC','KTBW','KMLB','KAMX','KJAX','KEVX','KTLH','KFCX','KAKQ','KLWX','KMHX','KRAX','KGSP','KCAE','KCLX','KFFC','KVAX','KJGX'],
+  'Northeast': ['KOKX','KBGM','KENX','KTYX','KBOX','KDOX','KDIX','KPBZ','KCCX'],
+  'Southwest': ['KFSX','KIWA','KEMX','KYUX','KHDX','KABX','KFDX','KMUX','KBBX','KBHX','KVBX','KNKX','KESX','KRGX','KLGX','KATX','KOTX','KRTX','KMAX'],
+};
+
+function updateRadarSites(data) {
+  const container = document.getElementById('radar-sites-container');
+  if (!container || !data) return;
+  let html = '';
+  for (const [region, sites] of Object.entries(_RADAR_REGIONS)) {
+    html += `<div class="radar-region-header">${region}</div><div class="radar-grid">`;
+    for (const siteId of sites) {
+      const site = data[siteId];
+      if (!site) continue;
+      // Use REF product status as the primary indicator
+      const ref = site.products && site.products.REF;
+      let badgeCls = 'badge-idle', badgeTxt = '--', ageTxt = '--';
+      if (ref) {
+        if (ref.status === 'live') { badgeCls = 'badge-live'; badgeTxt = 'LIVE'; }
+        else if (ref.status === 'recent') { badgeCls = 'badge-stale'; badgeTxt = 'OK'; }
+        else if (ref.status === 'stale') { badgeCls = 'badge-old'; badgeTxt = 'OLD'; }
+        else { badgeCls = 'badge-idle'; badgeTxt = 'N/A'; }
+        if (ref.last_update) ageTxt = ref.last_update;
+        else if (ref.age_min != null) ageTxt = Math.round(ref.age_min) + 'm';
+      }
+      const neCls = _NE_RADAR_SITES.includes(siteId) ? ' ne' : '';
+      html += `<div class="radar-site-card">` +
+        `<span class="radar-site-id${neCls}">${siteId}</span>` +
+        `<span class="radar-site-name">${site.name || ''}</span>` +
+        `<span class="badge ${badgeCls}">${badgeTxt}</span>` +
+        `<span class="radar-site-age">${ageTxt}</span>` +
+        `</div>`;
+    }
+    html += '</div>';
+  }
+  container.innerHTML = html;
+}
+
+function setGauge(ringId, pct, valueId) {
+  const ring = document.getElementById(ringId);
+  const offset = CIRC * (1 - pct / 100);
+  ring.style.strokeDashoffset = offset;
+  let color;
+  if (pct < 60) color = '#5cb85c';
+  else if (pct < 80) color = '#e8b84a';
+  else color = '#d9534f';
+  ring.style.stroke = color;
+  document.getElementById(valueId).textContent = Math.round(pct) + '%';
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024**3) return (bytes / 1024**2).toFixed(0) + ' MB';
+  return (bytes / 1024**3).toFixed(1) + ' GB';
+}
+
+function formatUptime(seconds) {
+  if (seconds < 60) return Math.round(seconds) + 's';
+  if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return h + 'h ' + m + 'm';
+}
+
+function formatRunId(runId) {
+  if (!runId || runId.length < 10) return runId || '--';
+  return runId.slice(0,4) + '-' + runId.slice(4,6) + '-' + runId.slice(6,8) + ' ' + runId.slice(8,10) + 'Z';
+}
+
+function updateModels(models, totalCpu) {
+  for (const m of models) {
+    const name = m.name;
+    const badge   = document.getElementById('badge-'   + name);
+    const run     = document.getElementById('run-'     + name);
+    const prog    = document.getElementById('prog-'    + name);
+    const progtxt = document.getElementById('progtxt-' + name);
+    if (!badge) continue;
+
+    if (m.status === 'processing') {
+      badge.className = 'badge badge-processing';
+      badge.textContent = 'PROCESSING';
+      run.textContent = 'Run: ' + formatRunId(m.current_run);
+      const pct = m.total_fxx > 0 ? (m.completed_fxx / m.total_fxx * 100) : 0;
+      prog.style.width = pct + '%';
+      progtxt.textContent = 'F' + String(m.max_completed_fxx).padStart(3,'0') + ' / F' + String(m.max_fxx).padStart(3,'0') + ' (' + Math.round(pct) + '%)';
+    } else if (m.status === 'complete') {
+      badge.className = 'badge badge-complete';
+      badge.textContent = 'COMPLETE';
+      run.textContent = 'Last: ' + formatRunId(m.last_run);
+      prog.style.width = '100%';
+      progtxt.textContent = 'F' + String(m.max_fxx).padStart(3,'0') + ' / F' + String(m.max_fxx).padStart(3,'0');
+    } else if (totalCpu > 20) {
+      badge.className = 'badge badge-processing';
+      badge.textContent = 'PROCESSING';
+      run.textContent = m.last_run ? 'Last: ' + formatRunId(m.last_run) : '--';
+      const pct = m.total_fxx > 0 ? (m.completed_fxx / m.total_fxx * 100) : 0;
+      prog.style.width = pct + '%';
+      progtxt.textContent = m.max_fxx > 0 ? ('F' + String(m.max_completed_fxx).padStart(3,'0') + ' / F' + String(m.max_fxx).padStart(3,'0')) : '--';
+    } else {
+      badge.className = 'badge badge-idle';
+      badge.textContent = 'IDLE';
+      run.textContent = m.last_run ? 'Last: ' + formatRunId(m.last_run) : '--';
+      const pct = m.total_fxx > 0 ? (m.completed_fxx / m.total_fxx * 100) : 0;
+      prog.style.width = pct + '%';
+      progtxt.textContent = m.max_fxx > 0 ? ('F' + String(m.max_completed_fxx).padStart(3,'0') + ' / F' + String(m.max_fxx).padStart(3,'0')) : '--';
+    }
+  }
+}
+
+function updateSatCards(satData) {
+  const container = document.getElementById('sat-cards');
+  if (!container) return;
+  const regionalLabelMap = {
+    vis_1km: 'Visible 1 km',
+    ir_native: 'Clean IR',
+    ir_14: 'IR Band 14',
+    veggie: 'Veggie',
+    cloud_particle: 'Cloud Particle',
+  };
+
+  const preferredOrder = [
+    'ir', 'sw_ir', 'upper_wv', 'wv', 'lower_wv',
+    'vis', 'cirrus', 'snow_ice', 'ir_14', 'veggie',
+    'natural_color', 'day_cloud_phase',
+    'pwat', 'sst', 'rain_rate', 'stability', 'fire',
+    'm1_ir_1km', 'm2_ir_1km', 'm1_vis_1km', 'm2_vis_1km',
+    'vis_1km', 'ir_native',
+  ];
+  const rank = new Map(preferredOrder.map((pid, idx) => [pid, idx]));
+  const src = 'goes19';
+  const srcData = satData && satData[src] ? satData[src] : {};
+  const regionalData = satData && satData.regional ? satData.regional : {};
+  const activeProducts = Object.entries(srcData)
+    .filter(([, info]) => info)
+    .sort((a, b) => {
+      const ra = rank.has(a[0]) ? rank.get(a[0]) : 9999;
+      const rb = rank.has(b[0]) ? rank.get(b[0]) : 9999;
+      if (ra !== rb) return ra - rb;
+      return a[0].localeCompare(b[0]);
+    });
+  const regionalCards = Object.entries(regionalData)
+    .filter(([, info]) => info && info.products)
+    .sort((a, b) => {
+      const an = (a[1].name || a[0]).toLowerCase();
+      const bn = (b[1].name || b[0]).toLowerCase();
+      return an.localeCompare(bn);
+    });
+
+  if (activeProducts.length === 0 && regionalCards.length === 0) {
+    container.innerHTML = '<div class="card"><div class="sat-card-title">No active satellite products</div></div>';
+    return;
+  }
+
+  // Floaters get grouped into one card; everything else gets its own card
+  const floaterPids = new Set(['m1_ir_1km','m2_ir_1km','m1_vis_1km','m2_vis_1km']);
+  const mainProducts = activeProducts.filter(([pid]) => !floaterPids.has(pid));
+  const floaterProducts = activeProducts.filter(([pid]) => floaterPids.has(pid));
+
+  let html = '';
+  for (const [pid, info] of mainProducts) {
+    let badgeCls = 'badge-idle';
+    let badgeTxt = 'INACTIVE';
+    if (info.status === 'live') {
+      badgeCls = 'badge-live';
+      badgeTxt = 'CURRENT';
+    } else if (info.status === 'stale') {
+      badgeCls = 'badge-stale';
+      badgeTxt = 'STALE';
+    } else if (info.status === 'old') {
+      badgeCls = 'badge-old';
+      badgeTxt = 'IDLE';
+    }
+
+    const pct = info.pct ?? 0;
+    const frames = info.frames ?? 0;
+    const maxFrames = info.max_frames ?? 0;
+    const title = info.name || pid.toUpperCase();
+    const ageMin = info.age_min;
+    let ageText, archiveText;
+    if (info.status === 'no_data') {
+      ageText = 'No recent data';
+      archiveText = '';
+    } else {
+      ageText = ageMin == null ? 'No recent data' :
+        ageMin < 1 ? 'Updated just now' :
+        `Updated ${Math.round(ageMin)}m ago`;
+      const archiveLabel = frames >= maxFrames ? `${maxFrames}/${maxFrames} (full)` : `${frames}/${maxFrames}`;
+      archiveText = `Archive ${archiveLabel}`;
+    }
+    html += `<div class="card">` +
+      `<div class="sat-card-title">${title}</div>` +
+      `<div class="sat-src-row">` +
+      `<span class="sat-src-label">G19</span>` +
+      `<span class="badge ${badgeCls}">${badgeTxt}</span>` +
+      `<div class="sat-src-bar"><div class="sat-src-fill" style="width:${pct}%"></div></div>` +
+      `<span class="sat-src-txt">${pct}%</span>` +
+      `</div>` +
+      `<div class="sat-meta-row">` +
+      `<span>${ageText}</span>` +
+      `<span>${archiveText}</span>` +
+      `</div>` +
+      `</div>`;
+  }
+
+  // Group floaters into a single card
+  if (floaterProducts.length > 0) {
+    let fHtml = '';
+    for (const [pid, info] of floaterProducts) {
+      let badgeCls = 'badge-idle';
+      let badgeTxt = 'INACTIVE';
+      if (info.status === 'live') { badgeCls = 'badge-live'; badgeTxt = 'CURRENT'; }
+      else if (info.status === 'stale') { badgeCls = 'badge-stale'; badgeTxt = 'STALE'; }
+      else if (info.status === 'old') { badgeCls = 'badge-old'; badgeTxt = 'IDLE'; }
+      const pct = info.pct ?? 0;
+      const title = info.name || pid.toUpperCase();
+      const ageMin = info.age_min;
+      const ageText = info.status === 'no_data' ? 'No active sector'
+        : ageMin == null ? 'No data'
+        : ageMin < 1 ? 'Just now'
+        : `${Math.round(ageMin)}m ago`;
+      fHtml += `<div class="sat-region-row">` +
+        `<div class="sat-region-head">` +
+        `<div class="sat-region-product">${title}</div>` +
+        `<span class="badge ${badgeCls}">${badgeTxt}</span>` +
+        `</div>` +
+        `<div class="sat-region-bar"><div class="sat-src-bar"><div class="sat-src-fill" style="width:${pct}%"></div></div></div>` +
+        `<div class="sat-region-meta">` +
+        `<span>${ageText}</span>` +
+        `</div></div>`;
+    }
+    html += `<div class="card">` +
+      `<div class="sat-card-title">Mesoscale Floaters</div>` +
+      `<div class="sat-region-products">${fHtml}</div>` +
+      `</div>`;
+  }
+
+  for (const [regionId, regionInfo] of regionalCards) {
+    const products = Object.entries(regionInfo.products || {})
+      .sort((a, b) => {
+        const ra = rank.has(a[0]) ? rank.get(a[0]) : 9999;
+        const rb = rank.has(b[0]) ? rank.get(b[0]) : 9999;
+        if (ra !== rb) return ra - rb;
+        return a[0].localeCompare(b[0]);
+      });
+    if (products.length === 0) continue;
+
+    const srcLabel = ((regionInfo.source || '').replace('goes', 'G') || 'REG').toUpperCase();
+    let regionHtml = '';
+    for (const [pid, info] of products) {
+      let badgeCls = 'badge-idle';
+      let badgeTxt = 'INACTIVE';
+      if (info.status === 'live') {
+        badgeCls = 'badge-live';
+        badgeTxt = 'CURRENT';
+      } else if (info.status === 'stale') {
+        badgeCls = 'badge-stale';
+        badgeTxt = 'STALE';
+      } else if (info.status === 'old') {
+        badgeCls = 'badge-old';
+        badgeTxt = 'IDLE';
+      }
+      const pct = info.pct ?? 0;
+      const frames = info.frames ?? 0;
+      const maxFrames = info.max_frames ?? 0;
+      const title = regionalLabelMap[pid] || info.name || pid.toUpperCase();
+      const ageMin = info.age_min;
+      const ageText = ageMin == null ? 'No recent data' :
+        ageMin < 1 ? 'Updated just now' :
+        `${Math.round(ageMin)}m ago`;
+      const archiveText = `Archive ${frames}/${maxFrames}`;
+      regionHtml += `<div class="sat-region-row">` +
+        `<div class="sat-region-head">` +
+        `<div class="sat-region-product">${title}</div>` +
+        `<span class="badge ${badgeCls}">${badgeTxt}</span>` +
+        `</div>` +
+        `<div class="sat-region-bar"><div class="sat-src-bar"><div class="sat-src-fill" style="width:${pct}%"></div></div></div>` +
+        `<div class="sat-region-meta">` +
+        `<span>${ageText}</span>` +
+        `<span>${frames}/${maxFrames}</span>` +
+        `</div>` +
+        `</div>`;
+    }
+
+    html += `<div class="card">` +
+      `<div class="sat-card-title">${regionInfo.name || regionId}</div>` +
+      `<div class="sat-region-products">${regionHtml}</div>` +
+      `</div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+function updateWorkers(processes, scheduler) {
+  const tbody = document.getElementById('worker-body');
+  if ((!processes || processes.length === 0) && !scheduler) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-dim);text-align:center">No workers detected</td></tr>';
+    return;
+  }
+  let html = '';
+  let totalCpu = 0;
+  let totalRss = 0;
+
+  const rows = processes && processes.length ? processes : (scheduler ? [scheduler] : []);
+  rows.forEach((w) => {
+      const statusClass = w.status_class || (w.cpu_percent > 50 ? 'processing' : 'idle');
+      const statusText  = w.status || (w.cpu_percent > 50 ? 'Processing' : 'Idle');
+      const taskText = w.task || '--';
+      const nameClass = w.worker_type === 'low_priority' ? 'lowpri' : (w.service || 'default');
+      const queueBadge = w.queue_label
+        ? `<span class="queue-badge" title="Queue ${w.queue_label}">${w.queue_label}</span>`
+        : '';
+      const burstBadge = w.burst_active
+        ? `<span class="worker-badges"><span class="badge badge-burst" title="${(w.burst_reason || '').replace(/"/g, '&quot;')}">BURST x${w.burst_subworkers || 1}</span></span>`
+        : '';
+      html += `<tr>
+        <td><span class="process-name ${nameClass}">${w.name || 'Process'}</span>${queueBadge}${burstBadge}</td>
+        <td class="pid">${w.pid}</td>
+        <td><span class="worker-status ${statusClass}"></span>${statusText}</td>
+        <td>${taskText}</td>
+        <td class="cpu-val">${w.cpu_percent.toFixed(0)}%</td>
+        <td class="mem-val">${formatBytes(w.rss)}</td>
+        <td>${formatUptime(w.uptime)}</td>
+      </tr>`;
+      totalCpu += w.cpu_percent;
+      totalRss += w.rss;
+    });
+
+  html += `<tr style="border-top:2px solid var(--border)">
+    <td colspan="4" style="font-weight:600;color:var(--text-mid)">Totals</td>
+    <td class="cpu-val" style="font-weight:600">${totalCpu.toFixed(0)}%</td>
+    <td class="mem-val" style="font-weight:600">${formatBytes(totalRss)}</td>
+    <td></td>
+  </tr>`;
+
+  tbody.innerHTML = html;
+}
+
+function updateServiceSummary(services) {
+  const el = document.getElementById('service-summary');
+  if (!el || !services.length) return;
+  let html = '';
+  for (const svc of services) {
+    const quota = svc.cpu_quota;
+    const cpu = svc.cpu_percent;
+    const mem = svc.mem_bytes;
+    const hasQuota = quota !== null && quota !== undefined;
+    const pct = hasQuota ? Math.min(cpu / quota * 100, 100) : Math.min(cpu / 1200 * 100, 100);
+    const barColor = svc.throttled ? 'var(--hot)' : (pct > 85 ? '#e8a735' : 'var(--accent)');
+    const cpuLabel = hasQuota
+      ? `${Math.round(cpu)}% / ${quota}%`
+      : `${Math.round(cpu)}%`;
+    const throttleTag = svc.throttled ? '<div class="svc-throttled">THROTTLED</div>' : '';
+    html += `<div class="svc-card">
+      <div class="svc-name">${svc.name}</div>
+      <div class="svc-bar-wrap">
+        <div class="svc-bar-fill" style="width:${pct.toFixed(1)}%; background:${barColor}"></div>
+        <div class="svc-bar-label">${cpuLabel}</div>
+      </div>
+      ${throttleTag}
+      <div class="svc-mem">${formatBytes(mem)}</div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function updateDisk(disk) {
+  const el = document.getElementById('disk-breakdown');
+  if (!disk) { el.innerHTML = '<div class="disk-row"><span class="label">N/A</span></div>'; return; }
+  const groups = [
+    [
+      ['Model rendered',     disk.model_rendered],
+      ['Satellite rendered', disk.satellite_rendered],
+      ['Radar rendered',     disk.radar_rendered],
+    ],
+    [
+      ['Model cache',        disk.grib_cache],
+      ['Satellite cache',    disk.satellite_cache],
+      ['Radar cache',        disk.radar_cache],
+    ],
+    [
+      ['Service logs',       disk.logs],
+    ],
+  ];
+  let html = groups
+    .map(group => group
+      .filter(([, v]) => v)
+      .map(([k, v]) => `<div class="disk-row"><span class="label">${k}</span><span class="value">${v}</span></div>`)
+      .join(''))
+    .filter(Boolean)
+    .join('<div class="disk-group-gap"></div>');
+  if (disk.tracked_total) {
+    html += `${html ? '<div class="disk-group-gap"></div>' : ''}<div class="disk-row" style="border-top:1px solid var(--border);padding-top:6px;margin-top:4px"><span class="label">Tracked total</span><span class="value">${disk.tracked_total}</span></div>`;
+  }
+  el.innerHTML = html || '<div class="disk-row"><span class="label">N/A</span></div>';
+}
+
+const _NE_RADARS = ['KOAX', 'KUEX', 'KLNX'];
+function colorizeLog(text) {
+  text = text.replace(/\[DL\]/g,     '<span class="log-tag dl">[DL]</span>');
+  text = text.replace(/\[HRRR\]/g,   '<span class="log-model hrrr">[HRRR]</span>');
+  text = text.replace(/\[NAM3KM\]/g, '<span class="log-model nam3km">[NAM3KM]</span>');
+  text = text.replace(/\[NAM12KM\]/g,'<span class="log-model nam">[NAM12KM]</span>');
+  text = text.replace(/\[ECMWF\]/g,  '<span class="log-model ecmwf">[ECMWF]</span>');
+  text = text.replace(/\[RAP\]/g,    '<span class="log-model rap">[RAP]</span>');
+  text = text.replace(/\[GFS\]/g,    '<span class="log-model gfs">[GFS]</span>');
+  text = text.replace(/\[HREF\]/g,   '<span class="log-model href">[HREF]</span>');
+  text = text.replace(/\[RRFS\]/g,   '<span class="log-model rrfs">[RRFS]</span>');
+  text = text.replace(/\[GEFS\]/g,   '<span class="log-model gefs">[GEFS]</span>');
+  text = text.replace(/\[GDPS\]/g,   '<span class="log-model gdps">[GDPS]</span>');
+  text = text.replace(/\[RTMA\]/g,   '<span class="log-model rtma">[RTMA]</span>');
+  text = text.replace(/\[(G19-[^\]]+)\]/g, '<span class="log-model goes19">[$1]</span>');
+  // Radar sites: Nebraska in red, all others in blue
+  text = text.replace(/\b(K[A-Z]{3}|PA[A-Z]{2}|PH[A-Z]{2}|TJUA)\b/g, (match) => {
+    const cls = _NE_RADARS.includes(match) ? 'log-site ne' : 'log-site';
+    return '<span class="' + cls + '">' + match + '</span>';
+  });
+  text = text.replace(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/, '<span class="log-ts">$1</span>');
+  return text;
+}
+
+let _activeLogTab = 'all';
+const LOG_MAX = 1000;
+let _logUserScrolled = false;
+let _logLastCount = 0;
+
+// Accumulated log buffers
+const _logBuffers = { pipeline: [], satellite: [], radar: [] };
+
+function _logKey(entry) {
+  const e = entry || {};
+  const msg = e.original || e.plain || String(e);
+  const ts = e.timestamp || msg.slice(0, 23);
+  return `${ts}|${msg}`;
+}
+
+function _logTimestamp(entry) {
+  const e = entry || {};
+  const direct = (e.timestamp || '').trim();
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(direct)) return direct;
+  const msg = (e.original || e.plain || String(e)).trim();
+  const match = msg.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
+  return match ? match[1] : null;
+}
+
+function _appendUnique(buf, entries) {
+  // Deduplicate against the full retained buffer so older slices cannot be
+  // re-appended on later refreshes and make the log appear to jump backward.
+  const existing = new Set(buf.map(_logKey));
+  for (const e of entries) {
+    const key = _logKey(e);
+    if (!existing.has(key)) {
+      buf.push(e);
+      existing.add(key);
+    }
+  }
+  // Trim to max
+  if (buf.length > LOG_MAX) buf.splice(0, buf.length - LOG_MAX);
+  buf.sort((a, b) => {
+    const ta = _logTimestamp(a);
+    const tb = _logTimestamp(b);
+    if (ta && tb && ta !== tb) return ta < tb ? -1 : 1;
+    if (ta && !tb) return -1;
+    if (!ta && tb) return 1;
+    return _logKey(a).localeCompare(_logKey(b));
+  });
+}
+
+function _classifyPipelineEntry(msg) {
+  const lower = msg.toLowerCase();
+  if (lower.includes('satellite') || lower.includes('goes')) return 'satellite';
+  if (lower.includes('radar') || lower.includes('level2') || lower.includes('nexrad')) return 'radar';
+  return 'models';
+}
+
+function updateLog(entries) {
+  // Split pipeline entries into models vs satellite
+  const modelEntries = [];
+  const satEntries = [];
+  for (const e of entries) {
+    const msg = e.original || e;
+    const cls = _classifyPipelineEntry(msg);
+    if (cls === 'satellite') satEntries.push(e);
+    else modelEntries.push(e);
+  }
+  _appendUnique(_logBuffers.pipeline, modelEntries);
+  _appendUnique(_logBuffers.satellite, satEntries);
+  renderLogBox();
+}
+
+function updateRadarLog(entries) {
+  _appendUnique(_logBuffers.radar, entries);
+  renderLogBox();
+}
+
+function renderLogBox() {
+  const box = document.getElementById('log-box');
+  if (!box) return;
+
+  let entries;
+  if (_activeLogTab === 'all') {
+    // Merge all buffers, show last LOG_MAX
+    entries = [..._logBuffers.pipeline, ..._logBuffers.satellite, ..._logBuffers.radar];
+    // Sort by timestamp if present
+    entries.sort((a, b) => {
+      const ta = _logTimestamp(a);
+      const tb = _logTimestamp(b);
+      if (ta && tb && ta !== tb) return ta < tb ? -1 : 1;
+      if (ta && !tb) return -1;
+      if (!ta && tb) return 1;
+      return _logKey(a).localeCompare(_logKey(b));
+    });
+    if (entries.length > LOG_MAX) entries = entries.slice(entries.length - LOG_MAX);
+  } else if (_activeLogTab === 'models') {
+    entries = _logBuffers.pipeline;
+  } else if (_activeLogTab === 'satellite') {
+    entries = _logBuffers.satellite;
+  } else {
+    entries = _logBuffers.radar;
+  }
+
+  // Check if user has scrolled away from bottom BEFORE touching DOM
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+
+  let html = '';
+  for (const e of entries) {
+    html += `<div class="log-line">${colorizeLog(e.original || e)}</div>`;
+  }
+
+  // If same count and user scrolled up, don't touch the DOM at all
+  if (_logUserScrolled && entries.length === _logLastCount) return;
+
+  const savedScroll = box.scrollTop;
+  box.innerHTML = html;
+  _logLastCount = entries.length;
+
+  if (atBottom) {
+    _logUserScrolled = false;
+    box.scrollTop = box.scrollHeight;
+  } else {
+    _logUserScrolled = true;
+    box.scrollTop = savedScroll;
+  }
+}
+
+function switchLogTab(tab, btn) {
+  _activeLogTab = tab;
+  document.querySelectorAll('.log-tab').forEach(b => {
+    b.style.color = 'var(--text-dim)';
+    b.style.background = 'transparent';
+    b.style.borderColor = 'var(--border)';
+  });
+  if (btn) {
+    btn.style.color = 'var(--accent)';
+    btn.style.background = 'rgba(74,144,184,0.15)';
+    btn.style.borderColor = 'var(--accent)';
+  }
+  renderLogBox();
+}
+
+function updateAsosStatus(d) {
+  const reporting = d.reporting ?? 0;
+  const total = d.total ?? 0;
+  const pct = total > 0 ? (reporting / total * 100) : 0;
+  const avgAge = d.avg_age_min;
+  const genAge = d.generated_age_min;
+
+  document.getElementById('asos-count').textContent = reporting.toLocaleString();
+  document.getElementById('asos-total').textContent = total.toLocaleString() + ' available';
+  document.getElementById('asos-bar').style.width = pct.toFixed(1) + '%';
+
+  if (avgAge != null) {
+    const h = Math.floor(avgAge / 60);
+    const m = Math.round(avgAge % 60);
+    document.getElementById('asos-avgage').textContent = 'avg age ' + (h > 0 ? h + 'h ' : '') + m + 'm';
+  } else {
+    document.getElementById('asos-avgage').textContent = 'avg age --';
+  }
+
+  if (genAge != null) {
+    const m = Math.round(genAge);
+    document.getElementById('asos-updated').textContent = m < 1 ? 'updated just now' : 'updated ' + m + 'm ago';
+  } else {
+    document.getElementById('asos-updated').textContent = '--';
+  }
+
+  const badge = document.getElementById('asos-badge');
+  if (avgAge == null) {
+    badge.className = 'badge badge-idle'; badge.textContent = 'NO DATA';
+  } else if (avgAge < 30) {
+    badge.className = 'badge badge-live'; badge.textContent = 'LIVE';
+  } else if (avgAge < 75) {
+    badge.className = 'badge badge-stale'; badge.textContent = 'STALE';
+  } else {
+    badge.className = 'badge badge-old'; badge.textContent = 'OLD';
+  }
+}
+
+async function refresh() {
+  try {
+    const [dashResp, satResp, radarResp, asosResp] = await Promise.all([
+      fetch(BASE + '/api/dashboard'),
+      fetch(BASE + '/api/satellite/status'),
+      fetch(BASE + '/api/radar/status'),
+      fetch(BASE + '/api/surface/status'),
+    ]);
+
+    if (dashResp.ok) {
+      const data = await dashResp.json();
+
+      if (data.system) {
+        const s = data.system;
+        setGauge('cpu-ring', s.cpu_percent, 'cpu-pct');
+        document.getElementById('cpu-detail').textContent = s.cpu_count + ' cores @ ' + s.cpu_freq + ' MHz';
+        setGauge('mem-ring', s.mem_percent, 'mem-pct');
+        document.getElementById('mem-detail').textContent = formatBytes(s.mem_used) + ' / ' + formatBytes(s.mem_total);
+        setGauge('disk-ring', s.disk_percent, 'disk-pct');
+        document.getElementById('disk-detail').textContent = formatBytes(s.disk_used) + ' / ' + formatBytes(s.disk_total);
+      }
+
+      let totalPipelineCpu = 0;
+      if (data.scheduler) totalPipelineCpu += data.scheduler.cpu_percent;
+      if (data.workers) data.workers.forEach(w => totalPipelineCpu += w.cpu_percent);
+
+      if (data.models) updateModels(data.models, totalPipelineCpu);
+      updateWorkers(data.processes || data.workers, data.scheduler);
+      if (data.service_summary) updateServiceSummary(data.service_summary);
+      if (data.disk) updateDisk(data.disk);
+      if (data.log_entries) updateLog(data.log_entries);
+      if (data.radar_log_entries) updateRadarLog(data.radar_log_entries);
+    }
+
+    if (satResp.ok) {
+      const satData = await satResp.json();
+      updateSatCards(satData);
+    }
+
+    if (radarResp.ok) {
+      const radarData = await radarResp.json();
+      updateRadarSites(radarData);
+    }
+
+    if (asosResp.ok) {
+      const asosData = await asosResp.json();
+      updateAsosStatus(asosData);
+    }
+
+  } catch (e) {
+    console.error('Dashboard refresh failed:', e);
+  }
+}
+
+// Zulu clock
+function updateClock() {
+  const now = new Date();
+  const h = String(now.getUTCHours()).padStart(2,'0');
+  const m = String(now.getUTCMinutes()).padStart(2,'0');
+  const s = String(now.getUTCSeconds()).padStart(2,'0');
+  document.getElementById('zulu-clock').textContent = h + ':' + m + ':' + s + 'Z';
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+<div class="footer-note"><a href="privacy.html">Privacy</a></div>
+</body>
+</html>

@@ -1,0 +1,26 @@
+[Unit]
+Description=Weather Model Pipeline — Low Priority Render Worker
+After=weather-pipeline.service
+Wants=weather-pipeline.service
+
+[Service]
+User=wx
+Group=wx
+WorkingDirectory=/home/main/weather-viewer
+Environment="PYTHONPATH=/home/main/weather-viewer"
+Environment="MPLBACKEND=Agg"
+Environment="MALLOC_MMAP_THRESHOLD_=131072"
+Environment="MALLOC_TRIM_THRESHOLD_=131072"
+Environment="LOWPRI_WORKERS=0"
+ExecStart=/home/main/weather-viewer/.venv/bin/python -m pipeline.lowpri_worker
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65536
+# Hard OS-level CPU cap for the whole low-priority service.
+# With LOWPRI_WORKERS=2 this yields up to roughly 50% of one core per busy worker.
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

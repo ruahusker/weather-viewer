@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WX Viewer Privacy</title>
+  <meta name="robots" content="noindex" />
+  <link rel="stylesheet" href="css/fonts.css?v=20260413" />
+  <style>
+    :root {
+      --bg: #09111b;
+      --panel: rgba(12, 21, 34, 0.92);
+      --text: #d8e0ea;
+      --muted: #90a0b8;
+      --line: rgba(255, 255, 255, 0.08);
+      --accent: #8ab6d9;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Inter", -apple-system, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top, rgba(74, 144, 184, 0.2), transparent 32%),
+        linear-gradient(180deg, #101a27, var(--bg));
+    }
+
+    main {
+      width: min(860px, calc(100% - 32px));
+      margin: 40px auto;
+      padding: 28px;
+      border-radius: 24px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(30px, 5vw, 44px);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+
+    p, li {
+      color: var(--muted);
+      line-height: 1.65;
+      font-size: 15px;
+    }
+
+    h2 {
+      margin: 28px 0 10px;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    ul {
+      padding-left: 18px;
+      margin: 10px 0;
+    }
+
+    a {
+      color: var(--text);
+    }
+
+    .back {
+      display: inline-flex;
+      margin-top: 22px;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>WX Viewer Privacy</h1>
+    <p>WX Viewer does not use advertising trackers, marketing pixels, or analytics cookies.</p>
+
+    <h2>What This Site Stores</h2>
+    <p>The site serves weather imagery, model maps, radar products, and related JavaScript assets. Normal web-server logs may record basic request information such as IP address, requested path, and timestamp for operational and security purposes.</p>
+
+    <h2>Cookies</h2>
+    <p>WX Viewer is not designed around non-essential cookies. If your browser stores anything for the site, it should only be what is required for normal delivery or browser-side functionality.</p>
+
+    <h2>Third-Party Requests</h2>
+    <p>The site may request some technical assets from third-party CDNs, including JavaScript libraries. Those providers may receive your IP address and standard request metadata as part of delivering those files.</p>
+
+    <h2>Contact</h2>
+    <p>If you have a privacy question about WX Viewer, use the main site contact method associated with vibeprojects.us.</p>
+
+    <a class="back" href="./">Back to WX Viewer</a>
+  </main>
+</body>
+</html>

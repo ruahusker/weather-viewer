@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>WxViewer</title>
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="WxViewer">
+  <meta name="theme-color" content="#08090e">
+  <meta name="mobile-web-app-capable" content="yes">
+
+  <link rel="manifest" href="/wx/static/manifest.json">
+  <link rel="apple-touch-icon" href="/wx/static/icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/wx/static/icons/icon-192.png">
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <link rel="stylesheet" href="/wx/static/css/mobile.css?v=45">
+  <link rel="stylesheet" href="/wx/static/css/surface-obs.css?v=20260330b">
+  <link rel="stylesheet" href="/wx/static/css/mobile-refresh.css?v=20260411a">
+</head>
+<body>
+  <!-- Map (full viewport) -->
+  <div id="map"></div>
+
+  <!-- Top bar: logo left, info center, share right -->
+  <div class="top-bar">
+    <div class="top-logo">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+      <span>WX<span class="logo-accent">VIEWER</span></span>
+    </div>
+    <span id="topInfo" class="top-info"></span>
+    <div class="top-right">
+      <span id="topValue" class="top-value"></span>
+      <button id="spcToggle" class="top-btn" aria-label="SPC Outlooks">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20h12"/><path d="M8 20v-2a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><rect x="9" y="8" width="6" height="8" rx="3"/><path d="M12 3v2"/><path d="M5 8l1.5 1"/><path d="M17.5 9L19 8"/><path d="M4 13h2"/><path d="M18 13h2"/></svg>
+      </button>
+      <button id="chaserToggle" class="top-btn" aria-label="Storm Chasers">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4c3-1 7 0 10 2"/><path d="M9 6c2 2 1 5-1 8s-2 5-1 7"/><path d="M14 7c1 2 1 5 0 7s-2 4-3 6"/><path d="M17 6c0 3-1 6-3 8"/></svg>
+      </button>
+      <button id="screenshotBtn" class="top-btn" aria-label="Screenshot">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="13" r="3"/><path d="M12 7h.01"/></svg>
+      </button>
+      <button id="shareBtn" class="top-btn" aria-label="Share">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Floating selector pill -->
+  <button id="selectorPill" class="selector-pill" aria-label="Select product">
+    <span id="pillLabel">Radar</span>
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+
+  <!-- Legend bar -->
+  <div id="legendBar" class="legend-bar hidden">
+    <canvas id="legendCanvas" width="240" height="12"></canvas>
+    <div id="legendTicks" class="legend-ticks"></div>
+  </div>
+
+  <!-- Scrubber -->
+  <div id="scrubber" class="scrubber">
+    <div class="scrub-controls">
+      <button id="playBtn" class="scrub-btn" aria-label="Play">
+        <svg id="playIcon" width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><polygon points="5,3 17,10 5,17"/></svg>
+        <svg id="pauseIcon" width="20" height="20" viewBox="0 0 20 20" fill="currentColor" class="hidden"><rect x="4" y="3" width="4" height="14"/><rect x="12" y="3" width="4" height="14"/></svg>
+      </button>
+      <input id="scrubSlider" type="range" min="0" max="0" value="0" class="scrub-slider">
+      <button id="speedBtn" class="speed-btn">1x</button>
+    </div>
+    <div class="scrub-info">
+      <span id="scrubLabel" class="scrub-valid-time">--</span>
+      <span id="scrubFrameCount" class="scrub-frame-count">--</span>
+    </div>
+  </div>
+
+  <!-- Tab bar -->
+  <nav id="tabBar" class="tab-bar">
+    <button class="tab active" data-tab="radar" aria-label="Radar">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 12l-7-7"/><path d="M12 12a3 3 0 0 0-3-3"/><path d="M12 12a7 7 0 0 0-7-7"/></svg>
+      <span>Radar</span>
+    </button>
+    <button class="tab" data-tab="surface" aria-label="Surface">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="4"/></svg>
+      <span>Surface</span>
+    </button>
+    <button class="tab" data-tab="models" aria-label="Models">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
+      <span>Models</span>
+    </button>
+    <button class="tab" data-tab="satellite" aria-label="Satellite">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="8" stroke-dasharray="4 3"/></svg>
+      <span>Satellite</span>
+    </button>
+  </nav>
+
+  <!-- Bottom sheet backdrop -->
+  <div id="sheetBackdrop" class="sheet-backdrop hidden"></div>
+
+  <!-- Bottom sheet -->
+  <div id="bottomSheet" class="bottom-sheet hidden">
+    <div class="sheet-handle"><div class="handle-bar"></div></div>
+    <div id="sheetContent" class="sheet-content"></div>
+  </div>
+
+  <!-- Share action sheet -->
+  <div id="shareSheet" class="share-sheet hidden">
+    <div class="share-sheet-inner">
+      <button id="shareCopyLink" class="share-option">Copy Link</button>
+      <button id="shareNative" class="share-option">Share...</button>
+      <a href="/wx/?desktop=1" class="share-option">Desktop Version</a>
+      <button id="shareCancel" class="share-option cancel">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Sounding panel (slide-up) -->
+  <div id="soundingPanel" class="sounding-panel hidden">
+    <div class="sounding-header">
+      <div>
+        <div id="soundingTitle" class="sounding-title"></div>
+        <div id="soundingMeta" class="sounding-meta"></div>
+      </div>
+      <button id="soundingClose" class="top-btn" aria-label="Close sounding">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="sounding-body">
+      <div id="soundingStatus" class="sounding-status hidden"></div>
+      <div id="soundingChartBox" class="sounding-chart-box"></div>
+      <div id="soundingHodoBox" class="sounding-hodo-box"></div>
+      <div id="soundingDiagBox" class="sounding-diag-box"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="/wx/static/js/mobile-sounding.js?v=43"></script>
+  <script src="/wx/static/js/surface-obs.js?v=20260331"></script>
+  <script src="/wx/static/js/mobile.js?v=47"></script>
+</body>
+</html>
