@@ -9,33 +9,10 @@ def _register_custom_cmaps():
     try:
         import matplotlib.cm as _cm
         from matplotlib.colors import LinearSegmentedColormap as _LSC
+        from pipeline.palettes import register_mpl_cmap as _register_palette_cmap
 
-        # wx_temp: NOAA/NWS-style temperature progression.
-        # Keep cold values in blues, transition through cyan/green/yellow
-        # near seasonal norms, then orange/red for heat.
-        _wx_temp = _LSC.from_list("wx_temp", [
-            (0.000, "#4b0082"),  # -30F  deep indigo
-            (0.067, "#273cbe"),  # -20F  strong blue
-            (0.133, "#1f63ff"),  # -10F  vivid blue
-            (0.200, "#2f8fff"),  #   0F  sky blue
-            (0.267, "#59bcff"),  #  10F  light blue
-            (0.333, "#88e3ff"),  #  20F  pale cyan
-            (0.400, "#b8fff7"),  #  30F  icy aqua
-            (0.467, "#8ce99a"),  #  40F  cool green
-            (0.533, "#4fd36d"),  #  50F  green
-            (0.600, "#9bd93c"),  #  60F  yellow-green
-            (0.667, "#e4e84a"),  #  70F  yellow
-            (0.733, "#ffd24a"),  #  80F  warm yellow
-            (0.800, "#ffad33"),  #  90F  orange
-            (0.867, "#ff7a1a"),  # 100F  deep orange
-            (0.933, "#e63b19"),  # 110F  red-orange
-            (1.000, "#b30000"),  # 120F  dark red
-        ])
-        try:
-            import matplotlib
-            matplotlib.colormaps.register(_wx_temp, name="wx_temp", force=True)
-        except Exception:
-            _cm.register_cmap(name="wx_temp", cmap=_wx_temp)
+        # wx_temp: operational-standard temperature ramp (see pipeline/palettes.py).
+        _register_palette_cmap("temp", "wx_temp")
 
         # wx_wind: surface wind — clean green→yellow→orange→red→purple ramp.
         # Subtle tint at low speeds, vivid at high speeds for immediate readability.
@@ -257,41 +234,11 @@ def _register_custom_cmaps():
         # wx_enhanced_ir: Enhanced IR colormap for satellite brightness temperature.
         # Maps IR temperature range -110°C (pos 0) to +50°C (pos 1) with color
         # enhancement at cold cloud-top temperatures for convective analysis.
-        _wx_enhanced_ir = _LSC.from_list("wx_enhanced_ir", [
-            (0.000, "#080810"),  # < -80°C  near-black
-            (0.190, "#2020a0"),  # -80°C    dark blue
-            (0.250, "#c020c0"),  # -70°C    magenta
-            (0.310, "#d02020"),  # -60°C    red
-            (0.375, "#e07020"),  # -50°C    orange
-            (0.440, "#d0d020"),  # -40°C    yellow
-            (0.500, "#30a030"),  # -30°C    green
-            (0.560, "#40c0c0"),  # -20°C    cyan
-            (0.625, "#c8e8f0"),  # -10°C    pale cyan
-            (0.690, "#dddddd"),  #   0°C    white
-            (0.750, "#999999"),  #  10°C    light gray
-            (0.810, "#555555"),  #  20°C    medium gray
-            (1.000, "#000000"),  #  50°C    black
-        ])
-        try:
-            matplotlib.colormaps.register(_wx_enhanced_ir, name="wx_enhanced_ir", force=True)
-        except Exception:
-            _cm.register_cmap(name="wx_enhanced_ir", cmap=_wx_enhanced_ir)
+        # wx_enhanced_ir: conventional rainbow IR enhancement (palettes.py).
+        _register_palette_cmap("ir_enhanced", "wx_enhanced_ir")
 
-        # wx_wv: Water vapor colormap for satellite WV channel products.
-        # Dry (warm BT) = dark brown, moist (cold BT) = white.
-        _wx_wv = _LSC.from_list("wx_wv", [
-            (0.000, "#ffffff"),  # very moist — bright white (coldest BT)
-            (0.200, "#e0e0e0"),  # moist — white
-            (0.350, "#208080"),  # moist — teal
-            (0.500, "#20802a"),  # moderate — green
-            (0.650, "#5a7a20"),  # moderate — olive
-            (0.800, "#6b3a12"),  # dry — brown
-            (1.000, "#3d1c02"),  # driest — dark brown (warmest BT)
-        ])
-        try:
-            matplotlib.colormaps.register(_wx_wv, name="wx_wv", force=True)
-        except Exception:
-            _cm.register_cmap(name="wx_wv", cmap=_wx_wv)
+        # wx_wv: conventional water-vapor enhancement (palettes.py).
+        _register_palette_cmap("wv", "wx_wv")
 
         # wx_cti: Chase Target Index — vivid escalating threat ramp.
         _wx_cti = _LSC.from_list("wx_cti", [
@@ -447,11 +394,15 @@ RENDER_WORKERS = 4
 # Render output resolution — 200 DPI at 3840px wide gives crisp lines at zoom
 RENDER_DPI = 200
 
-QPF_BOUNDS = [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 3.00]
-QPF_COLORS = [
-    "#e7f5ff", "#bde0fe", "#73bdf2", "#37a0d8", "#168aad",
-    "#35a853", "#f5d742", "#f28e2b", "#d73027",
-]
+# QPF table comes from the versioned palette registry (COD/WPC-style ramp).
+from pipeline.palettes import (  # noqa: E402
+    CURRENT_PALETTE_VERSION,
+    get_palette as _get_palette,
+)
+
+_QPF_PALETTE = _get_palette("qpf")
+QPF_BOUNDS = list(_QPF_PALETTE["bounds"])
+QPF_COLORS = list(_QPF_PALETTE["colors"])
 
 SNOW_BOUNDS = [0.1, 1, 2, 3, 4, 6, 8, 12, 18, 24, 36]
 SNOW_COLORS = [
@@ -2221,6 +2172,21 @@ COLOR_SCALES.setdefault("cape_probability_1000", {
     "unit": "%",
     "label": "Prob CAPE >1000 J/kg (%)",
 })
+
+# Tag scales that draw from the versioned palette registry so the web API can
+# resolve PNGs rendered under an older palette (see /api/value-png).
+for _scale_cfg in COLOR_SCALES.values():
+    if _scale_cfg.get("cmap") == "wx_temp":
+        _scale_cfg["palette"] = "temp"
+    elif _scale_cfg.get("cmap") == "nws_refl":
+        _scale_cfg["palette"] = "reflectivity"
+    elif _scale_cfg.get("cmap") == "wx_enhanced_ir":
+        _scale_cfg["palette"] = "ir_enhanced"
+    elif _scale_cfg.get("cmap") == "wx_wv":
+        _scale_cfg["palette"] = "wv"
+    elif _scale_cfg.get("colors") == QPF_COLORS:
+        _scale_cfg["palette"] = "qpf"
+del _scale_cfg
 
 _EXTRA_SOUNDING_TEMP_LEVELS = {
     1000: (-40, 110),

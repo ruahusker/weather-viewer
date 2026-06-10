@@ -48,29 +48,23 @@ def _step_colors(thresholds: list[float],
     return lut
 
 
-REFLECTIVITY_BOUNDS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80]
-REFLECTIVITY_COLORS = [
-    (0, 236, 236, 255),
-    (1, 160, 246, 255),
-    (0, 110, 200, 255),
-    (0, 255, 0, 255),
-    (0, 200, 0, 255),
-    (0, 144, 0, 255),
-    (255, 255, 0, 255),
-    (231, 192, 0, 255),
-    (255, 144, 0, 255),
-    (255, 0, 0, 255),
-    (214, 0, 0, 255),
-    (192, 0, 0, 255),
-    (255, 0, 255, 255),
-    (153, 85, 201, 255),
-    (255, 255, 255, 255),
-]
-REFLECTIVITY_HEX = [
-    "#00ecec", "#01a0f6", "#006ec8", "#00ff00", "#00c800",
-    "#009000", "#ffff00", "#e7c000", "#ff9000", "#ff0000",
-    "#d60000", "#c00000", "#ff00ff", "#9955c9", "#ffffff",
-]
+# NWS WSR-88D reflectivity — sourced from the shared versioned palette
+# registry so radar and model reflectivity stay identical.
+from pipeline.palettes import reflectivity_table as _reflectivity_table
+
+REFLECTIVITY_BOUNDS, REFLECTIVITY_HEX = _reflectivity_table()
+
+
+def _hex_to_rgba(hex_color: str) -> tuple[int, int, int, int]:
+    return (
+        int(hex_color[1:3], 16),
+        int(hex_color[3:5], 16),
+        int(hex_color[5:7], 16),
+        255,
+    )
+
+
+REFLECTIVITY_COLORS = [_hex_to_rgba(c) for c in REFLECTIVITY_HEX]
 
 
 def reflectivity_lut() -> tuple[np.ndarray, float, float]:

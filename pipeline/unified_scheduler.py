@@ -53,6 +53,7 @@ from .config import (
     POLL_INTERVAL_SECONDS,
     RENDERED_DIR,
 )
+from .palettes import CURRENT_PALETTE_VERSION
 from .processor import SNOW_PRODUCTS
 from .swath import update_running_max, finalize_swath
 
@@ -2513,6 +2514,7 @@ def _finalize(
         "is_complete": is_complete,
         "processing_started": datetime.now(timezone.utc).isoformat(),
         "last_updated": last_updated,
+        "palette_version": CURRENT_PALETTE_VERSION,
     }
     if best_effort:
         meta["best_effort"] = True
@@ -3240,6 +3242,7 @@ class _RunState:
             "is_complete": False,
             "processing_started": datetime.now(timezone.utc).isoformat(),
             "last_updated": last_updated,
+            "palette_version": CURRENT_PALETTE_VERSION,
         }
         _write_meta(self.model.name, self.run_dt, meta)
 

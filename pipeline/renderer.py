@@ -248,15 +248,12 @@ _USA_PATH = _build_usa_path()
 
 
 # ---------------------------------------------------------------------------
-# NWS Composite Reflectivity colormap
+# NWS Composite Reflectivity colormap — from the shared versioned palette
+# registry so model reflectivity matches the Level II radar products exactly.
 # ---------------------------------------------------------------------------
+from pipeline.palettes import reflectivity_table as _reflectivity_table
 
-_NWS_REFL_BOUNDS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75]
-_NWS_REFL_COLORS = [
-    "#66d9ff", "#0099cc", "#00cc00", "#009900", "#ffff00", "#ffcc00",
-    "#ff9900", "#ff0000", "#cc0000", "#990000", "#ff00ff", "#cc00cc",
-    "#990099", "#ffffff",
-]
+_NWS_REFL_BOUNDS, _NWS_REFL_COLORS = _reflectivity_table()
 _NWS_REFL_CMAP = ListedColormap(_NWS_REFL_COLORS)
 _NWS_REFL_NORM = BoundaryNorm(_NWS_REFL_BOUNDS, _NWS_REFL_CMAP.N)
 

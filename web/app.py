@@ -187,6 +187,7 @@ def _scan_runs(model: str = "hrrr") -> list[dict]:
                     "completed_fxx": completed_fxx,
                     "forecast_hours": list(forecast_hours),
                     "parameters": parameters,
+                    "palette_version": int(meta.get("palette_version", 1)),
                 }
                 runs.append(summary)
                 if is_complete:
@@ -1356,7 +1357,62 @@ def _nearest_lut_value(rgb: tuple, keys, vals, max_dist: float = 15000.0) -> flo
     return float(vals[idx]) if float(dist[idx]) < max_dist else None
 
 
-def _rgb_to_value(rgb: tuple, cmap_name: str, vmin: float, vmax: float, parameter: str = None) -> float | None:
+# Versioned-palette support: PNGs rendered before a palette change must keep
+# resolving against the palette that produced them (run_meta palette_version).
+from pipeline.palettes import (
+    CURRENT_PALETTE_VERSION,
+    get_palette as _get_palette,
+)
+
+_run_palette_version_cache: dict[tuple[str, str], int] = {}
+
+
+def _run_palette_version(model: str, run_id: str) -> int:
+    """Palette version a run was rendered with (absent => 1, pre-versioning)."""
+    key = (model, run_id)
+    cached = _run_palette_version_cache.get(key)
+    if cached is not None:
+        return cached
+    version = 1
+    try:
+        meta = json.loads((RENDERED_DIR / model / run_id / "run_meta.json").read_text())
+        version = int(meta.get("palette_version", 1))
+    except Exception:
+        pass
+    _run_palette_version_cache[key] = version
+    _prune_cache(_run_palette_version_cache, 256)
+    return version
+
+
+def _discrete_lookup_from_table(bounds: list, colors: list) -> dict:
+    lookup = {}
+    for i, color in enumerate(colors):
+        if not isinstance(color, str) or not color.startswith("#") or len(color) != 7:
+            continue
+        key = (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
+        upper_idx = min(i + 1, len(bounds) - 1)
+        lookup[key] = (float(bounds[i]) + float(bounds[upper_idx])) / 2.0
+    return lookup
+
+
+def _versioned_cmap_name(palette_name: str, cmap_name: str, version: int) -> str:
+    """Lazily register the requested palette version as a matplotlib cmap."""
+    if version == CURRENT_PALETTE_VERSION:
+        return cmap_name
+    versioned = f"{cmap_name}_v{version}"
+    import matplotlib
+
+    if versioned not in matplotlib.colormaps:
+        from pipeline.palettes import register_mpl_cmap
+        if not register_mpl_cmap(palette_name, versioned, version=version):
+            return cmap_name
+    return versioned
+
+
+def _rgb_to_value(
+    rgb: tuple, cmap_name: str, vmin: float, vmax: float,
+    parameter: str = None, palette_version: int = CURRENT_PALETTE_VERSION,
+) -> float | None:
     """Convert an RGB color to a data value using the colormap."""
     # Skip transparent/black/white pixels (likely no data or background)
     r, g, b = rgb
@@ -1364,18 +1420,37 @@ def _rgb_to_value(rgb: tuple, cmap_name: str, vmin: float, vmax: float, paramete
         return None
 
     scale = COLOR_SCALES.get(parameter or "")
-    if scale and scale.get("bounds") and scale.get("colors"):
-        cache_key = f"discrete_{parameter}"
+    palette_name = (scale or {}).get("palette")
+
+    # Stepped reflectivity renders raw table colors (no enhancement), so a
+    # discrete reverse lookup is exact.
+    if scale and (scale.get("cmap") == "nws_refl"):
+        cache_key = f"nws_refl_v{palette_version}"
         cached = _CMAP_CACHE.get(cache_key)
         if cached is None:
-            lookup = {}
-            bounds = list(scale["bounds"])
-            for i, color in enumerate(scale["colors"]):
-                if not isinstance(color, str) or not color.startswith("#") or len(color) != 7:
-                    continue
-                key = (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
-                upper_idx = min(i + 1, len(bounds) - 1)
-                lookup[key] = (float(bounds[i]) + float(bounds[upper_idx])) / 2.0
+            definition = _get_palette("reflectivity", palette_version) or {}
+            lookup = _discrete_lookup_from_table(
+                definition.get("bounds", []), definition.get("colors", []),
+            )
+            cached = (lookup, *_lookup_arrays(lookup))
+            _CMAP_CACHE[cache_key] = cached
+            _prune_cache(_CMAP_CACHE, _CMAP_CACHE_MAX)
+        lookup, keys, vals = cached
+        if rgb in lookup:
+            return lookup[rgb]
+        return _nearest_lut_value(rgb, keys, vals)
+
+    if scale and scale.get("bounds") and scale.get("colors"):
+        bounds, colors = list(scale["bounds"]), list(scale["colors"])
+        if palette_name and palette_version != CURRENT_PALETTE_VERSION:
+            definition = _get_palette(palette_name, palette_version)
+            if definition and "bounds" in definition:
+                bounds = list(definition["bounds"])
+                colors = list(definition["colors"])
+        cache_key = f"discrete_{parameter}_v{palette_version}"
+        cached = _CMAP_CACHE.get(cache_key)
+        if cached is None:
+            lookup = _discrete_lookup_from_table(bounds, colors)
             cached = (lookup, *_lookup_arrays(lookup))
             _CMAP_CACHE[cache_key] = cached
             _prune_cache(_CMAP_CACHE, _CMAP_CACHE_MAX)
@@ -1390,11 +1465,17 @@ def _rgb_to_value(rgb: tuple, cmap_name: str, vmin: float, vmax: float, paramete
         # It's grayscale - treat as no data for colormapped images
         return None
 
+    # For palette-versioned linear cmaps, resolve the cmap that actually
+    # rendered this run's PNGs.
+    effective_cmap = cmap_name
+    if palette_name and palette_version != CURRENT_PALETTE_VERSION:
+        effective_cmap = _versioned_cmap_name(palette_name, cmap_name, palette_version)
+
     # Include parameter in cache key to handle reflectivity separately (no color enhance)
-    cache_key = f"{cmap_name}_{vmin}_{vmax}_{parameter or 'default'}"
+    cache_key = f"{effective_cmap}_{vmin}_{vmax}_{parameter or 'default'}"
     cached = _CMAP_CACHE.get(cache_key)
     if cached is None or not isinstance(cached, tuple):
-        lookup = _build_cmap_lookup(cmap_name, vmin, vmax, parameter)
+        lookup = _build_cmap_lookup(effective_cmap, vmin, vmax, parameter)
         cached = (lookup, *_lookup_arrays(lookup))
         _CMAP_CACHE[cache_key] = cached
         _prune_cache(_CMAP_CACHE, _CMAP_CACHE_MAX)
@@ -1482,8 +1563,11 @@ async def get_value_from_png(
             else:
                 rgb = (pixel[0], pixel[1], pixel[2])
             
-            # Convert color to value (pass parameter to handle reflectivity correctly)
-            value = _rgb_to_value(rgb, cmap_name, vmin, vmax, parameter)
+            # Convert color to value using the palette this run was rendered with
+            value = _rgb_to_value(
+                rgb, cmap_name, vmin, vmax, parameter,
+                palette_version=_run_palette_version(model, run_id),
+            )
             
             if value is None:
                 raise HTTPException(status_code=404, detail="Could not determine value from pixel color")
@@ -1519,16 +1603,13 @@ async def get_model_grid(
 # Legend endpoint — color scale data for the map legend overlay
 # ---------------------------------------------------------------------------
 
-_NWS_REFL_COLORS = [
-    "#66d9ff","#0099cc","#00cc00","#009900","#ffff00","#ffcc00",
-    "#ff9900","#ff0000","#cc0000","#990000","#ff00ff","#cc00cc",
-    "#990099","#ffffff",
-]
-_NWS_REFL_BOUNDS = [5,10,15,20,25,30,35,40,45,50,55,60,65,70,75]
+from pipeline.palettes import reflectivity_table as _reflectivity_table
+
+_NWS_REFL_BOUNDS, _NWS_REFL_COLORS = _reflectivity_table()
 
 
 @app.get("/api/legend/{parameter}")
-async def get_legend(parameter: str):
+async def get_legend(parameter: str, palette_version: int | None = Query(default=None)):
     import matplotlib.cm as cm
     scale = COLOR_SCALES.get(parameter)
     if not scale:
@@ -1542,7 +1623,28 @@ async def get_legend(parameter: str):
     bounds = None
     colors = None
 
-    if scale.get("bounds") and scale.get("colors"):
+    # Allow the frontend to request the legend matching an older run's palette.
+    palette_name = scale.get("palette")
+    legacy_palette = None
+    if (
+        palette_name
+        and palette_version is not None
+        and palette_version != CURRENT_PALETTE_VERSION
+    ):
+        legacy_palette = _get_palette(palette_name, palette_version)
+        if legacy_palette is not None and "stops" in legacy_palette:
+            cmap_name = _versioned_cmap_name(palette_name, cmap_name, palette_version)
+
+    if legacy_palette is not None and "bounds" in legacy_palette:
+        bounds = list(legacy_palette["bounds"])
+        colors = list(legacy_palette["colors"])
+        stops = [
+            {"pos": i / max(len(colors) - 1, 1), "color": color}
+            for i, color in enumerate(colors)
+        ]
+        discrete = True
+        tick_vals = scale.get("tick_vals", bounds)
+    elif scale.get("bounds") and scale.get("colors"):
         bounds = list(scale["bounds"])
         colors = list(scale["colors"])
         stops = [

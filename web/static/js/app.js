@@ -1269,15 +1269,23 @@ function parseLegendColor(color) {
   return [parseInt(match[1]), parseInt(match[2]), parseInt(match[3])];
 }
 
+function paletteQueryForCurrentRun() {
+  if (state.dataSource !== 'models' || !state.runPaletteVersions || state.runId == null) return '';
+  const v = state.runPaletteVersions[String(state.runId)];
+  return v ? `?palette_version=${v}` : '';
+}
+
 async function getValueFromOverlayImage(lat, lon, parameter) {
   const overlayImg = state.overlayLayer?.getElement?.();
   if (!overlayImg || !overlayImg.complete) return null;
   const transparentIsZeroParams = new Set(['snow_depth', 'weasd']);
 
-  let scaleInfo = _paramColorScaleCache[parameter];
+  const paletteQ = paletteQueryForCurrentRun();
+  const scaleCacheKey = parameter + paletteQ;
+  let scaleInfo = _paramColorScaleCache[scaleCacheKey];
   if (!scaleInfo) {
     try {
-      const data = await apiFetch(`${BASE}/api/legend/${parameter}`);
+      const data = await apiFetch(`${BASE}/api/legend/${parameter}${paletteQ}`);
       const lookup = {};
 
       if (data.color_lookup && data.color_lookup.length > 0) {
@@ -1319,7 +1327,7 @@ async function getValueFromOverlayImage(lat, lon, parameter) {
         }
       }
       scaleInfo = { vmin: data.vmin, vmax: data.vmax, label: data.label, unit: data.unit, lookup: lookup };
-      _paramColorScaleCache[parameter] = scaleInfo;
+      _paramColorScaleCache[scaleCacheKey] = scaleInfo;
     } catch (e) { return null; }
   }
 
@@ -6572,6 +6580,8 @@ async function loadRuns(preferredValidTime = null) {
   beginMapLoading('Loading model runs…');
   try {
     const runs = await apiFetch(`${BASE}/api/runs?model=${state.model}`);
+    state.runPaletteVersions = {};
+    for (const r of runs) state.runPaletteVersions[String(r.run_id)] = r.palette_version || 1;
     populateRunSelect(runs);
     if (runs.length > 0) {
       const captureRunId = CAPTURE_MODE && state.runId ? String(state.runId) : null;
@@ -7428,7 +7438,7 @@ async function updateLegend() {
   }
   
   try {
-    const data = await apiFetch(`${BASE}/api/legend/${param}`);
+    const data = await apiFetch(`${BASE}/api/legend/${param}${paletteQueryForCurrentRun()}`);
     legendLabel.textContent = preferredLabel || data.label || label || param;
     
     const ctx = legendCanvas.getContext('2d');
