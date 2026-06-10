@@ -677,25 +677,13 @@ function updateMobileReferenceLayers() {
 
 async function loadBoundaries() {
   try {
-    const [statesResp, countriesResp, countiesResp, coastlineResp] = await Promise.all([
+    const [statesResp, countriesResp, coastlineResp] = await Promise.all([
       fetch(`${BASE}/static/boundaries_states.json`),
       fetch(`${BASE}/static/boundaries_countries.json`),
-      fetch(`${BASE}/static/boundaries_counties.json`),
       fetch(`${BASE}/static/boundaries_coastline.json`),
     ]);
-    // Counties — thin, subtle, visible when zoomed in
-    if (countiesResp.ok) {
-      const countiesData = await countiesResp.json();
-      const cOutline = L.geoJSON(countiesData, {
-        pane: 'boundaryPane',
-        style: { color: '#000', weight: 0.85, fillOpacity: 0, opacity: 0.14, interactive: false },
-      }).addTo(leafletMap);
-      const cLine = L.geoJSON(countiesData, {
-        pane: 'boundaryPane',
-        style: { color: '#fff', weight: 0.22, fillOpacity: 0, opacity: 0.16, interactive: false },
-      }).addTo(leafletMap);
-      S.countyLayers = [cOutline, cLine];
-    }
+    // Counties (2.5MB) load lazily on first zoom past COUNTY_MIN_ZOOM —
+    // see _loadCountyData().
     // States — drawn on top of counties
     if (statesResp.ok) {
       const statesData = await statesResp.json();
@@ -1570,8 +1558,30 @@ function showCounties(enable) {
   _updateCountyVisibility();
 }
 
+let _countiesLoadStarted = false;
+
+async function _loadCountyData() {
+  _countiesLoadStarted = true;
+  try {
+    const resp = await fetch(`${BASE}/static/boundaries_counties.json`);
+    if (!resp.ok) return;
+    const countiesData = await resp.json();
+    const cOutline = L.geoJSON(countiesData, {
+      pane: 'boundaryPane',
+      style: { color: '#000', weight: 0.85, fillOpacity: 0, opacity: 0.14, interactive: false },
+    });
+    const cLine = L.geoJSON(countiesData, {
+      pane: 'boundaryPane',
+      style: { color: '#fff', weight: 0.22, fillOpacity: 0, opacity: 0.16, interactive: false },
+    });
+    S.countyLayers = [cOutline, cLine];
+    _updateCountyVisibility();
+  } catch {}
+}
+
 function _updateCountyVisibility() {
   const show = _countiesEnabled && leafletMap.getZoom() >= COUNTY_MIN_ZOOM;
+  if (show && !_countiesLoadStarted) _loadCountyData();
   S.countyLayers.forEach((l) => {
     if (show) { if (!leafletMap.hasLayer(l)) leafletMap.addLayer(l); }
     else { if (leafletMap.hasLayer(l)) leafletMap.removeLayer(l); }

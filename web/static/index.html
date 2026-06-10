@@ -83,15 +83,15 @@
       <div class="topbar-divider"></div>
       
       <!-- Data Source Tabs -->
-      <div class="source-tabs">
-        <button class="source-tab active" data-source="home" id="tabHome">
+      <div class="source-tabs" role="tablist" aria-label="Data source">
+        <button class="source-tab active" data-source="home" id="tabHome" role="tab" aria-selected="true">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 11.5 12 4l9 7.5"/>
             <path d="M5 10.5V20h14v-9.5"/>
           </svg>
           Home
         </button>
-        <button class="source-tab" data-source="radar" id="tabRadar">
+        <button class="source-tab" data-source="radar" id="tabRadar" role="tab" aria-selected="false">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"/>
             <path d="M12 12l-7-7"/>
@@ -100,25 +100,25 @@
           </svg>
           Radar
         </button>
-        <button class="source-tab" data-source="surface" id="tabSurface">
+        <button class="source-tab" data-source="surface" id="tabSurface" role="tab" aria-selected="false">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="4"/>
           </svg>
           Surface
         </button>
-        <button class="source-tab" data-source="models" id="tabModels">
+        <button class="source-tab" data-source="models" id="tabModels" role="tab" aria-selected="false">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M2 12h20M2 12l5-5m-5 5l5 5M22 12l-5-5m5 5l-5 5"/>
           </svg>
           Models
         </button>
-        <button class="source-tab" data-source="satellite" id="tabSatellite">
+        <button class="source-tab" data-source="satellite" id="tabSatellite" role="tab" aria-selected="false">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
           </svg>
           Satellite
         </button>
-        <button class="source-tab" data-source="chase" id="tabChase">
+        <button class="source-tab" data-source="chase" id="tabChase" role="tab" aria-selected="false">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M19 16.9A5 5 0 0 0 18 7h-1.26a8 8 0 1 0-11.62 9"/>
             <polyline points="13 11 9 17 15 17 11 23"/>
@@ -1901,7 +1901,7 @@
             <button class="speed-btn satellite-speed-btn" data-speed="20">10×</button>
           </div>
           <div class="scrubber-track-wrapper">
-            <input id="scrubber" type="range" min="0" max="0" value="0" step="1" class="scrubber" />
+            <input id="scrubber" type="range" min="0" max="0" value="0" step="1" class="scrubber" aria-label="Frame time scrubber" />
             <div id="scrubberTicks" class="scrubber-ticks"></div>
           </div>
         </div>

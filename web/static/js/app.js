@@ -3093,6 +3093,9 @@ function switchDataSource(source) {
   tabRadar.classList.toggle('active', source === 'radar');
   tabChase.classList.toggle('active', source === 'chase');
   tabSurface.classList.toggle('active', source === 'surface');
+  document.querySelectorAll('.source-tabs [role="tab"]').forEach((t) => {
+    t.setAttribute('aria-selected', String(t.dataset.source === source));
+  });
   
   // Toggle control visibility
   satelliteControls.classList.toggle('hidden', source !== 'satellite');
@@ -3210,7 +3213,6 @@ function switchDataSource(source) {
 function clearSatelliteLayers() {
   state.satFrames = [];
   state.satFrameIdx = 0;
-  state.satPreloadedImages = {};
   clearLoadQueue();
   if (satelliteImageViewerImg) {
     satelliteImageViewerImg.removeAttribute('src');
@@ -3575,7 +3577,6 @@ function setModelReferenceMode(enabled) {
 function clearRadarLayers() {
   state.radarFrames = [];
   state.radarFrameIdx = 0;
-  state.radarPreloadedImages = {};
   clearLoadQueue();
   if (state.radarOverlayLayer) {
     leafletMap.removeLayer(state.radarOverlayLayer);
@@ -4893,7 +4894,6 @@ async function initRainViewerLayer() {
 
     if (requestId !== state.homeRadarRequestId) return;
     frames = filterRadarFramesByLoopLength(frames, state.radarLoopLength);
-    state.homeRadarPreloadedImages = {};
     clearLoadQueue();
     state.homeRadarFrames = frames;
     state.homeRadarFrameIdx = Math.max(0, frames.length - 1);
@@ -6370,15 +6370,10 @@ function showOverlay() {
 
   const fxx = state.currentFxx;
   const param = state.parameter;
-  const key = `${fxx}_${param}`;
-  const cached = state.preloadedImages[key];
-
   const existing = document.getElementById('noDataMsg');
   if (existing) existing.remove();
 
-  const url = (cached && (!cached.complete || cached.naturalWidth > 0))
-    ? cached.src
-    : overlayUrl(state.runId, param, fxx);
+  const url = overlayUrl(state.runId, param, fxx);
 
   if (state.overlayLayer) {
     state.overlayLayer.setUrl(url);
@@ -6509,7 +6504,6 @@ function findClosestAvailableFxx(runId, availableFxx, targetValidTime) {
 async function selectRun(runId, preferredValidTime = null) {
   state.runId = runId;
   if (runSelect) runSelect.value = runId;
-  state.preloadedImages = {};
   clearLoadQueue();
   clearCaptureReady();
   beginMapLoading('Loading model data…');
@@ -6550,55 +6544,6 @@ async function selectRun(runId, preferredValidTime = null) {
   } finally {
     endMapLoading();
   }
-}
-
-function preloadImages() {
-  if (state.dataSource !== 'models') return;
-  const fxxList = state.availableFxx;
-  const param = state.parameter;
-  const runId = state.runId;
-
-  for (const fxx of fxxList) {
-    const key = `${fxx}_${param}`;
-    if (state.preloadedImages[key]) continue;
-    const img = new Image();
-    img.src = overlayUrl(runId, param, fxx);
-    state.preloadedImages[key] = img;
-  }
-}
-
-function preloadSatelliteImages() {
-  state.satFrames.forEach((frame, idx) => {
-    if (!frame?.png_path) return;
-    if (state.satPreloadedImages[idx]) return;
-    const url = `${BASE}/rendered/${String(frame.png_path).replace(/^\//, '')}`;
-    const img = new Image();
-    img.src = url;
-    state.satPreloadedImages[idx] = img;
-  });
-}
-
-function preloadHomeRadarImages() {
-  state.homeRadarFrames.forEach((frame, idx) => {
-    if (!frame) return;
-    if (state.homeRadarPreloadedImages[idx]) return;
-    const cacheToken = encodeURIComponent(frame.generated_at || frame.timestamp || Date.now());
-    const url = `${BASE}/rendered/${frame.png_path}?v=${cacheToken}`;
-    const img = new Image();
-    img.src = url;
-    state.homeRadarPreloadedImages[idx] = img;
-  });
-}
-
-function preloadRadarImages() {
-  state.radarFrames.forEach((frame, idx) => {
-    if (!frame) return;
-    if (state.radarPreloadedImages[idx]) return;
-    const url = `${BASE}/rendered/${frame.png_path}?_=${frame.timestamp || ''}`;
-    const img = new Image();
-    img.src = url;
-    state.radarPreloadedImages[idx] = img;
-  });
 }
 
 // ── Unified frame URL + smart preloading (mirrors mobile.js) ──────────────
@@ -7510,6 +7455,23 @@ async function init() {
   setInterval(refreshModelStatus, 15000);
   
   // Source tab handlers
+  // Keyboard navigation for the data-source tablist (ARIA tabs pattern)
+  const _sourceTablist = document.querySelector('.source-tabs');
+  if (_sourceTablist) {
+    _sourceTablist.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      const tabs = [..._sourceTablist.querySelectorAll('[role="tab"]')];
+      const idx = tabs.indexOf(document.activeElement);
+      if (idx === -1) return;
+      e.preventDefault();
+      const next = e.key === 'ArrowRight'
+        ? tabs[(idx + 1) % tabs.length]
+        : tabs[(idx - 1 + tabs.length) % tabs.length];
+      next.focus();
+      next.click();
+    });
+  }
+
   tabHome.addEventListener('click', () => {
     if (DEBUG_SCRUBBER && typeof window.__wxPushDebugEvent === 'function') window.__wxPushDebugEvent('tabHome click');
     switchDataSource('home');
@@ -7721,7 +7683,6 @@ async function init() {
         const wasPlaying = state.isPlaying;
         pause();
         clearModelLayers();
-        state.preloadedImages = {};
   clearLoadQueue();
         loadAvailability().then(() => {
           updateParamVisibilityForModel(state.model);
