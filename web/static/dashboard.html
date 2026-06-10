@@ -5,33 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WX Pipeline Dashboard</title>
 <link rel="stylesheet" href="/static/css/fonts.css?v=20260413">
+<link rel="stylesheet" href="/static/css/tokens.css?v=20260610a">
 <style>
+/* Base palette comes from tokens.css; dashboard status aliases only. */
 :root {
-  --bg-deep:    #08090e;
-  --bg:         #0e1017;
-  --bg2:        #14161f;
-  --bg3:        #1a1d28;
-  --bg-raised:  #1e2130;
-  --accent:     #7b9fce;
-  --accent-dim: rgba(123, 159, 206, 0.5);
-  --accent-bg:  rgba(123, 159, 206, 0.07);
-  --accent-bright: #a3c4eb;
-  --hot:        #c48a5a;
-  --hot-dim:    rgba(196, 138, 90, 0.12);
-  --green:      #6a9b6a;
-  --green-dim:  rgba(106, 155, 106, 0.15);
-  --yellow:     #e8b84a;
-  --yellow-dim: rgba(232, 184, 74, 0.15);
-  --red:        #d9534f;
-  --red-dim:    rgba(217, 83, 79, 0.15);
-  --text:       #c8cdd6;
-  --text-mid:   #7a8294;
-  --text-dim:   #454b5c;
-  --border:     rgba(255, 255, 255, 0.06);
-  --radius:     4px;
-  --radius-lg:  8px;
-  --font-data:  'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
-  --font-ui:    'Inter', -apple-system, 'Segoe UI', sans-serif;
+  --green:      var(--ok);
+  --green-dim:  rgba(70, 217, 138, 0.15);
+  --yellow:     var(--warn);
+  --yellow-dim: rgba(255, 209, 102, 0.15);
+  --red:        var(--danger);
+  --red-dim:    rgba(255, 77, 109, 0.15);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -121,6 +104,62 @@ h1 {
   transition: transform 0.2s ease;
 }
 .section-header.collapsed .chevron { transform: rotate(-90deg); }
+/* Threshold status banner */
+.status-banner {
+  display: none;
+  margin-bottom: 12px;
+  padding: 9px 14px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(255, 209, 102, 0.4);
+  background: rgba(255, 209, 102, 0.08);
+  color: var(--warn);
+  font-family: var(--font-data);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.status-banner.critical {
+  border-color: rgba(255, 77, 109, 0.45);
+  background: rgba(255, 77, 109, 0.09);
+  color: var(--danger);
+}
+.status-banner.visible { display: block; }
+
+/* Worker-pool lanes */
+.pool-lanes {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.pool-lane {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg2);
+  padding: 8px 10px;
+}
+.pool-lane-name {
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-bright);
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+  display: flex;
+  justify-content: space-between;
+}
+.pool-lane-name .pool-busy { color: var(--hot); }
+.pool-lane-name .pool-idle { color: var(--text-dim); font-weight: 400; }
+.pool-slot {
+  font-family: var(--font-data);
+  font-size: 10px;
+  color: var(--text-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pool-slot.busy { color: var(--text); }
+@media (max-width: 900px) { .pool-lanes { grid-template-columns: repeat(2, 1fr); } }
+
 .section-content.collapsed { display: none; }
 
 /* Radar site cards */
@@ -851,6 +890,8 @@ a {
   </div>
 </div>
 
+<div id="status-banner" class="status-banner"></div>
+
 <!-- System Resources -->
 <div class="grid grid-full">
   <div class="card">
@@ -1060,6 +1101,7 @@ a {
 <div class="grid grid-full">
   <div class="card">
     <div class="card-title">Processes</div>
+    <div id="pool-lanes" class="pool-lanes" style="display:none"></div>
     <table class="worker-table">
       <thead>
         <tr>
@@ -1188,6 +1230,28 @@ function formatRunId(runId) {
   return runId.slice(0,4) + '-' + runId.slice(4,6) + '-' + runId.slice(6,8) + ' ' + runId.slice(8,10) + 'Z';
 }
 
+// Rolling completion history per model: [{t, fxx}] for ETA estimation.
+const _modelRate = {};
+
+function _modelEta(name, completedFxx, totalFxx) {
+  if (!totalFxx || completedFxx >= totalFxx) return null;
+  const now = Date.now();
+  const hist = (_modelRate[name] = _modelRate[name] || []);
+  const last = hist[hist.length - 1];
+  if (!last || last.fxx !== completedFxx) hist.push({ t: now, fxx: completedFxx });
+  // Keep ten minutes of history
+  while (hist.length > 2 && now - hist[0].t > 600000) hist.shift();
+  if (hist.length < 2) return null;
+  const first = hist[0];
+  const dFxx = completedFxx - first.fxx;
+  const dT = now - first.t;
+  if (dFxx <= 0 || dT < 30000) return null;
+  const minLeft = ((totalFxx - completedFxx) / (dFxx / dT)) / 60000;
+  if (!isFinite(minLeft) || minLeft <= 0) return null;
+  if (minLeft < 60) return '~' + Math.max(1, Math.round(minLeft)) + 'm left';
+  return '~' + Math.floor(minLeft / 60) + 'h ' + Math.round(minLeft % 60) + 'm left';
+}
+
 function updateModels(models, totalCpu) {
   for (const m of models) {
     const name = m.name;
@@ -1203,7 +1267,8 @@ function updateModels(models, totalCpu) {
       run.textContent = 'Run: ' + formatRunId(m.current_run);
       const pct = m.total_fxx > 0 ? (m.completed_fxx / m.total_fxx * 100) : 0;
       prog.style.width = pct + '%';
-      progtxt.textContent = 'F' + String(m.max_completed_fxx).padStart(3,'0') + ' / F' + String(m.max_fxx).padStart(3,'0') + ' (' + Math.round(pct) + '%)';
+      const eta = _modelEta(name, m.completed_fxx, m.total_fxx);
+      progtxt.textContent = 'F' + String(m.max_completed_fxx).padStart(3,'0') + ' / F' + String(m.max_fxx).padStart(3,'0') + ' (' + Math.round(pct) + '%' + (eta ? ', ' + eta : '') + ')';
     } else if (m.status === 'complete') {
       badge.className = 'badge badge-complete';
       badge.textContent = 'COMPLETE';
@@ -1437,7 +1502,7 @@ function updateWorkers(processes, scheduler) {
         <td><span class="process-name ${nameClass}">${w.name || 'Process'}</span>${queueBadge}${burstBadge}</td>
         <td class="pid">${w.pid}</td>
         <td><span class="worker-status ${statusClass}"></span>${statusText}</td>
-        <td>${taskText}</td>
+        <td title="${String(taskText).replace(/"/g, '&quot;')}">${taskText}</td>
         <td class="cpu-val">${w.cpu_percent.toFixed(0)}%</td>
         <td class="mem-val">${formatBytes(w.rss)}</td>
         <td>${formatUptime(w.uptime)}</td>
@@ -1690,11 +1755,16 @@ function updateAsosStatus(d) {
   document.getElementById('asos-bar').style.width = pct.toFixed(1) + '%';
 
   if (avgAge != null) {
+    const validDate = new Date(Date.now() - avgAge * 60000);
+    const vh = String(validDate.getUTCHours()).padStart(2, '0');
+    const vm = String(validDate.getUTCMinutes()).padStart(2, '0');
     const h = Math.floor(avgAge / 60);
     const m = Math.round(avgAge % 60);
-    document.getElementById('asos-avgage').textContent = 'avg age ' + (h > 0 ? h + 'h ' : '') + m + 'm';
+    const ago = (h > 0 ? h + 'h ' : '') + m + 'm ago';
+    document.getElementById('asos-avgage').textContent =
+      'obs valid ' + vh + ':' + vm + 'Z (' + ago + ')';
   } else {
-    document.getElementById('asos-avgage').textContent = 'avg age --';
+    document.getElementById('asos-avgage').textContent = 'obs valid --';
   }
 
   if (genAge != null) {
@@ -1714,6 +1784,71 @@ function updateAsosStatus(d) {
   } else {
     badge.className = 'badge badge-old'; badge.textContent = 'OLD';
   }
+}
+
+function updatePoolLanes(pipelineState) {
+  const el = document.getElementById('pool-lanes');
+  if (!el) return;
+  const activity = pipelineState && pipelineState.queue_activity;
+  if (!Array.isArray(activity) || activity.length === 0) {
+    el.style.display = 'none';
+    return;
+  }
+  // Slots look like "A:NAM12KM f57" or "A:-"
+  const lanes = {};
+  for (const slot of activity) {
+    const i = String(slot).indexOf(':');
+    if (i === -1) continue;
+    const lane = slot.slice(0, i);
+    const task = slot.slice(i + 1);
+    (lanes[lane] = lanes[lane] || []).push(task);
+  }
+  let html = '';
+  for (const lane of Object.keys(lanes)) {
+    const slots = lanes[lane];
+    const busy = slots.filter((t) => t && t !== '-').length;
+    const headRight = busy > 0
+      ? `<span class="pool-busy">${busy}/${slots.length} busy</span>`
+      : `<span class="pool-idle">idle</span>`;
+    html += `<div class="pool-lane">
+      <div class="pool-lane-name"><span>POOL ${lane}</span>${headRight}</div>`;
+    for (const t of slots) {
+      const isBusy = t && t !== '-';
+      const label = isBusy ? t : 'idle';
+      html += `<div class="pool-slot ${isBusy ? 'busy' : ''}" title="${label.replace(/"/g, '&quot;')}">${label}</div>`;
+    }
+    html += '</div>';
+  }
+  el.innerHTML = html;
+  el.style.display = 'grid';
+}
+
+function updateStatusBanner(data, asosData) {
+  const el = document.getElementById('status-banner');
+  if (!el) return;
+  const issues = [];
+  let critical = false;
+  const sys = data.system || {};
+  if (sys.disk_percent >= 95) { issues.push(`Disk ${sys.disk_percent.toFixed(0)}% full`); critical = true; }
+  else if (sys.disk_percent >= 85) issues.push(`Disk ${sys.disk_percent.toFixed(0)}% full`);
+  if (sys.mem_percent >= 95) { issues.push(`Memory ${sys.mem_percent.toFixed(0)}%`); critical = true; }
+  else if (sys.mem_percent >= 88) issues.push(`Memory ${sys.mem_percent.toFixed(0)}%`);
+  for (const svc of data.service_summary || []) {
+    if (svc.throttled) issues.push(`${svc.name} service CPU-throttled`);
+  }
+  for (const m of data.models || []) {
+    if (m.status === 'old') issues.push(`${m.name.toUpperCase()} run is stale`);
+  }
+  if (asosData && asosData.avg_age_min != null && asosData.avg_age_min > 75) {
+    issues.push(`ASOS obs avg age ${Math.round(asosData.avg_age_min)}m`);
+  }
+  if (!issues.length) {
+    el.className = 'status-banner';
+    el.textContent = '';
+    return;
+  }
+  el.className = 'status-banner visible' + (critical ? ' critical' : '');
+  el.textContent = '\u26a0 ' + issues.join('  \u00b7  ');
 }
 
 async function refresh() {
@@ -1748,6 +1883,8 @@ async function refresh() {
       if (data.disk) updateDisk(data.disk);
       if (data.log_entries) updateLog(data.log_entries);
       if (data.radar_log_entries) updateRadarLog(data.radar_log_entries);
+      updatePoolLanes(data.pipeline_state);
+      window.__lastDashData = data;
     }
 
     if (satResp.ok) {
@@ -1760,10 +1897,13 @@ async function refresh() {
       updateRadarSites(radarData);
     }
 
+    let asosData = null;
     if (asosResp.ok) {
-      const asosData = await asosResp.json();
+      asosData = await asosResp.json();
       updateAsosStatus(asosData);
     }
+
+    if (window.__lastDashData) updateStatusBanner(window.__lastDashData, asosData);
 
   } catch (e) {
     console.error('Dashboard refresh failed:', e);

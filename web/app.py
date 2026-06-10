@@ -3171,7 +3171,7 @@ def _queue_task_label(task: str | None) -> str:
     if match:
         return f"{match.group(1)} f{int(match.group(2)):02d}"
     compact = re.sub(r"\s+", " ", task).strip()
-    return compact[:28] if len(compact) > 28 else compact
+    return compact[:48] if len(compact) > 48 else compact
 
 
 def _pipeline_queue_snapshot(process_rows: list[dict]) -> dict | None:
