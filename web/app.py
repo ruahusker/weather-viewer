@@ -141,7 +141,21 @@ def _reported_completed_fxx(run_dir: Path, meta: dict) -> list[int]:
     return sorted(completed)
 
 
+# model -> (expires_at, runs list). Incomplete runs change as PNGs land, so
+# the whole model answer gets a short TTL; completed runs are immutable and
+# their (expensive) per-param disk scans are cached permanently below.
+_SCAN_RUNS_TTL = 15.0
+_scan_runs_cache: dict[str, tuple[float, list[dict]]] = {}
+# (model, run_id) -> summary dict for runs that were complete when scanned.
+_complete_run_cache: dict[tuple[str, str], dict] = {}
+_COMPLETE_RUN_CACHE_MAX = 256
+
+
 def _scan_runs(model: str = "hrrr") -> list[dict]:
+    cached = _scan_runs_cache.get(model)
+    if cached is not None and time.time() < cached[0]:
+        return cached[1]
+
     model_dir = RENDERED_DIR / model
     if not model_dir.exists():
         return []
@@ -149,6 +163,12 @@ def _scan_runs(model: str = "hrrr") -> list[dict]:
     for run_dir in sorted(model_dir.iterdir(), reverse=True):
         if not run_dir.is_dir():
             continue
+
+        complete_summary = _complete_run_cache.get((model, run_dir.name))
+        if complete_summary is not None:
+            runs.append(complete_summary)
+            continue
+
         meta_path = run_dir / "run_meta.json"
         if meta_path.exists():
             try:
@@ -159,7 +179,7 @@ def _scan_runs(model: str = "hrrr") -> list[dict]:
                 is_complete = meta.get("is_complete", False) or bool(
                     forecast_hours and set(completed_fxx) >= forecast_hours
                 )
-                runs.append({
+                summary = {
                     "run_id": run_dir.name,
                     "model": model,
                     "init_time": meta.get("init_time"),
@@ -167,7 +187,11 @@ def _scan_runs(model: str = "hrrr") -> list[dict]:
                     "completed_fxx": completed_fxx,
                     "forecast_hours": list(forecast_hours),
                     "parameters": parameters,
-                })
+                }
+                runs.append(summary)
+                if is_complete:
+                    _complete_run_cache[(model, run_dir.name)] = summary
+                    _prune_cache(_complete_run_cache, _COMPLETE_RUN_CACHE_MAX)
             except Exception:
                 runs.append({
                     "run_id": run_dir.name,
@@ -178,6 +202,7 @@ def _scan_runs(model: str = "hrrr") -> list[dict]:
                     "forecast_hours": [],
                     "parameters": [],
                 })
+    _scan_runs_cache[model] = (time.time() + _SCAN_RUNS_TTL, runs)
     return runs
 
 
@@ -238,6 +263,14 @@ async def get_bounds(model: str, run_id: str):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# (model, run_id) -> (expires_at, payload). Runs marked complete get a long
+# expiry (their PNG set no longer changes); active runs a short one.
+_AVAILABLE_TTL_ACTIVE = 10.0
+_AVAILABLE_TTL_COMPLETE = 3600.0
+_available_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+_AVAILABLE_CACHE_MAX = 256
+
+
 @app.get("/api/available/{model}/{run_id}")
 async def get_available(model: str, run_id: str):
     """Scan disk for rendered overlay PNGs per parameter.
@@ -245,6 +278,11 @@ async def get_available(model: str, run_id: str):
     Returns {param_name: [fxx_int, ...], ...}
     For subhourly params: {param_name: [fxx_str, ...], ...} where fxx_str can be '01', '01_15min', etc.
     """
+    cache_key = (model, run_id)
+    cached = _available_cache.get(cache_key)
+    if cached is not None and time.time() < cached[0]:
+        return JSONResponse(cached[1])
+
     run_dir = RENDERED_DIR / model / run_id
     result = {}
     if run_dir.exists():
@@ -269,6 +307,17 @@ async def get_available(model: str, run_id: str):
                 
                 if frames:
                     result[param_dir.name] = sorted(frames)
+
+    is_complete = False
+    try:
+        meta_path = run_dir / "run_meta.json"
+        if meta_path.exists():
+            is_complete = bool(json.loads(meta_path.read_text()).get("is_complete", False))
+    except Exception:
+        pass
+    ttl = _AVAILABLE_TTL_COMPLETE if is_complete else _AVAILABLE_TTL_ACTIVE
+    _available_cache[cache_key] = (time.time() + ttl, result)
+    _prune_cache(_available_cache, _AVAILABLE_CACHE_MAX)
     return JSONResponse(result)
 
 
@@ -925,6 +974,12 @@ _SOUNDING_LEVEL_FIELDS = {
 }
 
 
+# Computed sounding responses are small; cache them so repeat probes of the
+# same point (scrub back/forth, re-open modal) skip the npz decompression.
+_sounding_response_cache: dict[tuple, dict] = {}
+_SOUNDING_RESPONSE_CACHE_MAX = 256
+
+
 @app.get("/api/sounding/{model}/{run_id}/{fxx}")
 async def get_sounding(
     model: str,
@@ -942,6 +997,20 @@ async def get_sounding(
         source = "cache"
         levels = []
         surface = {}
+
+        sounding_cache_key = None
+        active_path = native_cache_path or cache_path
+        if active_path is not None:
+            try:
+                sounding_cache_key = (
+                    model, run_id, fxx, round(lat, 3), round(lon, 3),
+                    str(active_path), active_path.stat().st_mtime_ns,
+                )
+            except OSError:
+                sounding_cache_key = None
+            cached_response = _sounding_response_cache.get(sounding_cache_key)
+            if cached_response is not None:
+                return JSONResponse(cached_response)
 
         if native_cache_path or cache_path:
             import numpy as np
@@ -1066,7 +1135,7 @@ async def get_sounding(
 
         profile_quality = "full" if len(levels) >= 5 else ("partial" if len(levels) >= 3 else "sparse")
         diagnostics = _build_sharppy_diagnostics(run_id, fxx, levels, surface)
-        return JSONResponse({
+        payload = {
             "model": model,
             "run_id": run_id,
             "fxx": fxx,
@@ -1079,7 +1148,11 @@ async def get_sounding(
             "note": cache_note,
             "source": source,
             "diagnostics": diagnostics,
-        })
+        }
+        if sounding_cache_key is not None:
+            _sounding_response_cache[sounding_cache_key] = payload
+            _prune_cache(_sounding_response_cache, _SOUNDING_RESPONSE_CACHE_MAX)
+        return JSONResponse(payload)
     except HTTPException:
         raise
     except Exception as exc:
@@ -1261,6 +1334,28 @@ def _build_cmap_lookup(cmap_name: str, vmin: float, vmax: float, parameter: str 
 
     return lookup
 
+def _lookup_arrays(lookup: dict) -> tuple:
+    """Return (rgb (N,3) int array, values (N,) float array) for a LUT dict."""
+    import numpy as np
+
+    keys = np.array(list(lookup.keys()), dtype=np.int32)
+    vals = np.array(list(lookup.values()), dtype=np.float64)
+    return keys, vals
+
+
+def _nearest_lut_value(rgb: tuple, keys, vals, max_dist: float = 15000.0) -> float | None:
+    """Vectorized nearest-color search in RGB space."""
+    import numpy as np
+
+    if keys.size == 0:
+        return None
+    dist = ((keys - np.asarray(rgb, dtype=np.int32)) ** 2).sum(axis=1)
+    idx = int(np.argmin(dist))
+    # Threshold is lenient because the renderer applies saturation/contrast
+    # enhancements that shift colors from raw colormap output.
+    return float(vals[idx]) if float(dist[idx]) < max_dist else None
+
+
 def _rgb_to_value(rgb: tuple, cmap_name: str, vmin: float, vmax: float, parameter: str = None) -> float | None:
     """Convert an RGB color to a data value using the colormap."""
     # Skip transparent/black/white pixels (likely no data or background)
@@ -1270,24 +1365,24 @@ def _rgb_to_value(rgb: tuple, cmap_name: str, vmin: float, vmax: float, paramete
 
     scale = COLOR_SCALES.get(parameter or "")
     if scale and scale.get("bounds") and scale.get("colors"):
-        lookup = {}
-        bounds = list(scale["bounds"])
-        for i, color in enumerate(scale["colors"]):
-            if not isinstance(color, str) or not color.startswith("#") or len(color) != 7:
-                continue
-            key = (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
-            upper_idx = min(i + 1, len(bounds) - 1)
-            lookup[key] = (float(bounds[i]) + float(bounds[upper_idx])) / 2.0
+        cache_key = f"discrete_{parameter}"
+        cached = _CMAP_CACHE.get(cache_key)
+        if cached is None:
+            lookup = {}
+            bounds = list(scale["bounds"])
+            for i, color in enumerate(scale["colors"]):
+                if not isinstance(color, str) or not color.startswith("#") or len(color) != 7:
+                    continue
+                key = (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
+                upper_idx = min(i + 1, len(bounds) - 1)
+                lookup[key] = (float(bounds[i]) + float(bounds[upper_idx])) / 2.0
+            cached = (lookup, *_lookup_arrays(lookup))
+            _CMAP_CACHE[cache_key] = cached
+            _prune_cache(_CMAP_CACHE, _CMAP_CACHE_MAX)
+        lookup, keys, vals = cached
         if rgb in lookup:
             return lookup[rgb]
-        best_dist = float("inf")
-        best_val = None
-        for (lr, lg, lb), val in lookup.items():
-            dist = (r - lr) ** 2 + (g - lg) ** 2 + (b - lb) ** 2
-            if dist < best_dist:
-                best_dist = dist
-                best_val = val
-        return best_val if best_dist < 15000 else None
+        return _nearest_lut_value(rgb, keys, vals)
 
     # Check if it's a grayscale pixel (for contour-only params that might have been colormapped)
     gray_tol = 5
@@ -1297,30 +1392,19 @@ def _rgb_to_value(rgb: tuple, cmap_name: str, vmin: float, vmax: float, paramete
 
     # Include parameter in cache key to handle reflectivity separately (no color enhance)
     cache_key = f"{cmap_name}_{vmin}_{vmax}_{parameter or 'default'}"
-    if cache_key not in _CMAP_CACHE:
-        _CMAP_CACHE[cache_key] = _build_cmap_lookup(cmap_name, vmin, vmax, parameter)
+    cached = _CMAP_CACHE.get(cache_key)
+    if cached is None or not isinstance(cached, tuple):
+        lookup = _build_cmap_lookup(cmap_name, vmin, vmax, parameter)
+        cached = (lookup, *_lookup_arrays(lookup))
+        _CMAP_CACHE[cache_key] = cached
         _prune_cache(_CMAP_CACHE, _CMAP_CACHE_MAX)
-    lookup = _CMAP_CACHE[cache_key]
-    
+    lookup, keys, vals = cached
+
     # Exact match
     if rgb in lookup:
         return lookup[rgb]
-    
-    # Find closest color (simple Euclidean distance in RGB space)
-    best_dist = float('inf')
-    best_val = None
-    for (lr, lg, lb), val in lookup.items():
-        dist = (r - lr) ** 2 + (g - lg) ** 2 + (b - lb) ** 2
-        if dist < best_dist:
-            best_dist = dist
-            best_val = val
-    
-    # Much more lenient threshold because the renderer applies saturation/contrast
-    # enhancements to colors that change them from raw colormap output.
-    # Max possible distance is 255^2 * 3 = ~195k
-    if best_dist < 15000:  # ~6% of max distance, accounts for color enhancement
-        return best_val
-    return None
+
+    return _nearest_lut_value(rgb, keys, vals)
 
 @app.get("/api/value-png/{model}/{run_id}/{fxx}/{parameter}")
 async def get_value_from_png(
@@ -1566,10 +1650,13 @@ async def get_legend(parameter: str):
             color_lookup.append([rgb[0], rgb[1], rgb[2], round(value, 2)])
     elif cmap_name and not cmap_name.startswith("nws_") and not cmap_name.startswith("radar_"):
         cache_key = f"{cmap_name}_{vmin}_{vmax}_{parameter or 'default'}"
-        if cache_key not in _CMAP_CACHE:
-            _CMAP_CACHE[cache_key] = _build_cmap_lookup(cmap_name, vmin, vmax, parameter)
+        cached = _CMAP_CACHE.get(cache_key)
+        if cached is None or not isinstance(cached, tuple):
+            lookup = _build_cmap_lookup(cmap_name, vmin, vmax, parameter)
+            cached = (lookup, *_lookup_arrays(lookup))
+            _CMAP_CACHE[cache_key] = cached
             _prune_cache(_CMAP_CACHE, _CMAP_CACHE_MAX)
-        lookup = _CMAP_CACHE[cache_key]
+        lookup = cached[0]
         # Convert to list of [r, g, b, value] for JSON
         color_lookup = [[r, g, b, round(v, 2)] for (r, g, b), v in lookup.items()]
 
@@ -4169,7 +4256,19 @@ async def get_latest_satellite(
     try:
         meta_dir = SATELLITE_RENDERED_DIR / "meta"
 
-        meta = _load_freshest_satellite_meta(meta_dir, satellite, product, region=region)
+        # Fast path: newest entry in the scheduler-maintained manifest.
+        meta = None
+        manifest_frames = _satellite_manifest_frames(
+            satellite, product, region,
+            cutoff_dt=datetime.now(timezone.utc) - timedelta(hours=_satellite_loop_hours(product)),
+        )
+        if manifest_frames:
+            frame = manifest_frames[-1]
+            meta = {"satellite": satellite, "product": product, **frame}
+            if frame.get("region") is None:
+                meta.pop("region", None)
+        if meta is None:
+            meta = _load_freshest_satellite_meta(meta_dir, satellite, product, region=region)
         if meta is None:
             # Try to get bounds file
             bounds_file = SATELLITE_RENDERED_DIR / f"{satellite}_{product}_bounds.json"
@@ -4201,6 +4300,34 @@ async def get_latest_satellite(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+def _satellite_manifest_frames(
+    satellite: str,
+    product: str,
+    region: str | None,
+    cutoff_dt: datetime,
+) -> list[dict] | None:
+    """Read frames from the scheduler-maintained per-product manifest.
+
+    Returns None when the manifest doesn't exist (caller falls back to the
+    legacy meta-directory glob).
+    """
+    name = f"{satellite}_{product}" if region is None else f"{satellite}_{product}_{region}"
+    manifest_path = SATELLITE_RENDERED_DIR / "manifests" / f"{name}.json"
+    try:
+        payload = json.loads(manifest_path.read_text())
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+    frames = []
+    for frame in payload.get("frames", []):
+        ts = _parse_satellite_meta_timestamp(frame.get("timestamp"))
+        if ts is not None and ts < cutoff_dt:
+            continue
+        frames.append(frame)
+    return frames
+
+
 @app.get("/api/satellite/frames/{satellite}/{product}")
 async def get_satellite_frames(
     satellite: str,
@@ -4209,9 +4336,14 @@ async def get_satellite_frames(
 ):
     """Get all available satellite frames sorted oldest→newest."""
     meta_dir = SATELLITE_RENDERED_DIR / "meta"
-    frames = []
     loop_hours = _satellite_loop_hours(product)
     cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=loop_hours)
+
+    manifest_frames = _satellite_manifest_frames(satellite, product, region, cutoff_dt)
+    if manifest_frames is not None:
+        return JSONResponse(manifest_frames)
+
+    frames = []
     pattern = f"{satellite}_{product}_*.json" if region is None else f"{satellite}_{product}_*_{region}.json"
     for f in meta_dir.glob(pattern):
         if f.stem.endswith("_latest"):
