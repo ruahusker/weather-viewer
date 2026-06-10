@@ -8,6 +8,7 @@
  * bindings shrink until only window.WX remains.
  */
 
+import { state } from './core/state.js';
 import { BASE, apiFetch, assetPath } from './core/api.js';
 import {
   centralTime, parseIsoDate, formatMinutesAgo, formatMinutesLeft, escapeHtml,
@@ -15,6 +16,7 @@ import {
 import { storageGet, storageSet, storageRemove } from './core/storage.js';
 
 window.WX = {
+  state,
   BASE,
   apiFetch,
   assetPath,
@@ -30,6 +32,7 @@ window.WX = {
 
 // Legacy global bindings for app.js (transition only).
 Object.assign(window, {
+  state,
   BASE,
   apiFetch,
   assetPath,
