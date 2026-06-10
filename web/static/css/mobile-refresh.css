@@ -50,17 +50,17 @@ html, body {
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 .top-btn:active {
-  background: rgba(78, 209, 161, 0.18);
-  border-color: rgba(78, 209, 161, 0.45);
+  background: rgba(82, 215, 255, 0.18);
+  border-color: rgba(82, 215, 255, 0.45);
   color: var(--accent-bright);
 }
 .top-btn.on {
-  background: rgba(78, 209, 161, 0.18);
-  border-color: rgba(78, 209, 161, 0.55);
+  background: rgba(82, 215, 255, 0.18);
+  border-color: rgba(82, 215, 255, 0.55);
   color: var(--accent-bright);
   box-shadow:
-    0 0 0 1px rgba(78, 209, 161, 0.25),
-    0 8px 20px -10px rgba(78, 209, 161, 0.6);
+    0 0 0 1px rgba(82, 215, 255, 0.25),
+    0 8px 20px -10px rgba(82, 215, 255, 0.6);
 }
 
 /* Selector pill */
@@ -107,7 +107,7 @@ html, body {
   color: #06080f;
   border: none;
   box-shadow:
-    0 8px 18px -6px rgba(78, 209, 161, 0.55),
+    0 8px 18px -6px rgba(82, 215, 255, 0.55),
     inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 .scrub-btn:active {
@@ -124,7 +124,7 @@ html, body {
   margin-top: -7.5px;
   background: #f3faff;
   border: 2px solid #06080f;
-  box-shadow: 0 0 0 2px rgba(78, 209, 161, 0.4);
+  box-shadow: 0 0 0 2px rgba(82, 215, 255, 0.4);
 }
 .speed-btn {
   padding: 5px 12px;
@@ -139,7 +139,7 @@ html, body {
   background: var(--accent-grad);
   color: #06080f;
   border-color: transparent;
-  box-shadow: 0 6px 14px -6px rgba(78, 209, 161, 0.6);
+  box-shadow: 0 6px 14px -6px rgba(82, 215, 255, 0.6);
 }
 .scrub-valid-time { color: var(--text); font-weight: 600; }
 .scrub-frame-count { color: var(--text-mid); }
@@ -172,7 +172,7 @@ html, body {
   height: 2px;
   border-radius: 0 0 3px 3px;
   background: var(--accent-grad);
-  box-shadow: 0 4px 12px rgba(78, 209, 161, 0.55);
+  box-shadow: 0 4px 12px rgba(82, 215, 255, 0.55);
 }
 .tab.active svg { transform: scale(1.1); }
 
@@ -207,10 +207,10 @@ html, body {
   font-weight: 600;
 }
 .chip.active {
-  background: linear-gradient(180deg, rgba(78, 209, 161, 0.22), rgba(78, 209, 161, 0.08));
-  border-color: rgba(78, 209, 161, 0.55);
+  background: linear-gradient(180deg, rgba(82, 215, 255, 0.22), rgba(82, 215, 255, 0.08));
+  border-color: rgba(82, 215, 255, 0.55);
   color: var(--accent-bright);
-  box-shadow: 0 6px 16px -8px rgba(78, 209, 161, 0.55);
+  box-shadow: 0 6px 16px -8px rgba(82, 215, 255, 0.55);
 }
 
 /* Sheet items */
@@ -224,8 +224,8 @@ html, body {
 }
 .sheet-item:active { background: rgba(255, 255, 255, 0.07); }
 .sheet-item.active {
-  background: linear-gradient(90deg, rgba(78, 209, 161, 0.2), rgba(78, 209, 161, 0.05));
-  border-color: rgba(78, 209, 161, 0.5);
+  background: linear-gradient(90deg, rgba(82, 215, 255, 0.2), rgba(82, 215, 255, 0.05));
+  border-color: rgba(82, 215, 255, 0.5);
   color: var(--accent-bright);
 }
 
@@ -237,8 +237,8 @@ html, body {
 
 .sheet-note {
   background:
-    linear-gradient(180deg, rgba(78, 209, 161, 0.12), rgba(78, 209, 161, 0.04));
-  border: 1px solid rgba(78, 209, 161, 0.25);
+    linear-gradient(180deg, rgba(82, 215, 255, 0.12), rgba(82, 215, 255, 0.04));
+  border: 1px solid rgba(82, 215, 255, 0.25);
   border-radius: 14px;
 }
 .sheet-note-title { color: var(--accent-bright); letter-spacing: 0.1em; }
@@ -250,7 +250,7 @@ html, body {
 }
 .sheet-search:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(78, 209, 161, 0.16);
+  box-shadow: 0 0 0 3px rgba(82, 215, 255, 0.16);
 }
 
 /* ── Share action sheet ─────────────────────────────────── */
@@ -269,7 +269,7 @@ html, body {
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 .share-option:last-child { border-bottom: none; }
-.share-option:active { background: rgba(78, 209, 161, 0.1); }
+.share-option:active { background: rgba(82, 215, 255, 0.1); }
 .share-option.cancel {
   margin-top: 6px;
   background: rgba(20, 25, 40, 0.96);
@@ -295,9 +295,9 @@ html, body {
   border-color: #fff;
 }
 @keyframes loc-pulse {
-  0%  { box-shadow: 0 0 0 0 rgba(78, 209, 161, 0.6), 0 1px 4px rgba(0,0,0,0.45); }
-  70% { box-shadow: 0 0 0 10px rgba(78, 209, 161, 0), 0 1px 4px rgba(0,0,0,0.45); }
-  100%{ box-shadow: 0 0 0 0 rgba(78, 209, 161, 0), 0 1px 4px rgba(0,0,0,0.45); }
+  0%  { box-shadow: 0 0 0 0 rgba(82, 215, 255, 0.6), 0 1px 4px rgba(0,0,0,0.45); }
+  70% { box-shadow: 0 0 0 10px rgba(82, 215, 255, 0), 0 1px 4px rgba(0,0,0,0.45); }
+  100%{ box-shadow: 0 0 0 0 rgba(82, 215, 255, 0), 0 1px 4px rgba(0,0,0,0.45); }
 }
 
 /* =========================================================
