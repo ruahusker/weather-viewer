@@ -1,23 +1,11 @@
-/* WX Viewer — Mobile PWA Styles */
+/* WX Viewer — Mobile PWA Styles
+   Color/spacing tokens come from tokens.css (loaded first);
+   this block only holds mobile-specific overrides. */
 :root {
-  --bg-deep:    #08090e;
-  --bg:         #0e1017;
-  --bg2:        #14161f;
-  --bg3:        #1a1d28;
-  --bg-raised:  #1e2130;
-  --accent:     #7b9fce;
-  --accent-dim: rgba(123,159,206,0.45);
-  --accent-bg:  rgba(123,159,206,0.10);
-  --text:       #c8cdd6;
-  --text-mid:   #7a8294;
-  --text-dim:   #454b5c;
-  --border:     rgba(255,255,255,0.08);
-  --radius:     8px;
-  --radius-lg:  14px;
+  --radius:     10px;
+  --radius-lg:  18px;
   --tab-h:      32px;
   --scrub-h:    68px;
-  --safe-b:     env(safe-area-inset-bottom, 0px);
-  --safe-t:     env(safe-area-inset-top, 0px);
   --font-data:  'SF Mono','Menlo','Consolas',monospace;
   --font-ui:    -apple-system,'SF Pro Text','Helvetica Neue',sans-serif;
 }

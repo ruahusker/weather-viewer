@@ -45,9 +45,10 @@
     }
   </script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20260528c" />
+  <link rel="stylesheet" href="/static/css/tokens.css?v=20260610a" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260610a" />
   <link rel="stylesheet" href="/static/css/surface-obs.css?v=20260329d" />
-  <link rel="stylesheet" href="/static/css/theme-refresh.css?v=20260528b" />
+  <link rel="stylesheet" href="/static/css/theme-refresh.css?v=20260610a" />
   <style>
     .site-footer {
       display: flex;
@@ -2002,8 +2003,11 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-  <script src="/static/js/surface-obs.js?v=20260330c"></script>
-  <script src="/static/js/app.js?v=20260610a"></script>
-  <script src="/static/js/storm3d-modal.js?v=20260327b"></script>
+  <!-- main.js (module) must execute before the deferred legacy scripts:
+       module scripts and deferred scripts run in document order. -->
+  <script type="module" src="/static/js/main.js?v=20260610a"></script>
+  <script defer src="/static/js/surface-obs.js?v=20260330c"></script>
+  <script defer src="/static/js/app.js?v=20260610a"></script>
+  <script defer src="/static/js/storm3d-modal.js?v=20260327b"></script>
 </body>
 </html>

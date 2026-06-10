@@ -7,36 +7,8 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
-:root {
-  --bg-deep:    #08090e;
-  --bg:         #0e1017;
-  --bg2:        #14161f;
-  --bg3:        #1a1d28;
-  --bg-raised:  #1e2130;
-
-  --accent:     #7b9fce;
-  --accent-dim: rgba(123, 159, 206, 0.5);
-  --accent-bg:  rgba(123, 159, 206, 0.07);
-  --accent-bright: #a3c4eb;
-
-  --hot:        #c48a5a;
-  --hot-dim:    rgba(196, 138, 90, 0.12);
-
-  --text:       #c8cdd6;
-  --text-mid:   #7a8294;
-  --text-dim:   #454b5c;
-
-  --border:     rgba(255, 255, 255, 0.06);
-  --border-subtle: rgba(255, 255, 255, 0.03);
-
-  --topbar-h:   48px;
-  --sidebar-w:  302px;
-  --radius:     4px;
-  --radius-lg:  8px;
-
-  --font-data:  'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
-  --font-ui:    'Inter', -apple-system, 'Segoe UI', sans-serif;
-}
+/* Design tokens (colors, type, spacing, radii, shadows, layout,
+   z-index) live in tokens.css, which loads before this sheet. */
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 

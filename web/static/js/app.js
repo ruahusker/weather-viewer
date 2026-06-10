@@ -3,18 +3,7 @@
  */
 'use strict';
 
-const BASE = (() => {
-  try {
-    const script = document.currentScript?.src || '';
-    const m = script.match(/https?:\/\/[^/]+(\/[^?#]+?)\/static\//);
-    if (m) {
-      return m[1].replace(/\/+$/, '');
-    }
-    const path = window.location.pathname || '';
-    if (path.startsWith('/wx/')) return '/wx';
-    return '';
-  } catch { return ''; }
-})();
+// BASE comes from js/core/api.js (exposed on window by js/main.js).
 
 const URL_PARAMS = new URLSearchParams(window.location.search || '');
 const CAPTURE_MODE = URL_PARAMS.get('capture') === '1';
@@ -2226,48 +2215,15 @@ function refreshSoundingForCurrentPoint() {
 // ---------------------------------------------------------------------------
 // Time helpers
 // ---------------------------------------------------------------------------
-function centralTime(date) {
-  return new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
-    hour: 'numeric', minute: '2-digit', hour12: true,
-  }).format(date);
-}
+// centralTime/parseIsoDate/formatMinutesAgo/formatMinutesLeft come
 
-function parseIsoDate(value) {
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
+// from js/core/format.js via js/main.js.
 
-function formatMinutesAgo(value) {
-  const date = parseIsoDate(value);
-  if (!date) return '--';
-  const minutes = Math.max(0, Math.round((Date.now() - date.getTime()) / 60000));
-  return minutes < 1 ? '<1m ago' : `${minutes}m ago`;
-}
 
-function formatMinutesLeft(minutes) {
-  if (minutes === null || minutes === undefined) return '--';
-  if (minutes < 60) return `${minutes}m left`;
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  return mins ? `${hours}h ${mins}m left` : `${hours}h left`;
-}
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+// escapeHtml comes from js/core/format.js via js/main.js.
 
-function assetPath(path) {
-  if (!path) return '';
-  if (/^https?:\/\//.test(path)) return path;
-  return `${BASE}/${String(path).replace(/^\//, '')}`;
-}
+// assetPath comes from js/core/api.js via js/main.js.
 
 function attachImageFallbacks(scope = document) {
   scope.querySelectorAll('img').forEach((img) => {
@@ -2574,11 +2530,7 @@ async function copySoundingScreenshot() {
 // ---------------------------------------------------------------------------
 // API
 // ---------------------------------------------------------------------------
-async function apiFetch(path) {
-  const resp = await fetch(path);
-  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
-  return resp.json();
-}
+// apiFetch comes from js/core/api.js via js/main.js.
 
 const VIEW_STORAGE_KEY = 'wx_viewer_active_view';
 

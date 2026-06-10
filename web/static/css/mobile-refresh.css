@@ -3,28 +3,8 @@
    Layered on top of mobile.css to match the desktop refresh.
    ========================================================= */
 
-:root {
-  --bg-deep:    #070907;
-  --bg:         #0c100d;
-  --bg2:        #141a16;
-  --bg3:        #1c241f;
-  --bg-raised:  #222b25;
-
-  --accent:     #4ed1a1;
-  --accent-bright: #a8f4d7;
-  --accent-dim: rgba(78, 209, 161, 0.45);
-  --accent-bg:  rgba(78, 209, 161, 0.12);
-  --accent-2:   #f2b84b;
-  --accent-grad: linear-gradient(135deg, #4ed1a1 0%, #f2b84b 100%);
-
-  --text:       #d6dbe6;
-  --text-mid:   #8691a8;
-  --text-dim:   #566258;
-
-  --border:     rgba(255, 255, 255, 0.08);
-  --radius:     10px;
-  --radius-lg:  18px;
-}
+/* Palette unified with desktop via tokens.css (loaded first);
+   mobile radii live in mobile.css. */
 
 html, body {
   background: var(--bg-deep);
@@ -324,26 +304,9 @@ html, body {
    Broadcast Polish — mobile PWA final layer
    ========================================================= */
 
+/* Broadcast palette comes from tokens.css; keep only the
+   larger touch radii here. */
 :root {
-  --bg-deep:    #050916;
-  --bg:         #07111f;
-  --bg2:        #0d1a2d;
-  --bg3:        #14243a;
-  --bg-raised:  #1c304d;
-
-  --accent:     #52d7ff;
-  --accent-bright: #9beaff;
-  --accent-dim: rgba(82, 215, 255, 0.45);
-  --accent-bg:  rgba(82, 215, 255, 0.12);
-  --accent-2:   #8d7dff;
-  --accent-3:   #ffcc66;
-  --accent-grad: linear-gradient(135deg, #52d7ff 0%, #8d7dff 55%, #ffcc66 100%);
-
-  --text:       #dde8f6;
-  --text-mid:   #9baec5;
-  --text-dim:   #63758c;
-
-  --border:     rgba(226, 242, 255, 0.12);
   --radius:     11px;
   --radius-lg:  20px;
 }

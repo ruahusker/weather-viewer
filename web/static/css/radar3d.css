@@ -1,13 +1,12 @@
+/* Base palette comes from tokens.css; page-local aliases only. */
 :root {
   color-scheme: dark;
-  --bg: #050916;
+  --bg: var(--bg-deep);
   --panel: rgba(13, 26, 45, 0.86);
   --panel-border: rgba(226, 242, 255, 0.12);
-  --text: #dde8f6;
-  --text-dim: #9baec5;
-  --accent: #52d7ff;
-  --accent-warm: #ffcc66;
-  --accent-violet: #8d7dff;
+  --text-dim: var(--text-mid);
+  --accent-warm: var(--accent-3);
+  --accent-violet: var(--accent-2);
 }
 
 * {
