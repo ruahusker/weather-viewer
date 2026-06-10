@@ -2243,12 +2243,60 @@ _COMPLETED_RUNS_TTL = 60.0
 _RECENT_COMPLETIONS_TTL = 60.0
 _GRIB_CACHE_HIT_TTL = 300.0
 _GRIB_CACHE_MISS_TTL = 30.0
+_GRIB_DIR_SNAPSHOT_TTL = 10.0
+_GRIB_DIR_SNAPSHOT_MAX = 64
 
 _run_png_index_cache: dict[str, tuple[float, dict[str, set[str]]]] = {}
 _fxx_complete_cache: dict[tuple[str, int], tuple[float, bool]] = {}
 _completed_runs_cache: dict[str, tuple[float, set[str]]] = {}
 _recent_completed_cache: tuple[float, set[str]] | None = None
 _grib_lookup_cache: dict[tuple[str, str, int], tuple[float, Path | None]] = {}
+# Per-cache-dir scandir snapshot: canonical GRIB name -> best on-disk path.
+_grib_dir_snapshot_cache: dict[str, tuple[float, dict[str, Path]]] = {}
+
+
+def _grib_dir_index(cache_dir: Path) -> dict[str, Path]:
+    """One scandir pass over a GRIB cache dir, mapping canonical filename to
+    the best matching file (direct download preferred, else largest subset).
+
+    Replaces per-fxx glob+stat scans; refreshed every _GRIB_DIR_SNAPSHOT_TTL.
+    """
+    key = str(cache_dir)
+    now = time.time()
+    cached = _grib_dir_snapshot_cache.get(key)
+    if cached is not None and (now - cached[0]) < _GRIB_DIR_SNAPSHOT_TTL:
+        return cached[1]
+
+    best: dict[str, tuple[tuple, Path]] = {}
+    try:
+        with os.scandir(cache_dir) as entries:
+            for entry in entries:
+                name = entry.name
+                try:
+                    if not entry.is_file():
+                        continue
+                    st = entry.stat()
+                except OSError:
+                    continue
+                if st.st_size <= 0:
+                    continue
+                if name.startswith("subset_") and "__" in name:
+                    canonical = name.split("__", 1)[1]
+                    rank = (0, st.st_size, st.st_mtime)
+                else:
+                    canonical = name
+                    rank = (1, st.st_size, st.st_mtime)  # direct beats subsets
+                current = best.get(canonical)
+                if current is None or rank > current[0]:
+                    best[canonical] = (rank, Path(entry.path))
+    except OSError:
+        pass
+
+    index = {canonical: path for canonical, (_, path) in best.items()}
+    _grib_dir_snapshot_cache[key] = (now, index)
+    while len(_grib_dir_snapshot_cache) > _GRIB_DIR_SNAPSHOT_MAX:
+        _grib_dir_snapshot_cache.pop(next(iter(_grib_dir_snapshot_cache)))
+    return index
 
 
 def _invalidate_run_completion_cache(model_name: str, run_id: str | None = None, fxx: int | None = None):
@@ -2919,7 +2967,9 @@ def _find_cached_grib(model: ModelConfig, run_dt: datetime, fxx: int) -> Path | 
     now = time.time()
     cached = _grib_lookup_cache.get(cache_key)
     if cached is not None and cached[0] > now:
-        return cached[1]
+        # Re-resolve if cleanup deleted the cached path mid-TTL.
+        if cached[1] is None or cached[1].exists():
+            return cached[1]
 
     cache_dir = GRIB_CACHE_DIR / model.herbie_model / run_dt.strftime("%Y%m%d")
     if not cache_dir.exists():
@@ -2951,23 +3001,12 @@ def _find_cached_grib(model: ModelConfig, run_dt: datetime, fxx: int) -> Path | 
     else:
         return None
 
+    dir_index = _grib_dir_index(cache_dir)
     for suffix in suffixes:
-        direct = cache_dir / suffix
-        if direct.exists() and direct.is_file() and direct.stat().st_size > 0:
-            _grib_lookup_cache[cache_key] = (now + _GRIB_CACHE_HIT_TTL, direct)
-            return direct
-
-        matches = [
-            match for match in cache_dir.glob(f"subset_*__{suffix}")
-            if match.is_file() and match.stat().st_size > 0
-        ]
-        matches.sort(
-            key=lambda match: (match.stat().st_size, match.stat().st_mtime),
-            reverse=True,
-        )
-        if matches:
-            _grib_lookup_cache[cache_key] = (now + _GRIB_CACHE_HIT_TTL, matches[0])
-            return matches[0]
+        match = dir_index.get(suffix)
+        if match is not None:
+            _grib_lookup_cache[cache_key] = (now + _GRIB_CACHE_HIT_TTL, match)
+            return match
 
     _grib_lookup_cache[cache_key] = (now + _GRIB_CACHE_MISS_TTL, None)
     return None

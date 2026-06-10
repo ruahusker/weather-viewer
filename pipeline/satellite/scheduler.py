@@ -46,7 +46,13 @@ from pipeline.config import (
     COLOR_SCALES, DATA_DIR, SATELLITE_CACHE_DIR, SATELLITE_RENDERED_DIR, SATELLITE_CONFIG
 )
 from .goes_downloader import GOESDownloader
-from .satellite_renderer import SatelliteRenderer, clear_satellite_caches
+from .satellite_renderer import (
+    SatelliteRenderer,
+    clear_satellite_caches,
+    set_frame_observer,
+    write_frame_meta,
+)
+from .frame_index import FrameIndex
 
 logger = logging.getLogger(__name__)
 SATELLITE_STATUS_FILE = DATA_DIR / "satellite_worker_status.json"
@@ -170,6 +176,18 @@ class SatelliteScheduler:
         self.goes_cmip_downloaders = {}
         self.l2_downloaders = {}
         self.sat_renderer = SatelliteRenderer(output_dir=SATELLITE_RENDERED_DIR)
+        # png_path in frame metas is relative to RENDERED_DIR (data/rendered/).
+        self.frame_index = FrameIndex(
+            meta_dir=self.sat_renderer.meta_dir,
+            manifest_dir=SATELLITE_RENDERED_DIR / "manifests",
+            data_root=SATELLITE_RENDERED_DIR.parent,
+        )
+        self.frame_index.rebuild()
+        self.frame_index.flush_manifests()
+        set_frame_observer(self.frame_index.record)
+        self._index_rebuild_interval = max(
+            300, int(render_cfg.get("frame_index_rebuild_seconds", 1800))
+        )
         self._status_lock = threading.Lock()
         self._latest_meta_refresh_times: dict[tuple[str, str, str | None], float] = {}
         self._latest_meta_refresh_ttl = max(
@@ -303,7 +321,9 @@ class SatelliteScheduler:
         rss_mb = psutil.Process().memory_info().rss / (1024 * 1024)
         if rss_mb < SATELLITE_CACHE_CLEAR_RSS_MB:
             return
-        clear_satellite_caches()
+        # Regrid entries are disk-backed (npz spill), so clearing them costs a
+        # ~10ms reload instead of a multi-second KDTree rebuild.
+        clear_satellite_caches(include_regrid=True)
         self._prune_latest_meta_cache()
         _release_memory()
         logger.info(
@@ -573,36 +593,13 @@ class SatelliteScheduler:
     ):
         """Remove stale PNG/meta files outside the active loop window."""
         try:
-            meta_dir = self.sat_renderer.meta_dir
-            meta_entries: list[tuple[float, float, Path, Path | None]] = []
-            now_ts = time.time()
-            max_age_seconds = max(self.loop_hours, 1) * 3600
-            for meta_file in meta_dir.glob(f"{source_id}_{product_type}_*.json"):
-                if meta_file.stem.endswith("_latest"):
-                    continue
-                try:
-                    meta = json.loads(meta_file.read_text())
-                except Exception:
-                    continue
-                if meta.get("product") != product_type:
-                    continue
-                if meta.get("region") != region:
-                    continue
-                png_file = None
-                png_rel = meta.get("png_path")
-                if png_rel:
-                    png_file = DATA_DIR.parent / str(png_rel)
-                frame_dt = _parse_satellite_timestamp(str(meta.get("timestamp", "")))
-                frame_ts = frame_dt.timestamp() if frame_dt is not None else meta_file.stat().st_mtime
-                meta_entries.append((frame_ts, meta_file.stat().st_mtime, meta_file, png_file))
-
-            meta_entries.sort(key=lambda item: item[0], reverse=True)
-            for idx, (frame_ts, _, meta_file, png_file) in enumerate(meta_entries):
-                if idx < keep and (now_ts - frame_ts) <= max_age_seconds:
-                    continue
-                meta_file.unlink(missing_ok=True)
-                if png_file is not None:
-                    png_file.unlink(missing_ok=True)
+            self.frame_index.prune(
+                source_id,
+                product_type,
+                region,
+                keep=keep,
+                max_age_seconds=max(self.loop_hours, 1) * 3600,
+            )
         except Exception as e:
             logger.warning(f"Cleanup error: {e}")
 
@@ -614,7 +611,7 @@ class SatelliteScheduler:
         *,
         force: bool = False,
     ):
-        """Refresh the product latest JSON from the newest exact-product frame on disk."""
+        """Refresh the product latest JSON from the newest exact-product frame."""
         try:
             cache_key = (source_id, product_type, region)
             now = time.time()
@@ -623,31 +620,24 @@ class SatelliteScheduler:
                 if (now - last_refresh) < self._latest_meta_refresh_ttl:
                     return
 
-            meta_candidates = []
-            pattern = f"{source_id}_{product_type}_*.json" if region is None else f"{source_id}_{product_type}_*_{region}.json"
-            for meta_file in self.sat_renderer.meta_dir.glob(pattern):
-                if meta_file.stem.endswith("_latest"):
-                    continue
-                try:
-                    meta = json.loads(meta_file.read_text())
-                except Exception:
-                    continue
-                if meta.get("product") != product_type:
-                    continue
-                if meta.get("region") != region:
-                    continue
-                dt = _parse_satellite_timestamp(str(meta.get("timestamp", "")))
-                if dt is None:
-                    continue
-                meta_candidates.append((dt, meta))
-
-            if not meta_candidates:
+            meta_name = self.frame_index.latest_meta_name(source_id, product_type, region)
+            if meta_name is None:
+                return
+            meta_path = self.sat_renderer.meta_dir / meta_name
+            try:
+                meta = json.loads(meta_path.read_text())
+            except Exception:
+                # Frame was deleted (or corrupted) behind the index's back.
+                self.frame_index.remove(source_id, product_type, region, meta_name)
                 return
 
-            meta_candidates.sort(key=lambda item: item[0], reverse=True)
-            latest_name = f"{source_id}_{product_type}_latest.json" if region is None else f"{source_id}_{product_type}_{region}_latest.json"
+            latest_name = (
+                f"{source_id}_{product_type}_latest.json"
+                if region is None
+                else f"{source_id}_{product_type}_{region}_latest.json"
+            )
             latest_meta_path = self.sat_renderer.meta_dir / latest_name
-            latest_meta_path.write_text(json.dumps(meta_candidates[0][1], indent=2))
+            latest_meta_path.write_text(json.dumps(meta, indent=2))
             self._latest_meta_refresh_times[cache_key] = now
             self._prune_latest_meta_cache()
         except Exception as e:
@@ -682,6 +672,9 @@ class SatelliteScheduler:
                 self._refresh_latest_meta(
                     source_id, product_type, region=region_name, force=True,
                 )
+
+        # Keep web-facing frame manifests current (cheap: dirty keys only).
+        self.frame_index.flush_manifests()
 
     def cleanup_old_data(self):
         """Prune old rendered and cached satellite files."""
@@ -724,6 +717,9 @@ class SatelliteScheduler:
                     except OSError:
                         continue
 
+            # The sweep above deletes frames directly; resync the index.
+            self.frame_index.rebuild()
+            self.frame_index.flush_manifests()
             logger.info("Satellite cleanup complete")
         except Exception as exc:
             logger.warning(f"Satellite cleanup error: {exc}")
@@ -795,7 +791,7 @@ class SatelliteScheduler:
                 # Create timestamped meta filename
                 meta_filename = filename.replace('.png', '.json')
                 meta_path = self.sat_renderer.meta_dir / meta_filename
-                meta_path.write_text(json.dumps(meta, indent=2))
+                write_frame_meta(meta_path, meta)
                 
                 # Also update the "latest" meta file
                 latest_meta_path = self.sat_renderer.meta_dir / f"goes19_{product_type}_latest.json"
@@ -1605,7 +1601,7 @@ class SatelliteScheduler:
                                     "region": region_name,
                                 }
                                 regional_meta_path = self.sat_renderer.meta_dir / regional_filename.replace(".png", ".json")
-                                regional_meta_path.write_text(json.dumps(regional_meta, indent=2))
+                                write_frame_meta(regional_meta_path, regional_meta)
                                 did_render = True
 
                     if bounds:
@@ -1619,7 +1615,7 @@ class SatelliteScheduler:
                             "composite": True,
                         }
                         meta_path = self.sat_renderer.meta_dir / ts_filename.replace(".png", ".json")
-                        meta_path.write_text(json.dumps(meta, indent=2))
+                        write_frame_meta(meta_path, meta)
                     if did_render:
                         rendered_count += 1
                         self._refresh_latest_meta(output_source_id, product_type)
@@ -1756,7 +1752,7 @@ class SatelliteScheduler:
                             "composite": True,
                         }
                         meta_path = self.sat_renderer.meta_dir / ts_filename.replace(".png", ".json")
-                        meta_path.write_text(json.dumps(meta, indent=2))
+                        write_frame_meta(meta_path, meta)
                         rendered_count += 1
                         self._refresh_latest_meta(output_source_id, product_type)
                 except Exception as e:
@@ -2279,6 +2275,15 @@ class SatelliteScheduler:
             self.cleanup_old_data()
             self._last_cleanup = time.time()
 
+        # Self-heal: external cleanup (cron) can delete frames behind the
+        # index's back; resync with a full rescan on a slow cadence.
+        if (time.time() - self.frame_index.last_rebuild) >= self._index_rebuild_interval:
+            try:
+                self.frame_index.rebuild()
+            except Exception as exc:
+                logger.warning("Frame index rebuild failed: %s", exc)
+
+        self.frame_index.flush_manifests()
         _release_memory()
         self._trim_memory_if_needed("cycle")
         self.save_state()

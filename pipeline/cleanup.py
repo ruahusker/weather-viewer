@@ -1,5 +1,6 @@
 """Disk retention enforcement for rendered images and GRIB cache."""
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -106,11 +107,19 @@ def _cleanup_grib_cache_files(model_grib: Path, keep_runs: int) -> tuple[int, in
 
     return bytes_freed, deleted_files, deleted_dirs
 
-# Memory pressure thresholds
-MEMORY_PRESSURE_THRESHOLD_PCT = 85.0  # Trigger warning + cache clearing at 85% (tighter with more workers)
-MEMORY_LOWPRI_SHED_THRESHOLD_PCT = 90.0  # Start shedding lowpri workers one at a time
-MEMORY_LOWPRI_KILL_ALL_PCT = 96.0  # Kill all lowpri workers immediately
-MEMORY_CRITICAL_THRESHOLD_PCT = 98.0  # Trigger aggressive cleanup / shutdown at 98%
+# Memory pressure thresholds (percent of total RAM, env-overridable so they
+# can be tuned on a deployed box without a code change)
+def _env_pct(name: str, default: float) -> float:
+    try:
+        return min(100.0, max(50.0, float(os.getenv(name, default))))
+    except (TypeError, ValueError):
+        return default
+
+
+MEMORY_PRESSURE_THRESHOLD_PCT = _env_pct("MEMORY_PRESSURE_THRESHOLD_PCT", 85.0)  # warning + cache clearing
+MEMORY_LOWPRI_SHED_THRESHOLD_PCT = _env_pct("MEMORY_LOWPRI_SHED_THRESHOLD_PCT", 90.0)  # shed lowpri workers one at a time
+MEMORY_LOWPRI_KILL_ALL_PCT = _env_pct("MEMORY_LOWPRI_KILL_ALL_PCT", 96.0)  # kill all lowpri workers
+MEMORY_CRITICAL_THRESHOLD_PCT = _env_pct("MEMORY_CRITICAL_THRESHOLD_PCT", 98.0)  # aggressive cleanup / shutdown
 
 
 def _sorted_run_dirs(base: Path) -> list[Path]:

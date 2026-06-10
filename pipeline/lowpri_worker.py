@@ -32,7 +32,7 @@ PENDING_DIR = QUEUE_DIR / "pending"
 CLAIMED_DIR = QUEUE_DIR / "claimed"
 RESULTS_DIR = QUEUE_DIR / "results"
 
-POLL_INTERVAL = 2  # seconds between queue checks
+POLL_INTERVAL = max(1, int(os.getenv("LOWPRI_POLL_INTERVAL", "5")))  # seconds between queue checks
 SUPERVISOR_POLL_INTERVAL = 5  # seconds between child health checks
 PENDING_SCAN_LIMIT = 32
 WORKER_TARGET_FILE = QUEUE_DIR / "worker_target"
@@ -219,8 +219,21 @@ def _requeue_stale_claimed_jobs(max_age_seconds: float = 0) -> None:
             logger.warning("Failed to re-queue stale claimed job %s: %s", claimed_file.name, exc)
 
 
+_last_empty_queue_mtime: int | None = None
+
+
 def _oldest_pending_job() -> Path | None:
     """Find the oldest pending job without sorting the full queue every poll."""
+    global _last_empty_queue_mtime
+    # Fast path: if the queue dir hasn't changed since a scan that found
+    # nothing, skip the directory listing entirely (one stat per poll).
+    try:
+        dir_mtime = os.stat(PENDING_DIR).st_mtime_ns
+    except FileNotFoundError:
+        return None
+    if _last_empty_queue_mtime is not None and dir_mtime == _last_empty_queue_mtime:
+        return None
+
     oldest: Path | None = None
     oldest_name = ""
     scanned = 0
@@ -237,6 +250,7 @@ def _oldest_pending_job() -> Path | None:
                     break
     except FileNotFoundError:
         return None
+    _last_empty_queue_mtime = dir_mtime if oldest is None else None
     return oldest
 
 

@@ -4,9 +4,12 @@ Renders GOES satellite imagery as transparent PNG overlays that can be
 displayed on the Leaflet map, similar to weather model overlays.
 """
 
+import hashlib
 import json
 import logging
+import os
 import re
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,9 +42,17 @@ _regrid_index_cache: dict = {}
 _sat_usa_mask_cache: dict = {}
 
 _TRANSFORMER_CACHE_MAX = 10
-_REGRID_INDEX_CACHE_MAX = 15
+# Must comfortably exceed the number of live (product shape x region) combos,
+# otherwise FIFO eviction forces multi-second KDTree rebuilds every cycle.
+_REGRID_INDEX_CACHE_MAX = max(16, int(os.getenv("SATELLITE_REGRID_CACHE_MAX", "48")))
 _USA_MASK_CACHE_MAX = 5
 _EDGE_RAMP_CACHE_MAX = 8
+
+# Regrid indices are also persisted here so a cache miss (eviction, memory
+# trim, restart) costs a ~10ms disk load instead of a 2-3s KDTree rebuild.
+_REGRID_DISK_CACHE_DIR = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "regrid_cache" / "satellite"
+)
 
 
 def _prune_cache(mapping: dict, max_entries: int) -> None:
@@ -52,12 +63,75 @@ def _prune_cache(mapping: dict, max_entries: int) -> None:
             break
 
 
-def clear_satellite_caches():
-    """Release all satellite renderer caches to free memory."""
+def _regrid_disk_path(regrid_key: tuple) -> Path:
+    digest = hashlib.sha1(repr(regrid_key).encode()).hexdigest()[:20]
+    return _REGRID_DISK_CACHE_DIR / f"{digest}.npz"
+
+
+def _regrid_cache_get(regrid_key: tuple):
+    """Look up regrid indices: memory first, then the on-disk spill cache."""
+    cached = _regrid_index_cache.get(regrid_key)
+    if cached is not None:
+        return cached
+    path = _regrid_disk_path(regrid_key)
+    try:
+        if path.exists():
+            with np.load(path) as npz:
+                cached = (npz["flat_indices"], npz["valid_matches"])
+            _regrid_index_cache[regrid_key] = cached
+            _prune_cache(_regrid_index_cache, _REGRID_INDEX_CACHE_MAX)
+            return cached
+    except Exception:
+        path.unlink(missing_ok=True)
+    return None
+
+
+def _regrid_cache_put(regrid_key: tuple, flat_indices, valid_matches) -> None:
+    _regrid_index_cache[regrid_key] = (flat_indices, valid_matches)
+    _prune_cache(_regrid_index_cache, _REGRID_INDEX_CACHE_MAX)
+    path = _regrid_disk_path(regrid_key)
+    try:
+        _REGRID_DISK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.stem}.{os.getpid()}.{threading.get_ident()}.npz")
+        np.savez(tmp, flat_indices=flat_indices, valid_matches=valid_matches)
+        tmp.replace(path)
+    except Exception as exc:
+        logger.debug("Regrid disk cache write failed: %s", exc)
+
+
+def clear_satellite_caches(include_regrid: bool = False):
+    """Release satellite renderer caches to free memory.
+
+    The regrid index cache is kept by default: it is small relative to the
+    image buffers that actually drive RSS, and losing it forces expensive
+    KDTree rebuilds (entries are disk-backed, but routine memory trims should
+    not flush hot entries).
+    """
     _transformer_cache.clear()
-    _regrid_index_cache.clear()
     _sat_usa_mask_cache.clear()
     _edge_ramp_cache.clear()
+    if include_regrid:
+        _regrid_index_cache.clear()
+
+
+# Optional observer wired up by the scheduler's FrameIndex so every frame
+# meta write keeps the in-memory index (and manifests) current.
+_frame_observer = None
+
+
+def set_frame_observer(callback) -> None:
+    global _frame_observer
+    _frame_observer = callback
+
+
+def write_frame_meta(meta_path: Path, meta: dict) -> None:
+    """Write a frame meta JSON and notify the frame index, if registered."""
+    meta_path.write_text(json.dumps(meta, indent=2))
+    if _frame_observer is not None:
+        try:
+            _frame_observer(meta_path, meta)
+        except Exception:
+            logger.debug("Frame observer failed for %s", meta_path.name, exc_info=True)
 
 logger = logging.getLogger(__name__)
 
@@ -548,7 +622,7 @@ class SatelliteRenderer:
             }
             
             meta_path = self.meta_dir / filename.replace('.png', '.json')
-            meta_path.write_text(json.dumps(meta, indent=2))
+            write_frame_meta(meta_path, meta)
             
             return RenderedSatellite(
                 png_path=png_path,
@@ -616,7 +690,7 @@ class SatelliteRenderer:
             }
             
             meta_path = self.meta_dir / filename.replace('.png', '.json')
-            meta_path.write_text(json.dumps(meta, indent=2))
+            write_frame_meta(meta_path, meta)
             
             return RenderedSatellite(
                 png_path=png_path,
@@ -685,7 +759,7 @@ class SatelliteRenderer:
             }
             
             meta_path = self.meta_dir / filename.replace('.png', '.json')
-            meta_path.write_text(json.dumps(meta, indent=2))
+            write_frame_meta(meta_path, meta)
             
             return RenderedSatellite(
                 png_path=png_path,
@@ -930,7 +1004,7 @@ class SatelliteRenderer:
             round(render_bounds["north"], 3),
         )
 
-        if regrid_key not in _regrid_index_cache:
+        if _regrid_cache_get(regrid_key) is None:
             # --- One-time setup per product/satellite ---
             # Build/reuse pyproj Transformer
             tx_key = (sat_lon_r, int(sat_height), sweep)
@@ -977,17 +1051,14 @@ class SatelliteRenderer:
             )
             valid_matches = distances < np.inf
 
-            _regrid_index_cache[regrid_key] = (
-                flat_indices.astype(np.int32), valid_matches
-            )
-            _prune_cache(_regrid_index_cache, _REGRID_INDEX_CACHE_MAX)
+            _regrid_cache_put(regrid_key, flat_indices.astype(np.int32), valid_matches)
             logger.info(
                 "Built satellite regrid cache shape=%s → %dx%d (%d/%d valid)",
                 data.shape, target_w, target_h,
                 int(valid_matches.sum()), target_w * target_h,
             )
 
-        flat_indices, valid_matches = _regrid_index_cache[regrid_key]
+        flat_indices, valid_matches = _regrid_cache_get(regrid_key)
 
         # Apply cached mapping — just an array index op, ~1ms
         data_flat = data.ravel().astype(np.float32)
@@ -1363,7 +1434,7 @@ class SatelliteRenderer:
         sat_lon_r = round(sat_lon, 1)
         regrid_key = (data.shape, sat_lon_r, target_w, target_h)
 
-        if regrid_key not in _regrid_index_cache:
+        if _regrid_cache_get(regrid_key) is None:
             tx_key = (sat_lon_r, int(sat_height), sweep)
             if tx_key not in _transformer_cache:
                 proj_string = (
@@ -1404,17 +1475,14 @@ class SatelliteRenderer:
             )
             valid_matches = distances < np.inf
 
-            _regrid_index_cache[regrid_key] = (
-                flat_indices.astype(np.int32), valid_matches
-            )
-            _prune_cache(_regrid_index_cache, _REGRID_INDEX_CACHE_MAX)
+            _regrid_cache_put(regrid_key, flat_indices.astype(np.int32), valid_matches)
             logger.info(
                 "Built composite regrid cache shape=%s sat=%.1f → %dx%d (%d valid)",
                 data.shape, sat_lon, target_w, target_h,
                 int(valid_matches.sum()),
             )
 
-        flat_indices, valid_matches = _regrid_index_cache[regrid_key]
+        flat_indices, valid_matches = _regrid_cache_get(regrid_key)
 
         data_flat = data.ravel().astype(np.float32)
         data_reprojected = np.full(target_h * target_w, np.nan, dtype=np.float32)
@@ -1635,7 +1703,7 @@ class SatelliteRenderer:
         if region_name:
             meta["region"] = region_name
         meta_path = self.meta_dir / filename.replace(".png", ".json")
-        meta_path.write_text(json.dumps(meta, indent=2))
+        write_frame_meta(meta_path, meta)
 
         return RenderedSatellite(
             png_path=png_path,
@@ -1687,7 +1755,7 @@ class SatelliteRenderer:
             "png_path": str(png_path.relative_to(self.output_dir.parent)),
         }
         meta_path = self.meta_dir / filename.replace(".png", ".json")
-        meta_path.write_text(json.dumps(meta, indent=2))
+        write_frame_meta(meta_path, meta)
 
         return RenderedSatellite(
             png_path=png_path,
@@ -1737,7 +1805,7 @@ class SatelliteRenderer:
             "png_path": str(png_path.relative_to(self.output_dir.parent)),
         }
         meta_path = self.meta_dir / filename.replace(".png", ".json")
-        meta_path.write_text(json.dumps(meta, indent=2))
+        write_frame_meta(meta_path, meta)
 
         return RenderedSatellite(
             png_path=png_path,
@@ -1784,7 +1852,7 @@ class SatelliteRenderer:
             "png_path": str(png_path.relative_to(self.output_dir.parent)),
         }
         meta_path = self.meta_dir / filename.replace(".png", ".json")
-        meta_path.write_text(json.dumps(meta, indent=2))
+        write_frame_meta(meta_path, meta)
 
         return RenderedSatellite(
             png_path=png_path,
@@ -2073,7 +2141,7 @@ class SatelliteRenderer:
         if region_name:
             meta["region"] = region_name
         meta_path = self.meta_dir / filename.replace(".png", ".json")
-        meta_path.write_text(json.dumps(meta, indent=2))
+        write_frame_meta(meta_path, meta)
         
         return RenderedSatellite(
             png_path=png_path,
@@ -2199,7 +2267,7 @@ class SatelliteRenderer:
             "png_path": str(png_path.relative_to(self.output_dir.parent)),
         }
         meta_path = self.meta_dir / filename.replace(".png", ".json")
-        meta_path.write_text(json.dumps(meta, indent=2))
+        write_frame_meta(meta_path, meta)
         
         return RenderedSatellite(
             png_path=png_path,
@@ -2269,7 +2337,7 @@ class SatelliteRenderer:
             round(render_bounds["north"], 3),
         )
 
-        if regrid_key not in _regrid_index_cache:
+        if _regrid_cache_get(regrid_key) is None:
             tx_key = ("ll_to_geos", sat_lon_r, int(sat_height), sweep)
             if tx_key not in _transformer_cache:
                 proj_string = (
@@ -2334,17 +2402,14 @@ class SatelliteRenderer:
             row_idx, valid_y = nearest_axis_indices(y_rad, y_target)
             valid_matches = valid_x & valid_y
             flat_indices = (row_idx.astype(np.int64) * data.shape[1] + col_idx.astype(np.int64))
-            _regrid_index_cache[regrid_key] = (
-                flat_indices.astype(np.int32), valid_matches
-            )
-            _prune_cache(_regrid_index_cache, _REGRID_INDEX_CACHE_MAX)
+            _regrid_cache_put(regrid_key, flat_indices.astype(np.int32), valid_matches)
             logger.info(
                 "Built CMIP regrid cache shape=%s → %dx%d (%d/%d valid)",
                 data.shape, target_w, target_h,
                 int(valid_matches.sum()), target_w * target_h,
             )
 
-        flat_indices, valid_matches = _regrid_index_cache[regrid_key]
+        flat_indices, valid_matches = _regrid_cache_get(regrid_key)
 
         data_flat = data.ravel().astype(np.float32)
         finite_mask = np.isfinite(data_flat)
@@ -2452,7 +2517,7 @@ class SatelliteRenderer:
             "png_path": str(png_path.relative_to(self.output_dir.parent)),
         }
         meta_path = self.meta_dir / filename.replace(".png", ".json")
-        meta_path.write_text(json.dumps(meta, indent=2))
+        write_frame_meta(meta_path, meta)
 
         return RenderedSatellite(
             png_path=png_path,
