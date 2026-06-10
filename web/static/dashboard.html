@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WX Pipeline Dashboard</title>
-<link rel="stylesheet" href="css/fonts.css?v=20260413">
+<link rel="stylesheet" href="/static/css/fonts.css?v=20260413">
 <style>
 :root {
   --bg-deep:    #08090e;
@@ -645,14 +645,204 @@ h1 {
   color: var(--hot);
   font-weight: 600;
 }
+
+/* Broadcast polish monitor layer */
+:root {
+  --bg-deep:    #050916;
+  --bg:         #07111f;
+  --bg2:        #0d1a2d;
+  --bg3:        #14243a;
+  --bg-raised:  #1c304d;
+  --card-bg:    rgba(13, 26, 45, 0.78);
+  --accent:     #52d7ff;
+  --accent-dim: rgba(82, 215, 255, 0.42);
+  --accent-bg:  rgba(82, 215, 255, 0.12);
+  --accent-bright: #9beaff;
+  --accent-2:   #8d7dff;
+  --hot:        #ffb257;
+  --hot-dim:    rgba(255, 178, 87, 0.16);
+  --green:      #46d98a;
+  --green-dim:  rgba(70, 217, 138, 0.16);
+  --yellow:     #ffd166;
+  --yellow-dim: rgba(255, 209, 102, 0.15);
+  --red:        #ff4d6d;
+  --red-dim:    rgba(255, 77, 109, 0.15);
+  --text:       #dde8f6;
+  --text-mid:   #9baec5;
+  --text-dim:   #63758c;
+  --border:     rgba(226, 242, 255, 0.11);
+  --radius:     8px;
+  --radius-lg:  8px;
+}
+
+html,
+body {
+  background:
+    radial-gradient(1200px 720px at 12% -18%, rgba(82, 215, 255, 0.13), transparent 60%),
+    radial-gradient(980px 720px at 92% -10%, rgba(141, 125, 255, 0.12), transparent 58%),
+    var(--bg-deep);
+}
+
+body {
+  padding: 22px;
+}
+
+.header {
+  align-items: center;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(14, 31, 54, 0.86), rgba(5, 10, 21, 0.78));
+  box-shadow: 0 18px 54px -36px rgba(82, 215, 255, 0.55);
+}
+
+.dashboard-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dashboard-mark {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  box-shadow:
+    0 0 0 1px rgba(82, 215, 255, 0.34),
+    0 12px 26px -18px rgba(82, 215, 255, 0.9);
+}
+
+h1 {
+  color: #f7fbff;
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.header-right {
+  color: var(--text-mid);
+}
+
+.header-right .live {
+  color: var(--red);
+  font-weight: 700;
+}
+
+.card,
+.radar-site-card,
+.svc-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.018)),
+    var(--card-bg);
+  border-color: var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 14px 38px -30px rgba(0, 0, 0, 0.78);
+}
+
+.card-title,
+.section-header {
+  color: var(--accent-bright);
+  letter-spacing: 0.08em;
+}
+
+.section-header {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(7, 17, 31, 0.68);
+}
+
+.grid,
+.radar-grid {
+  gap: 8px;
+}
+
+.gauge-ring {
+  width: 82px;
+  height: 82px;
+}
+
+.gauge-ring svg {
+  width: 82px;
+  height: 82px;
+}
+
+.gauge-ring .bg {
+  stroke: rgba(255, 255, 255, 0.08);
+}
+
+.gauge-value {
+  color: #f7fbff;
+}
+
+.progress-bar,
+.sat-src-bar,
+.svc-bar-wrap {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.progress-fill,
+.sat-src-fill,
+#asos-bar {
+  box-shadow: 0 0 14px currentColor;
+}
+
+.badge {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.badge-complete,
+.queue-badge {
+  color: var(--accent-bright);
+  background: rgba(82, 215, 255, 0.12);
+  border-color: rgba(82, 215, 255, 0.28);
+}
+
+.worker-table th,
+.worker-table td {
+  border-bottom-color: var(--border);
+}
+
+.worker-table tr:hover td {
+  background: rgba(82, 215, 255, 0.055);
+}
+
+.log-box {
+  background: rgba(5, 10, 21, 0.78);
+  border-color: var(--border);
+}
+
+.footer-note a,
+a {
+  color: var(--accent-bright);
+}
+
+@media (max-width: 720px) {
+  body {
+    padding: 12px;
+  }
+
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .header-right {
+    line-height: 1.6;
+  }
+}
 </style>
 </head>
 <body>
 
 <div class="header">
-  <div>
-    <h1>Pipeline Dashboard</h1>
-    <span id="scheduler-subtitle" style="font-size:11px; color:var(--text-dim)">Unified Scheduler</span>
+  <div class="dashboard-title">
+    <img class="dashboard-mark" src="/static/brand/wx-mark.svg" alt="" />
+    <div>
+      <h1>WX Viewer Monitor</h1>
+      <span id="scheduler-subtitle" style="font-size:11px; color:var(--text-dim)">Unified Scheduler</span>
+    </div>
   </div>
   <div class="header-right">
     <span class="live">LIVE</span> &middot; <span id="zulu-clock" style="color:var(--accent-bright);font-weight:500;">--:--:--Z</span>

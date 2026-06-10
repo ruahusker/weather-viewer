@@ -1,21 +1,21 @@
 {
   "name": "WxViewer",
   "short_name": "WxViewer",
-  "start_url": "/wx/mobile.html",
-  "scope": "/wx/",
+  "start_url": "/static/mobile.html",
+  "scope": "/static/",
   "display": "standalone",
-  "background_color": "#08090e",
-  "theme_color": "#08090e",
+  "background_color": "#050916",
+  "theme_color": "#050916",
   "orientation": "portrait-primary",
   "icons": [
     {
-      "src": "/wx/static/icons/icon-192.png",
+      "src": "/static/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/wx/static/icons/icon-512.png",
+      "src": "/static/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"

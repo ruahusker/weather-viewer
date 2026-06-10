@@ -80,6 +80,27 @@ def _register_custom_cmaps():
         except Exception:
             _cm.register_cmap(name="wx_wind_aloft", cmap=_wx_wind_aloft)
 
+        # wx_omega: 700 mb vertical velocity.
+        # Negative omega/ascent uses cool purple-blue shades; near-zero is
+        # intentionally light; positive omega/subsidence uses warm amber-brown.
+        _wx_omega = _LSC.from_list("wx_omega", [
+            (0.000, "#4c1d95"),  # -8 Pa/s strong ascent
+            (0.155, "#7e22ce"),  # -6
+            (0.308, "#2563eb"),  # -4
+            (0.462, "#38bdf8"),  # -2
+            (0.577, "#e0f2fe"),  # -0.5
+            (0.615, "#f8fafc"),  #  0
+            (0.692, "#fef3c7"),  #  1
+            (0.769, "#f59e0b"),  #  2
+            (0.923, "#c2410c"),  #  4
+            (1.000, "#7c2d12"),  #  5 Pa/s strong subsidence
+        ])
+        try:
+            import matplotlib
+            matplotlib.colormaps.register(_wx_omega, name="wx_omega", force=True)
+        except Exception:
+            _cm.register_cmap(name="wx_omega", cmap=_wx_omega)
+
         # wx_cloud: grayscale cloud cover ramp that avoids pure white so
         # dense cloud fields remain readable on the basemap.
         _wx_cloud = _LSC.from_list("wx_cloud", [
@@ -512,8 +533,8 @@ COLOR_SCALES = {
     # -- Pressure Levels --
     "temp_850mb": {
         "cmap": "RdBu_r",
-        "vmin": -40,
-        "vmax": 110,
+        "vmin": -25,
+        "vmax": 95,
         "unit": "\u00b0F",
         "label": "850mb Temperature (\u00b0F)",
         "contours": {
@@ -528,8 +549,8 @@ COLOR_SCALES = {
     },
     "temp_700mb": {
         "cmap": "RdBu_r",
-        "vmin": -60,
-        "vmax": 50,
+        "vmin": -45,
+        "vmax": 40,
         "unit": "\u00b0F",
         "label": "700mb Temperature (\u00b0F)",
         "contours": {
@@ -543,7 +564,7 @@ COLOR_SCALES = {
     "temp_500mb": {
         "cmap": "RdBu_r",
         "vmin": -70,
-        "vmax": 30,
+        "vmax": 5,
         "unit": "\u00b0F",
         "label": "500mb Temperature (\u00b0F)",
         "contours": {
@@ -590,26 +611,43 @@ COLOR_SCALES = {
         "label": "850mb RH (%)",
     },
     "omega_700mb": {
-        "cmap": "BrBG_r",
+        "cmap": "wx_omega",
         "vmin": -8,
         "vmax": 5,
         "unit": "Pa/s",
         "label": "700mb Vert Vel (Pa/s, neg=ascent)",
+        "boost": False,
         "contours": [
             {
                 "levels": [-8, -6, -4, -2],
-                "colors": "#f8fafc",
-                "linewidths": 0.48,
-                "alpha": 0.58,
+                "colors": "#22d3ee",
+                "linewidths": 0.92,
+                "alpha": 0.96,
                 "smooth_sigma": 0.9,
+                "halo_width": 2.6,
+                "halo_alpha": 0.72,
+                "stroke_width": 1.55,
+                "stroke_alpha": 0.82,
+                "labels": True,
+                "label_levels": [-6, -4, -2],
+                "label_fontsize": 5.6,
+                "label_fmt": "%g",
             },
             {
                 "levels": [2, 4],
-                "colors": "#422006",
-                "linewidths": 0.36,
-                "alpha": 0.35,
+                "colors": "#7c2d12",
+                "linewidths": 0.86,
+                "alpha": 0.92,
                 "linestyles": "dashed",
                 "smooth_sigma": 0.9,
+                "halo_width": 2.5,
+                "halo_alpha": 0.70,
+                "stroke_width": 1.45,
+                "stroke_alpha": 0.78,
+                "labels": True,
+                "label_levels": [2, 4],
+                "label_fontsize": 5.5,
+                "label_fmt": "%g",
             },
         ],
     },
@@ -1203,8 +1241,8 @@ COLOR_SCALES = {
     # -- Additional pressure levels --
     "temp_925mb": {
         "cmap": "RdYlBu_r",
-        "vmin": -20,
-        "vmax": 110,
+        "vmin": -10,
+        "vmax": 100,
         "unit": "\u00b0F",
         "label": "925mb Temperature (\u00b0F)",
         "contours": {
@@ -1219,8 +1257,8 @@ COLOR_SCALES = {
     },
     "temp_250mb": {
         "cmap": "RdBu_r",
-        "vmin": -90,
-        "vmax": 10,
+        "vmin": -85,
+        "vmax": -20,
         "unit": "\u00b0F",
         "label": "250mb Temperature (\u00b0F)",
     },
@@ -1520,8 +1558,8 @@ COLOR_SCALES = {
     },
     "temp_200mb": {
         "cmap": "RdBu_r",
-        "vmin": -80,
-        "vmax": 0,
+        "vmin": -85,
+        "vmax": -25,
         "unit": "°F",
         "label": "200mb Temperature (°F)",
     },
@@ -2164,8 +2202,8 @@ COLOR_SCALES.setdefault("wind_gust_10m", {
 })
 COLOR_SCALES.setdefault("temp_300mb", {
     "cmap": "RdBu_r",
-    "vmin": -90,
-    "vmax": 10,
+    "vmin": -85,
+    "vmax": -15,
     "unit": "°F",
     "label": "300mb Temperature (°F)",
 })
@@ -2459,6 +2497,42 @@ SATELLITE_CONFIG = {
             "update_freq_minutes": 5,
             "loop_hours": 24,
             "loop_frames_per_band": 288,
+        },
+        "cloud_top": {
+            "name": "Cloud Top IR (Band 11)",
+            "product_code": "ABI-L1b-Rad",
+            "band": 11,
+            "domain": "C",
+            "description": "8.4µm cloud-top and low-level moisture detail",
+            "update_freq_minutes": 5,
+            "loop_hours": 24,
+        },
+        "ozone": {
+            "name": "Ozone IR (Band 12)",
+            "product_code": "ABI-L1b-Rad",
+            "band": 12,
+            "domain": "C",
+            "description": "9.6µm ozone-sensitive upper-level signal",
+            "update_freq_minutes": 5,
+            "loop_hours": 24,
+        },
+        "ir_dirty": {
+            "name": "Dirty Longwave IR (Band 15)",
+            "product_code": "ABI-L1b-Rad",
+            "band": 15,
+            "domain": "C",
+            "description": "12.3µm dirty longwave IR for cloud-top and low-level moisture contrast",
+            "update_freq_minutes": 5,
+            "loop_hours": 24,
+        },
+        "co2": {
+            "name": "CO2 Absorption IR (Band 16)",
+            "product_code": "ABI-L1b-Rad",
+            "band": 16,
+            "domain": "C",
+            "description": "13.3µm CO2 absorption band for high cloud and upper-tropospheric structure",
+            "update_freq_minutes": 5,
+            "loop_hours": 24,
         },
         "veggie": {
             "name": "Veggie (Band 3, 1km)",

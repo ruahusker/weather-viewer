@@ -252,10 +252,26 @@ function preloadAllFrames() {
 
 // ── Config ─────────────────────────────────────────────────────
 const MODELS = {
-  hrrr:  { label: 'HRRR', maxFxx: 48 },
-  nam:   { label: 'NAM 3km', maxFxx: 60 },
-  gfs:   { label: 'GFS', maxFxx: 120 },
-  ecmwf: { label: 'ECMWF', maxFxx: 144 },
+  hrrr:   { label: 'HRRR', maxFxx: 48 },
+  nam3km: { label: 'NAM 3km', maxFxx: 60 },
+  rap:    { label: 'RAP', maxFxx: 21 },
+  rrfs:   { label: 'RRFS', maxFxx: 60 },
+  href:   { label: 'HREF', maxFxx: 48 },
+  gfs:    { label: 'GFS', maxFxx: 120 },
+  gefs:   { label: 'GEFS', maxFxx: 240 },
+  ecmwf:  { label: 'ECMWF', maxFxx: 144 },
+  gdps:   { label: 'GDPS', maxFxx: 240 },
+  rtma:   { label: 'RTMA', maxFxx: 0 },
+};
+
+const MODEL_PARAM_ALIASES = {
+  nam3km: ['nam'],
+  nam12km: ['nam'],
+  rap: ['hrrr', 'gfs', 'nam'],
+  rrfs: ['hrrr', 'gfs'],
+  href: ['hrrr', 'gfs'],
+  gefs: ['gfs'],
+  gdps: ['ecmwf', 'gfs'],
 };
 
 const PARAMS = [
@@ -272,7 +288,7 @@ const PARAMS = [
     { id: 'pbl_height', label: 'PBL Height', models: ['hrrr', 'nam'] },
   ]},
   { id: 'precip', group: 'Precipitation', items: [
-    { id: 'reflectivity', label: 'Reflectivity', models: ['gfs', 'hrrr', 'nam'] },
+    { id: 'reflectivity', label: 'Reflectivity', models: ['gfs', 'hrrr', 'nam', 'rrfs'] },
     { id: 'precip', label: 'Precip', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
     { id: 'lightning', label: 'Lightning', models: ['hrrr', 'nam'] },
     { id: 'echo_tops', label: 'Echo Tops', models: ['hrrr', 'nam'] },
@@ -315,10 +331,10 @@ const PARAMS = [
   ]},
   { id: 'winter', group: 'Winter', items: [
     { id: 'visibility', label: 'Visibility', models: ['gfs', 'hrrr', 'nam', 'rtma'] },
-    { id: 'ceil', label: 'Ceiling Height', models: ['hrrr'] },
+    { id: 'ceil', label: 'Ceiling Height', models: ['rrfs'] },
     { id: 'snow_depth', label: 'Snow Depth', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
     { id: 'snowfall', label: 'Snowfall', models: ['ecmwf'] },
-    { id: 'frozen_pct', label: 'Frozen Precip %', models: ['hrrr'] },
+    { id: 'frozen_pct', label: 'Frozen Precip %', models: ['hrrr', 'rrfs'] },
     { id: 'frzlvl', label: 'Freezing Level', models: ['gfs', 'hrrr', 'nam'] },
     { id: 'kuchera_6hr', label: '6hr Kuchera Snow', models: ['hrrr'] },
     { id: 'kuchera_12hr', label: '12hr Kuchera Snow', models: ['hrrr'] },
@@ -341,7 +357,7 @@ const PARAMS = [
     { id: 'wind_250mb', label: '250mb Heights / Wind', models: ['gfs', 'hrrr', 'nam'] },
   ]},
   { id: 'ensemble', group: 'Ensemble', items: [
-    { id: 'gh_500mb_spread', label: '500mb Hgt Spread', models: ['gfs'] },
+    { id: 'gh_500mb_spread', label: '500mb Hgt Spread', models: ['gefs'] },
   ]},
 ];
 
@@ -920,7 +936,7 @@ function initEvents() {
 
 function initServiceWorker() {
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/wx/static/sw.js', { scope: '/wx/' }).catch(() => {});
+    navigator.serviceWorker.register('/static/sw.js', { scope: '/static/' }).catch(() => {});
   }
 }
 
@@ -1827,7 +1843,8 @@ function formatMobileRunId(runId) {
 function modelSupportsParam(model, param) {
   if (!param?.models?.length) return true;
   if (param.models.includes(model)) return true;
-  if (model === 'nam') return param.models.includes('nam3km') || param.models.includes('nam12km');
+  const aliases = MODEL_PARAM_ALIASES[model] || [];
+  if (aliases.some((alias) => param.models.includes(alias))) return true;
   return false;
 }
 

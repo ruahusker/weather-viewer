@@ -4253,7 +4253,7 @@ async def get_satellite_status():
     meta_dir = SATELLITE_RENDERED_DIR / "meta"
     products_cfg = SATELLITE_CONFIG.get("products", {})
     sources      = list(SATELLITE_CONFIG.get("sources", {}).keys())
-    now_ts = datetime.utcnow().timestamp()
+    now_ts = datetime.now(timezone.utc).timestamp()
 
     result: dict = {source_id: {} for source_id in sources}
     regional_result: dict[str, dict] = {}
@@ -4780,9 +4780,9 @@ async def get_radar_status():
     if _radar_status_cache["data"] is not None and (now - _radar_status_cache["ts"]) < _RADAR_STATUS_TTL:
         return JSONResponse(_radar_status_cache["data"])
 
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timezone as _timezone
 
-    now_ts = _dt.utcnow().timestamp()
+    now_ts = _dt.now(_timezone.utc).timestamp()
     result: dict = {
         site_id: {
             "name": site_info.get("name", site_id),
@@ -4815,7 +4815,7 @@ async def get_radar_status():
             ts_str = meta.get("timestamp", "")
             if len(ts_str) >= 15:
                 try:
-                    dt = _dt.strptime(ts_str[:15], "%Y%m%d_%H%M%S")
+                    dt = _dt.strptime(ts_str[:15], "%Y%m%d_%H%M%S").replace(tzinfo=_timezone.utc)
                     age_min = (now_ts - dt.timestamp()) / 60
                     last_update = f"{ts_str[9:11]}:{ts_str[11:13]}Z"
                 except Exception:

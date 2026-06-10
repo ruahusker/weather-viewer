@@ -1,12 +1,15 @@
-const CACHE_NAME = 'wx-pwa-v38';
+const CACHE_NAME = 'wx-pwa-v39';
 const SHELL_ASSETS = [
-  '/wx/mobile.html',
-  '/wx/static/css/mobile.css?v=44',
-  '/wx/static/css/surface-obs.css?v=20260330b',
-  '/wx/static/js/mobile.js?v=45',
-  '/wx/static/js/mobile-sounding.js?v=43',
-  '/wx/static/js/surface-obs.js?v=20260331',
-  '/wx/static/manifest.json',
+  '/static/mobile.html',
+  '/static/css/mobile.css?v=46',
+  '/static/css/surface-obs.css?v=20260330b',
+  '/static/css/mobile-refresh.css?v=20260528b',
+  '/static/js/mobile.js?v=20260528b',
+  '/static/js/mobile-sounding.js?v=43',
+  '/static/js/surface-obs.js?v=20260331',
+  '/static/manifest.json',
+  '/static/brand/wx-mark.svg',
+  '/static/icons/icon-192.png',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
 ];

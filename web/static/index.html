@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WX Viewer - Weather & Satellite Visualization</title>
   <meta name="description" content="Interactive weather maps from HRRR, NAM, GFS, ECMWF and GOES satellite imagery. View temperature, precipitation, CAPE, reflectivity, satellite IR, water vapor, and more." />
+  <meta name="theme-color" content="#050916" />
   
   <!-- Cache Control - Aggressive no-cache -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0" />
@@ -18,7 +19,7 @@
   <meta property="og:site_name" content="WX Viewer" />
   <meta property="og:title" content="WXVIEWER" />
   <meta property="og:description" content="Interactive weather model maps and GOES satellite imagery. HRRR, NAM, GFS, ECMWF, GDPS, GOES-19/18 IR, Water Vapor, and Visible." />
-  <meta property="og:image" content="https://www.vibeprojects.us/wx/wx-preview.png" />
+  <meta property="og:image" content="https://www.vibeprojects.us/static/brand/wx-preview.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
   <meta property="og:image:alt" content="WX Viewer weather visualization interface" />
@@ -29,11 +30,12 @@
   <meta name="twitter:url" content="https://www.vibeprojects.us/wx/" />
   <meta name="twitter:title" content="WXVIEWER" />
   <meta name="twitter:description" content="Interactive weather model maps and GOES satellite imagery." />
-  <meta name="twitter:image" content="https://www.vibeprojects.us/wx/wx-preview.png" />
+  <meta name="twitter:image" content="https://www.vibeprojects.us/static/brand/wx-preview.png" />
   <meta name="twitter:image:alt" content="WX Viewer weather visualization interface" />
   
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234a90b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z'/></svg>" />
-  <link rel="stylesheet" href="static/css/fonts.css?v=20260413" />
+  <link rel="icon" type="image/svg+xml" href="/static/brand/wx-mark.svg" />
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
+  <link rel="stylesheet" href="/static/css/fonts.css?v=20260413" />
   <script type="importmap">
     {
       "imports": {
@@ -43,9 +45,9 @@
     }
   </script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="static/css/style.css?v=20260403" />
-  <link rel="stylesheet" href="static/css/surface-obs.css?v=20260329d" />
-  <link rel="stylesheet" href="static/css/theme-refresh.css?v=20260411a" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260528c" />
+  <link rel="stylesheet" href="/static/css/surface-obs.css?v=20260329d" />
+  <link rel="stylesheet" href="/static/css/theme-refresh.css?v=20260528b" />
   <style>
     .site-footer {
       display: flex;
@@ -73,7 +75,7 @@
     <div class="topbar-left">
       <div class="brand">
         <span class="brand-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+          <img src="/static/brand/wx-mark.svg" alt="" />
         </span>
         <span class="brand-text">WX<span class="brand-accent">VIEWER</span></span>
       </div>
@@ -120,7 +122,7 @@
             <path d="M19 16.9A5 5 0 0 0 18 7h-1.26a8 8 0 1 0-11.62 9"/>
             <polyline points="13 11 9 17 15 17 11 23"/>
           </svg>
-          Chase (Experimental)
+          Chase
         </button>
         <div id="radarSiteInline" class="radar-site-inline hidden">
           <select id="radarSiteSelect" class="select">
@@ -365,6 +367,29 @@
           </button>
         </div>
       </div>
+      <div class="sidebar-section sidebar-section--ops-picks">
+        <div class="section-label">Ops Quick Picks</div>
+        <div class="ops-pick-grid">
+          <button class="param-btn" data-param="reflectivity" data-models="gfs,hrrr,nam12km,nam3km,rap,rrfs">
+            <span class="param-icon"></span>Reflectivity
+          </button>
+          <button class="param-btn" data-param="stp" data-models="hrrr,nam3km">
+            <span class="param-icon"></span>STP
+          </button>
+          <button class="param-btn" data-param="uh_25km" data-models="hrrr,nam3km,rrfs">
+            <span class="param-icon"></span>2-5km UH
+          </button>
+          <button class="param-btn" data-param="srh_01km" data-models="hrrr,nam12km,nam3km,rap,rrfs">
+            <span class="param-icon"></span>0-1km SRH
+          </button>
+          <button class="param-btn" data-param="shear_06km" data-models="hrrr,nam3km,rap,nam12km,rrfs">
+            <span class="param-icon"></span>Deep Shear
+          </button>
+          <button class="param-btn" data-param="refl_probability_40dbz" data-models="href">
+            <span class="param-icon"></span>40dBZ Prob
+          </button>
+        </div>
+      </div>
       <div class="sidebar-section">
         <div class="section-label">Parameters</div>
 
@@ -381,7 +406,10 @@
             <button class="param-btn" data-param="dewpoint_2m" data-models="ecmwf,gdps,gefs,gfs,href,hrrr,nam12km,nam3km,rap,rrfs,rtma">
               <span class="param-icon"></span>Dewpoint
             </button>
-            <button class="param-btn" data-param="wind_speed" data-models="ecmwf,gefs,gfs,hrrr,nam12km,nam3km,rap,rrfs">
+            <button class="param-btn" data-param="rh_2m" data-models="rtma">
+              <span class="param-icon"></span>2m RH
+            </button>
+            <button class="param-btn" data-param="wind_speed" data-models="ecmwf,gefs,gfs,hrrr,nam12km,nam3km,rap,rrfs,rtma">
               <span class="param-icon"></span>Wind
             </button>
             <button class="param-btn" data-param="wind_gusts" data-models="ecmwf,gfs,hrrr,nam12km,nam3km,rap,rrfs,rtma">
@@ -396,14 +424,20 @@
             <button class="param-btn" data-param="psfc" data-models="rtma">
               <span class="param-icon"></span>Surface Pressure
             </button>
-            <button class="param-btn" data-param="pwat" data-models="ecmwf,gfs,hrrr,nam12km,nam3km,rap,rrfs">
+            <button class="param-btn" data-param="pwat" data-models="ecmwf,gefs,gfs,href,hrrr,nam12km,nam3km,rap,rrfs">
               <span class="param-icon"></span>PWAT
             </button>
-            <button class="param-btn" data-param="cloud_cover" data-models="ecmwf,gefs,hrrr,nam12km,nam3km,rap,rrfs">
+            <button class="param-btn" data-param="cloud_cover" data-models="ecmwf,gdps,gefs,gfs,href,hrrr,nam12km,nam3km,rap,rrfs,rtma">
               <span class="param-icon"></span>Cloud Cover
             </button>
-            <button class="param-btn" data-param="pbl_height" data-models="hrrr,nam3km,rap,rrfs">
+            <button class="param-btn" data-param="pbl_height" data-models="gfs,hrrr,nam3km,rap,rrfs">
               <span class="param-icon"></span>PBL Height
+            </button>
+            <button class="param-btn" data-param="max_temp_1h" data-models="rrfs">
+              <span class="param-icon"></span>1hr Max Temp
+            </button>
+            <button class="param-btn" data-param="min_temp_1h" data-models="rrfs">
+              <span class="param-icon"></span>1hr Min Temp
             </button>
           </div>
         </div>
@@ -415,11 +449,29 @@
             Precipitation
           </button>
           <div class="param-group-items">
-            <button class="param-btn active" data-param="reflectivity" data-models="gfs,hrrr,nam12km,nam3km,rap">
+            <button class="param-btn active" data-param="reflectivity" data-models="gfs,hrrr,nam12km,nam3km,rap,rrfs">
               <span class="param-icon"></span>Reflectivity
+            </button>
+            <button class="param-btn" data-param="refl_1km" data-models="rrfs">
+              <span class="param-icon"></span>1km Reflectivity
+            </button>
+            <button class="param-btn" data-param="refl_probability_40dbz" data-models="href">
+              <span class="param-icon"></span>40dBZ Probability
             </button>
             <button class="param-btn" data-param="precip" data-models="ecmwf,gfs,href,hrrr,nam12km,nam3km,rap,rrfs">
               <span class="param-icon"></span>Precip
+            </button>
+            <button class="param-btn" data-param="precip_6h" data-models="gefs">
+              <span class="param-icon"></span>6hr Precip
+            </button>
+            <button class="param-btn" data-param="precip_probability" data-models="href">
+              <span class="param-icon"></span>Precip Probability
+            </button>
+            <button class="param-btn" data-param="precip_probability_6h_05in" data-models="gefs">
+              <span class="param-icon"></span>6hr &gt;0.5&quot; Prob
+            </button>
+            <button class="param-btn" data-param="precip_probability_6h_1in" data-models="gefs">
+              <span class="param-icon"></span>6hr &gt;1&quot; Prob
             </button>
             <button class="param-btn" data-param="lightning" data-models="hrrr,nam12km,nam3km,rap,rrfs">
               <span class="param-icon"></span>Lightning
@@ -443,6 +495,12 @@
             <button class="param-btn" data-param="mlcin" data-models="gfs,hrrr,nam12km,nam3km,rap">
               <span class="param-icon"></span>MLCIN
             </button>
+            <button class="param-btn" data-param="cape_ml" data-models="rrfs">
+              <span class="param-icon"></span>MLCAPE
+            </button>
+            <button class="param-btn" data-param="cin_ml" data-models="rrfs">
+              <span class="param-icon"></span>MLCIN
+            </button>
             <button class="param-btn" data-param="mucape" data-models="ecmwf,gfs,hrrr,nam12km,nam3km,rap">
               <span class="param-icon"></span>MUCAPE
             </button>
@@ -452,8 +510,20 @@
             <button class="param-btn" data-param="cape" data-models="gefs,gfs,href,hrrr,nam12km,rap,rrfs">
               <span class="param-icon"></span>SBCAPE
             </button>
+            <button class="param-btn" data-param="cape_surface" data-models="gdps">
+              <span class="param-icon"></span>Surface CAPE
+            </button>
             <button class="param-btn" data-param="cin" data-models="gfs,href,hrrr,nam12km,rap,rrfs">
               <span class="param-icon"></span>SBCIN
+            </button>
+            <button class="param-btn" data-param="cin_surface" data-models="gdps">
+              <span class="param-icon"></span>Surface CIN
+            </button>
+            <button class="param-btn" data-param="cape_probability" data-models="href">
+              <span class="param-icon"></span>CAPE Probability
+            </button>
+            <button class="param-btn" data-param="cape_probability_1000" data-models="gefs">
+              <span class="param-icon"></span>CAPE &gt;1000 Prob
             </button>
             <button class="param-btn" data-param="cape_03km" data-models="hrrr,nam12km,rap">
               <span class="param-icon"></span>0-3km CAPE
@@ -461,7 +531,7 @@
             <button class="param-btn" data-param="lifted_index" data-models="gfs,hrrr,nam12km,nam3km,rap">
               <span class="param-icon"></span>Lifted Index
             </button>
-            <button class="param-btn" data-param="lcl" data-models="hrrr,nam12km,nam3km,rrfs">
+            <button class="param-btn" data-param="lcl" data-models="hrrr,nam12km,nam3km,rap,rrfs">
               <span class="param-icon"></span>LCL Height
             </button>
           </div>
@@ -485,6 +555,9 @@
             </button>
             <button class="param-btn" data-param="uh_25km" data-models="hrrr,nam3km,rrfs">
               <span class="param-icon"></span>2-5km UH
+            </button>
+            <button class="param-btn" data-param="uh_25km_probability" data-models="href">
+              <span class="param-icon"></span>2-5km UH Probability
             </button>
             <button class="param-btn" data-param="uh_02km" data-models="hrrr,rrfs">
               <span class="param-icon"></span>0-2km UH
@@ -521,6 +594,25 @@
             </button>
             <button class="param-btn" data-param="cvi" data-models="hrrr,nam3km">
               <span class="param-icon"></span>Chase Visibility
+            </button>
+          </div>
+        </div>
+
+        <!-- Chase Diagnostics -->
+        <div class="param-group" data-group="chase-diagnostics">
+          <button class="param-group-toggle" aria-expanded="false">
+            <svg class="chevron" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Chase Diagnostics
+          </button>
+          <div class="param-group-items">
+            <button class="param-btn" data-param="llmt" data-models="hrrr,nam3km">
+              <span class="param-icon"></span>Low-Level Moisture Transport
+            </button>
+            <button class="param-btn" data-param="ascent" data-models="hrrr,nam3km">
+              <span class="param-icon"></span>Forcing for Ascent
+            </button>
+            <button class="param-btn" data-param="hp_risk" data-models="hrrr,nam3km">
+              <span class="param-icon"></span>Storm Obscuration / HP Risk
             </button>
           </div>
         </div>
@@ -569,6 +661,15 @@
             <button class="param-btn" data-param="snowfall" data-models="ecmwf">
               <span class="param-icon"></span>Snowfall
             </button>
+            <button class="param-btn" data-param="snowfall_6h" data-models="gefs">
+              <span class="param-icon"></span>6hr Snowfall
+            </button>
+            <button class="param-btn" data-param="snowfall_probability_6h_1in" data-models="gefs">
+              <span class="param-icon"></span>6hr Snow &gt;1&quot; Prob
+            </button>
+            <button class="param-btn" data-param="weasd" data-models="gfs,hrrr,rap,rrfs">
+              <span class="param-icon"></span>Snow Water Eq.
+            </button>
             <button class="param-btn" data-param="frozen_pct" data-models="hrrr,rrfs">
               <span class="param-icon"></span>Frozen Precip %
             </button>
@@ -593,25 +694,28 @@
             Pressure Levels
           </button>
           <div class="param-group-items">
-            <button class="param-btn" data-param="temp_925mb" data-models="gfs,hrrr,nam12km,rap,rrfs">
+            <button class="param-btn" data-param="temp_925mb" data-models="gefs,gfs,hrrr,nam12km,rap,rrfs">
               <span class="param-icon"></span>925mb Temp
             </button>
-            <button class="param-btn" data-param="temp_850mb" data-legend-label="850mb Heights / Temperature" data-models="ecmwf,gdps,gfs,href,hrrr,nam3km,nam12km,rap,rrfs">
+            <button class="param-btn" data-param="wind_925mb" data-models="gefs,rrfs">
+              <span class="param-icon"></span>925mb Wind
+            </button>
+            <button class="param-btn" data-param="temp_850mb" data-legend-label="850mb Heights / Temperature" data-models="ecmwf,gdps,gefs,gfs,href,hrrr,nam3km,nam12km,rap,rrfs">
               <span class="param-icon"></span>850mb Heights / Temp
             </button>
             <button class="param-btn" data-param="dewpoint_850mb" data-legend-label="850mb Heights / Dewpoint" data-models="hrrr,nam3km">
               <span class="param-icon"></span>850mb Heights / Dewpoint
             </button>
-            <button class="param-btn" data-param="rh_850mb" data-legend-label="850mb Heights / Relative Humidity" data-models="ecmwf,gdps,gfs,nam3km,nam12km,rap,rrfs">
+            <button class="param-btn" data-param="rh_850mb" data-legend-label="850mb Heights / Relative Humidity" data-models="ecmwf,gdps,gefs,gfs,href,nam3km,nam12km,rap,rrfs">
               <span class="param-icon"></span>850mb Heights / RH
             </button>
-            <button class="param-btn" data-param="wind_850mb" data-legend-label="850mb Heights / Wind Speed" data-models="ecmwf,gfs,href,hrrr,nam3km,nam12km,rap,rrfs">
+            <button class="param-btn" data-param="wind_850mb" data-legend-label="850mb Heights / Wind Speed" data-models="ecmwf,gefs,gfs,href,hrrr,nam3km,nam12km,rap,rrfs">
               <span class="param-icon"></span>850mb Heights / Wind
             </button>
-            <button class="param-btn" data-param="temp_700mb" data-legend-label="700mb Heights / Temperature" data-models="ecmwf,gdps,gfs,href,hrrr,nam3km,nam12km,rap,rrfs">
+            <button class="param-btn" data-param="temp_700mb" data-legend-label="700mb Heights / Temperature" data-models="ecmwf,gdps,gefs,gfs,href,hrrr,nam3km,nam12km,rap,rrfs">
               <span class="param-icon"></span>700mb Heights / Temp
             </button>
-            <button class="param-btn" data-param="rh_700mb" data-legend-label="700mb Heights / Relative Humidity" data-models="ecmwf,gdps,gfs,href,nam3km,nam12km,rap,rrfs">
+            <button class="param-btn" data-param="rh_700mb" data-legend-label="700mb Heights / Relative Humidity" data-models="ecmwf,gdps,gefs,gfs,href,nam3km,nam12km,rap,rrfs">
               <span class="param-icon"></span>700mb Heights / RH
             </button>
             <button class="param-btn" data-param="omega_700mb" data-legend-label="700mb Heights / Vertical Velocity" data-models="ecmwf,gdps,gefs,gfs,href,hrrr,nam12km,nam3km,rap,rrfs">
@@ -620,20 +724,35 @@
             <button class="param-btn" data-param="wind_700mb" data-legend-label="700mb Heights / Wind Speed" data-models="gdps,gefs,href,hrrr,nam3km,rrfs">
               <span class="param-icon"></span>700mb Heights / Wind
             </button>
-            <button class="param-btn" data-param="temp_500mb" data-models="ecmwf,gdps,gfs,href,hrrr,nam3km,nam12km,rap,rrfs">
+            <button class="param-btn" data-param="temp_500mb" data-models="ecmwf,gdps,gefs,gfs,href,hrrr,nam3km,nam12km,rap,rrfs">
               <span class="param-icon"></span>500mb Heights / Temp
+            </button>
+            <button class="param-btn" data-param="rh_500mb" data-legend-label="500mb Heights / Relative Humidity" data-models="gefs,rrfs">
+              <span class="param-icon"></span>500mb Heights / RH
             </button>
             <button class="param-btn" data-param="vort_500mb" data-legend-label="500mb Heights / Vorticity" data-models="gdps,hrrr,nam12km,nam3km,rap,rrfs">
               <span class="param-icon"></span>500mb Heights / Vorticity
             </button>
-            <button class="param-btn" data-param="wind_500mb" data-legend-label="500mb Heights / Wind Speed" data-models="ecmwf,gfs,href,hrrr,nam3km,rap,rrfs">
+            <button class="param-btn" data-param="wind_500mb" data-legend-label="500mb Heights / Wind Speed" data-models="ecmwf,gefs,gfs,href,hrrr,nam3km,rap,rrfs">
               <span class="param-icon"></span>500mb Heights / Wind
             </button>
-            <button class="param-btn" data-param="wind_300mb" data-models="ecmwf,gfs,hrrr,rap,rrfs">
-              <span class="param-icon"></span>300mb Wind (Jet)
+            <button class="param-btn" data-param="temp_300mb" data-legend-label="300mb Heights / Temperature" data-models="gefs,rrfs">
+              <span class="param-icon"></span>300mb Heights / Temp
             </button>
-            <button class="param-btn" data-param="wind_250mb" data-legend-label="250mb Heights / Wind Speed" data-models="gfs,hrrr,nam3km,rap,rrfs">
+            <button class="param-btn" data-param="wind_300mb" data-legend-label="300mb Heights / Wind Speed" data-models="ecmwf,gefs,gfs,hrrr,rap,rrfs">
+              <span class="param-icon"></span>300mb Heights / Wind
+            </button>
+            <button class="param-btn" data-param="temp_250mb" data-legend-label="250mb Heights / Temperature" data-models="gefs,rrfs">
+              <span class="param-icon"></span>250mb Heights / Temp
+            </button>
+            <button class="param-btn" data-param="wind_250mb" data-legend-label="250mb Heights / Wind Speed" data-models="gefs,gfs,hrrr,nam3km,rap,rrfs">
               <span class="param-icon"></span>250mb Heights / Wind
+            </button>
+            <button class="param-btn" data-param="temp_200mb" data-legend-label="200mb Heights / Temperature" data-models="gefs">
+              <span class="param-icon"></span>200mb Heights / Temp
+            </button>
+            <button class="param-btn" data-param="wind_200mb" data-legend-label="200mb Heights / Wind Speed" data-models="gefs">
+              <span class="param-icon"></span>200mb Heights / Wind
             </button>
           </div>
         </div>
@@ -647,6 +766,21 @@
           <div class="param-group-items">
             <button class="param-btn" data-param="gh_500mb_spread" data-models="gefs">
               <span class="param-icon"></span>500mb Hgt Spread
+            </button>
+            <button class="param-btn" data-param="gh_500mb_anomaly" data-models="gefs">
+              <span class="param-icon"></span>500mb Hgt Anomaly
+            </button>
+            <button class="param-btn" data-param="pwat_probability_1in" data-models="gefs">
+              <span class="param-icon"></span>PWAT &gt;1&quot; Prob
+            </button>
+            <button class="param-btn" data-param="cloud_cover_low" data-models="gefs">
+              <span class="param-icon"></span>Low Cloud Cover
+            </button>
+            <button class="param-btn" data-param="cloud_cover_mid" data-models="gefs">
+              <span class="param-icon"></span>Mid Cloud Cover
+            </button>
+            <button class="param-btn" data-param="cloud_cover_high" data-models="gefs">
+              <span class="param-icon"></span>High Cloud Cover
             </button>
           </div>
         </div>
@@ -1740,9 +1874,7 @@
 
       <!-- Logo watermark overlay -->
       <div class="map-logo">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
-        </svg>
+        <img class="map-logo-mark" src="/static/brand/wx-mark.svg" alt="" />
         <span>WX<span class="map-logo-accent">VIEWER</span></span>
       </div>
 
@@ -1783,7 +1915,7 @@
   </main>
 
   <footer class="site-footer">
-    <a href="privacy.html">Privacy</a>
+    <a href="/privacy.html">Privacy</a>
   </footer>
 
   <!-- 3D Storm Profile Modal -->
@@ -1870,8 +2002,8 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-  <script src="static/js/surface-obs.js?v=20260330c"></script>
-  <script src="static/js/app.js?v=20260403b"></script>
-  <script src="static/js/storm3d-modal.js?v=20260327b"></script>
+  <script src="/static/js/surface-obs.js?v=20260330c"></script>
+  <script src="/static/js/app.js?v=20260528c"></script>
+  <script src="/static/js/storm3d-modal.js?v=20260327b"></script>
 </body>
 </html>

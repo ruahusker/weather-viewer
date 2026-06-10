@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Radar 3D Render</title>
-  <link rel="stylesheet" href="static/css/radar3d.css" />
+  <link rel="icon" type="image/svg+xml" href="/static/brand/wx-mark.svg" />
+  <link rel="stylesheet" href="/static/css/radar3d.css?v=20260528b" />
   <script type="importmap">
     {
       "imports": {
@@ -17,8 +18,13 @@
 <body>
   <div class="radar3d-shell">
     <aside class="radar3d-panel">
-      <div class="radar3d-kicker">NEXRAD Level II</div>
-      <h1 class="radar3d-title">3D Radar Render</h1>
+      <div class="radar3d-brand">
+        <img src="/static/brand/wx-mark.svg" alt="" />
+        <div>
+          <div class="radar3d-kicker">NEXRAD Level II</div>
+          <h1 class="radar3d-title">3D Radar Render</h1>
+        </div>
+      </div>
       <div id="radar3dStatus" class="radar3d-status">Loading latest volume...</div>
 
       <div class="radar3d-meta" id="radar3dMeta">
@@ -64,6 +70,6 @@
   <script>
     window.WX_BASE = window.location.pathname.replace(/\/radar-3d$/, '');
   </script>
-  <script type="module" src="static/js/radar3d.js"></script>
+  <script type="module" src="/static/js/radar3d.js"></script>
 </body>
 </html>

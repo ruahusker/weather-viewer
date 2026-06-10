@@ -2040,7 +2040,7 @@ class SatelliteRenderer:
                 else:
                     target_width = max(source_width, 1)
             else:
-                target_width = max(source_width, 1)
+                target_width = min(source_width, 2800)
 
         gamma = scale_cfg.get("gamma", 1.0) if scale_cfg else 1.0
         tone_lift = scale_cfg.get("tone_lift", 0.0) if scale_cfg else 0.0
@@ -2356,9 +2356,11 @@ class SatelliteRenderer:
             return render_bounds
 
         data_reprojected = np.full(target_h * target_w, np.nan, dtype=np.float32)
-        valid_output = valid_matches.copy()
-        valid_output[valid_matches] = finite_mask[flat_indices[valid_matches]]
-        data_reprojected[valid_output] = data_flat[flat_indices[valid_output]]
+        valid_matches_flat = valid_matches.ravel()
+        flat_indices_flat = flat_indices.ravel()
+        valid_output = valid_matches_flat.copy()
+        valid_output[valid_matches_flat] = finite_mask[flat_indices_flat[valid_matches_flat]]
+        data_reprojected[valid_output] = data_flat[flat_indices_flat[valid_output]]
         data_reprojected = data_reprojected.reshape((target_h, target_w))
 
         if crop_bounds:

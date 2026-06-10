@@ -863,7 +863,8 @@ class SatelliteScheduler:
     
 
     def process_l2_product(self, source_id: str, product_type: str, product_code: str,
-                            domain: str = "F", prefetched_files: list = None) -> bool:
+                            domain: str = "F", prefetched_files: list = None,
+                            frame_limit: int | None = None) -> bool:
         """Process an L2 derived product (PWAT, SST, fire, rain_rate, stability).
 
         Works like process_l1b_band but uses render_l2_product from the renderer.
@@ -895,9 +896,11 @@ class SatelliteScheduler:
             if not files:
                 return False
 
+            png_dir = self.sat_renderer.png_dir
             rendered_count = 0
 
-            for goes_file in files[:self.loop_frames_per_band]:
+            max_frames = max(1, min(frame_limit or self.loop_frames_per_band, self.loop_frames_per_band))
+            for goes_file in files[:max_frames]:
                 try:
                     parts = goes_file.filename.split("_")
                     s_part = parts[3]
@@ -2203,11 +2206,21 @@ class SatelliteScheduler:
                             )
                             for product_type, band, filename in effective_core_bands
                         )
+                l2_frame_limit = max(
+                    1,
+                    min(
+                        self.loop_frames_per_band,
+                        int(self.config.get("render", {}).get(
+                            "l2_frames_per_cycle",
+                            self.latest_frames_per_cycle,
+                        )),
+                    ),
+                )
                 jobs.extend(
                     (
                         product_type,
                         self.process_l2_product,
-                        (source_id, product_type, product_code, domain),
+                        (source_id, product_type, product_code, domain, None, l2_frame_limit),
                     )
                     for product_type, product_code, domain in derived_products
                 )

@@ -85,10 +85,14 @@ _SCALAR_HEIGHT_OVERLAYS = {
     "omega_700mb": "gh_700mb",
     "wind_700mb": "gh_700mb",
     "temp_500mb": "gh_500mb",
+    "rh_500mb": "gh_500mb",
     "vort_500mb": "gh_500mb",
     "wind_500mb": "gh_500mb",
+    "temp_300mb": "gh_300mb",
     "wind_300mb": "gh_300mb",
+    "temp_250mb": "gh_250mb",
     "wind_250mb": "gh_250mb",
+    "temp_200mb": "gh_200mb",
     "wind_200mb": "gh_200mb",
 }
 
@@ -764,7 +768,7 @@ class OverlayRenderer:
         only 256 entries so the cost is negligible at cache-build time.
         """
         _SKIP_BOOST = {
-            "reflectivity", "cloud_cover", "cloud_cover_low",
+            "cloud_cover", "cloud_cover_low",
             "cloud_cover_mid", "cloud_cover_high",
         }
         if param in _SKIP_BOOST:
@@ -863,7 +867,7 @@ class OverlayRenderer:
         if param == "vort_500mb":
             return np.where(data >= 4.0, data, np.nan)
         if param == "reflectivity":
-            return np.where(data >= 10.0, data, np.nan)
+            return np.where(data >= 5.0, data, np.nan)
         if param in {"srh_01km", "srh_03km"}:
             return np.clip(data, -500.0, 500.0)
         if param in {"shear_06km", "shear_01km"}:
@@ -1241,16 +1245,23 @@ class OverlayRenderer:
         end = np.ceil(vmax / interval) * interval + interval
         levels = np.arange(start, end, interval)
         label_levels = np.arange(np.floor(vmin / label_every) * label_every, end, label_every)
-        stroke = [pe.withStroke(linewidth=1.2, foreground=(0, 0, 0, 0.72))]
+        line_color = cfg.get("color", "#111827")
+        label_color = cfg.get("label_color", line_color)
+        linewidth = float(cfg.get("linewidth", 0.9))
+        line_alpha = min(1.0, float(cfg.get("alpha", 0.96)) * alpha_scale)
+        stroke_width = float(cfg.get("stroke_width", 2.25))
+        stroke_alpha = min(1.0, float(cfg.get("stroke_alpha", 0.88)) * alpha_scale)
+        stroke_color = mcolors.to_rgba(cfg.get("stroke_color", "#ffffff"), stroke_alpha)
+        stroke = [pe.Stroke(linewidth=stroke_width, foreground=stroke_color), pe.Normal()]
 
         cs = ax.contour(
             lon_grid,
             lat_merc_grid,
             contour_data,
             levels=levels,
-            colors="#f4f7fb",
-            linewidths=0.65,
-            alpha=0.9 * alpha_scale,
+            colors=line_color,
+            linewidths=linewidth,
+            alpha=line_alpha,
             zorder=zorder,
         )
         for coll in getattr(cs, "collections", []):
@@ -1265,7 +1276,7 @@ class OverlayRenderer:
                 fontsize=cfg.get("label_fontsize", 5.5),
                 inline_spacing=2,
                 fmt="%d",
-                colors="#f4f7fb",
+                colors=label_color,
                 zorder=zorder + 0.1,
             )
             for txt in label_texts:
@@ -1337,14 +1348,23 @@ class OverlayRenderer:
                 logger.debug("%s scalar contour failed: %s", param, exc)
                 continue
 
+            stroke = []
+            halo_width = float(item.get("halo_width", 0.0))
+            halo_alpha = float(item.get("halo_alpha", 0.0))
+            if halo_width > 0 and halo_alpha > 0:
+                halo_color = mcolors.to_rgba(item.get("halo_color", "#ffffff"), halo_alpha)
+                stroke.append(pe.Stroke(linewidth=halo_width, foreground=halo_color))
+
             stroke_width = float(item.get("stroke_width", 1.0))
             stroke_alpha = float(item.get("stroke_alpha", 0.55))
-            if stroke_width > 0:
-                stroke = [pe.withStroke(linewidth=stroke_width, foreground=(0, 0, 0, stroke_alpha))]
+            if stroke_width > 0 and stroke_alpha > 0:
+                stroke_color = mcolors.to_rgba(item.get("stroke_color", "#000000"), stroke_alpha)
+                stroke.append(pe.Stroke(linewidth=stroke_width, foreground=stroke_color))
+
+            if stroke:
+                stroke.append(pe.Normal())
                 for coll in getattr(cs, "collections", []):
                     coll.set_path_effects(stroke)
-            else:
-                stroke = []
 
             if item.get("labels"):
                 label_levels = item.get("label_levels", levels)

@@ -70,10 +70,14 @@ _HEIGHT_OVERLAY_DEPENDENCIES = {
     "omega_700mb": "gh_700mb",
     "wind_700mb": "gh_700mb",
     "temp_500mb": "gh_500mb",
+    "rh_500mb": "gh_500mb",
     "vort_500mb": "gh_500mb",
     "wind_500mb": "gh_500mb",
+    "temp_300mb": "gh_300mb",
     "wind_300mb": "gh_300mb",
+    "temp_250mb": "gh_250mb",
     "wind_250mb": "gh_250mb",
+    "temp_200mb": "gh_200mb",
     "wind_200mb": "gh_200mb",
 }
 
@@ -2953,11 +2957,17 @@ def _find_cached_grib(model: ModelConfig, run_dt: datetime, fxx: int) -> Path | 
             _grib_lookup_cache[cache_key] = (now + _GRIB_CACHE_HIT_TTL, direct)
             return direct
 
-        matches = sorted(cache_dir.glob(f"subset_*__{suffix}"))
-        for match in matches:
-            if match.is_file() and match.stat().st_size > 0:
-                _grib_lookup_cache[cache_key] = (now + _GRIB_CACHE_HIT_TTL, match)
-                return match
+        matches = [
+            match for match in cache_dir.glob(f"subset_*__{suffix}")
+            if match.is_file() and match.stat().st_size > 0
+        ]
+        matches.sort(
+            key=lambda match: (match.stat().st_size, match.stat().st_mtime),
+            reverse=True,
+        )
+        if matches:
+            _grib_lookup_cache[cache_key] = (now + _GRIB_CACHE_HIT_TTL, matches[0])
+            return matches[0]
 
     _grib_lookup_cache[cache_key] = (now + _GRIB_CACHE_MISS_TTL, None)
     return None

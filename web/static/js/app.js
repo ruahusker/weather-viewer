@@ -22,6 +22,7 @@ const CAPTURE_SOURCE = (URL_PARAMS.get('source') || '').toLowerCase();
 const CAPTURE_FRAME = URL_PARAMS.get('frame') || 'latest';
 const BACKGROUND_ONLY = URL_PARAMS.get('background_only') === '1';
 const DEBUG_SCRUBBER = URL_PARAMS.get('debug_scrubber') === '1';
+const MODEL_IMAGE_VERSION = '20260528d';
 
 if (CAPTURE_MODE) {
   document.documentElement.dataset.captureMode = '1';
@@ -616,12 +617,14 @@ const MODEL_DEFAULT_VIEW_BOUNDS = [[26.0, -121.5], [50.5, -72.5]];
 const MODEL_DEFAULT_VIEW_REFERENCE = { width: 1440, height: 810, padding: 22 };
 const MODEL_SPARSE_CANVAS_PARAMS = new Set([
   'cape', 'mlcape', 'mucape', 'cape_03km',
-  'cin', 'mlcin', 'mucin', 'lifted_index',
-  'stp', 'scp', 'lcl',
+  'cape_ml', 'cape_surface', 'cape_probability', 'cape_probability_1000',
+  'cin', 'mlcin', 'mucin', 'cin_ml', 'cin_surface', 'lifted_index',
+  'stp', 'scp', 'lcl', 'llmt', 'ascent', 'hp_risk',
   'srh_01km', 'srh_03km', 'shear_01km', 'shear_06km',
   'refl_probability_40dbz', 'uh_25km_probability',
   'precip_probability', 'precip_probability_6h_05in',
-  'precip_probability_6h_1in', 'visibility_probability',
+  'precip_probability_6h_1in', 'pwat_probability_1in',
+  'snowfall_probability_6h_1in', 'visibility_probability',
   'cloud_cover', 'cloud_cover_low', 'cloud_cover_mid', 'cloud_cover_high',
   'uh_02km', 'uh_03km', 'uh_25km', 'hail', 'echo_tops', 'lightning',
 ]);
@@ -3115,9 +3118,10 @@ function updateChaseOverlay() {
     state.overlayLayer.setUrl(url);
     state.overlayLayer.setBounds(bounds);
   } else {
-    state.overlayLayer = L.imageOverlay(url, bounds, { opacity: 1.0, interactive: false, className: 'model-overlay' });
+    state.overlayLayer = L.imageOverlay(url, bounds, { opacity: 1.0, interactive: false, className: modelOverlayClass(chaseState.param) });
     state.overlayLayer.addTo(leafletMap);
   }
+  applyModelOverlayClass(chaseState.param);
 
   const overlayImg = state.overlayLayer?.getElement?.();
   if (overlayImg) {
@@ -6474,7 +6478,26 @@ async function loadRadarTilt() {
 // ---------------------------------------------------------------------------
 function overlayUrl(runId, param, fxx) {
   const fxxStr = typeof fxx === 'number' ? String(fxx).padStart(2, '0') : fxx;
-  return `${BASE}/rendered/${state.model}/${runId}/${param}/f${fxxStr}.png`;
+  return `${BASE}/rendered/${state.model}/${runId}/${param}/f${fxxStr}.png?v=${MODEL_IMAGE_VERSION}`;
+}
+
+function modelOverlayParamClass(param) {
+  return 'model-overlay-' + String(param || 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+}
+
+function modelOverlayClass(param) {
+  return `model-overlay ${modelOverlayParamClass(param)}`;
+}
+
+function applyModelOverlayClass(param) {
+  const img = state.overlayLayer?.getElement?.();
+  if (!img) return;
+  for (const cls of Array.from(img.classList)) {
+    if (cls !== 'model-overlay' && cls.startsWith('model-overlay-')) {
+      img.classList.remove(cls);
+    }
+  }
+  img.classList.add('model-overlay', modelOverlayParamClass(param));
 }
 
 function showOverlay() {
@@ -6500,9 +6523,10 @@ function showOverlay() {
     state.overlayLayer = L.imageOverlay(url, state.overlayBounds, {
       opacity: 1.0,
       interactive: false,
-      className: 'model-overlay',
-    }).addTo(leafletMap);
+      className: modelOverlayClass(param),
+    }).addTo(leafletMap);
   }
+  applyModelOverlayClass(param);
   updateModelFrame();
   markCaptureReady('model');
 }
@@ -7285,7 +7309,7 @@ function updateParamVisibilityForModel(selectedModel) {
     updateLegend();
   }
 
-  document.querySelectorAll('.param-group').forEach(group => {
+  document.querySelectorAll('#modelSidebar .param-group').forEach(group => {
     const visibleItems = group.querySelectorAll('.param-btn[data-param][style*="flex"]');
     group.style.display = visibleItems.length > 0 ? 'block' : 'none';
   });
