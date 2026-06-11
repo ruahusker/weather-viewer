@@ -774,76 +774,6 @@ class SatelliteRenderer:
             logger.error(f"Failed to render VIS band {band}: {e}")
             raise
     
-    def render_true_color(
-        self,
-        dataset: xr.Dataset,
-        filename: str = None
-    ) -> RenderedSatellite:
-        """Render true color RGB composite.
-        
-        Uses bands 1 (Blue), 2 (Red), 3 (Green - veggie corrected)
-        """
-        try:
-            # Get RGB channels
-            red = self._get_band_data(dataset, 2)  # Red
-            green = self._get_band_data(dataset, 3)  # Veggie
-            blue = self._get_band_data(dataset, 1)  # Blue
-            
-            if any(x is None for x in [red, green, blue]):
-                raise ValueError("Missing required bands for true color")
-            
-            # Simple veggie correction for green
-            green_corrected = 0.45 * red + 0.1 * green + 0.45 * blue
-            
-            # Normalize and gamma correct
-            rgb = np.stack([
-                self._normalize(red.values),
-                self._normalize(green_corrected.values),
-                self._normalize(blue.values)
-            ], axis=-1)
-            
-            # Gamma correction
-            rgb = np.power(rgb, 0.5)
-            
-            bounds = self._get_bounds(dataset)
-            
-            if filename is None:
-                timestamp = self._get_timestamp(dataset)
-                filename = f"goes_truecolor_{timestamp}.png"
-            
-            png_path = self.png_dir / filename
-            
-            self._render_rgb(rgb, bounds, png_path)
-            
-            return RenderedSatellite(
-                png_path=png_path,
-                bounds=bounds,
-                timestamp=self._get_timestamp(dataset),
-                satellite=dataset.attrs.get('platform_ID', 'GOES'),
-                product='True Color',
-                band=None
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to render true color: {e}")
-            raise
-    
-    def render_simple_overlay(
-        self,
-        data: np.ndarray,
-        bounds: dict,
-        output_path: Path,
-        cmap: str = 'Greys_r',
-        vmin: float = None,
-        vmax: float = None
-    ) -> Path:
-        """Render a simple data array as a transparent PNG overlay.
-        
-        This is the main entry point for creating map overlays.
-        """
-        self._render_with_transparency(data, bounds, output_path, cmap, vmin, vmax)
-        return output_path
-    
     def _get_brightness_temp(self, dataset: xr.Dataset, band: int) -> Optional[xr.DataArray]:
         """Extract brightness temperature for IR band."""
         try:
@@ -893,63 +823,6 @@ class SatelliteRenderer:
         
         normalized = (data - vmin) / (vmax - vmin)
         return np.clip(normalized, 0, 1)
-    
-    def _render_with_transparency(
-        self,
-        data: np.ndarray,
-        bounds: dict,
-        output_path: Path,
-        cmap: str = 'Greys_r',
-        vmin: float = None,
-        vmax: float = None
-    ):
-        """Render data as PNG with transparency outside USA borders.
-        
-        NOTE: This is a legacy method. Use render_to_mercator() for proper
-        Web Mercator reprojection from GOES geostationary data.
-        """
-        # Create figure with exact pixel dimensions
-        fig, ax = plt.subplots(figsize=(10, 8), dpi=self.dpi)
-        
-        # Get colormap
-        if isinstance(cmap, str):
-            cmap_obj = plt.get_cmap(cmap)
-        else:
-            cmap_obj = cmap
-        
-        # Determine data range
-        if vmin is None:
-            vmin = np.nanmin(data)
-        if vmax is None:
-            vmax = np.nanmax(data)
-        
-        # Create mask for valid data
-        valid_mask = ~np.isnan(data)
-        
-        # Normalize data
-        norm_data = (data - vmin) / (vmax - vmin)
-        norm_data = np.clip(norm_data, 0, 1)
-        
-        # Apply colormap
-        colored = cmap_obj(norm_data)
-        
-        # Set alpha - transparent only where no valid data
-        colored[:, :, 3] = valid_mask.astype(float) * 0.95
-        
-        # Display
-        ax.imshow(colored, origin='upper', aspect='auto', interpolation='nearest')
-        ax.axis('off')
-        
-        # Remove all margins
-        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-        
-        # Save
-        fig.savefig(output_path, dpi=self.dpi, transparent=True, 
-                   pad_inches=0, bbox_inches='tight', 
-                   facecolor='none', edgecolor='none')
-        plt.close(fig)
-        
-        logger.debug(f"Rendered with USA mask: {output_path}")
     
     def render_to_mercator(
         self,
@@ -2657,22 +2530,6 @@ class SatelliteRenderer:
             masked[np.asarray(dqf.values) > int(max_dqf)] = np.nan
 
         return masked
-
-    def _render_rgb(self, rgb: np.ndarray, bounds: dict, output_path: Path):
-        """Render RGB array as PNG."""
-        fig, ax = plt.subplots(figsize=(10, 8), dpi=self.dpi)
-        
-        ax.imshow(np.clip(rgb, 0, 1), origin='upper', aspect='auto', interpolation='nearest')
-        ax.axis('off')
-        
-        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-        
-        fig.savefig(output_path, dpi=self.dpi, transparent=False,
-                   pad_inches=0, bbox_inches='tight')
-        plt.close(fig)
-        
-        logger.debug(f"Rendered RGB: {output_path}")
-
 
 class LightningOverlayRenderer:
     """Render GLM lightning data as point overlays."""
