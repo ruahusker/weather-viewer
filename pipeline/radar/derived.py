@@ -270,10 +270,37 @@ def _derive_vil(volume: VolumeData) -> SweepData | None:
 
     # Multiple tilts - use full vertical integration
     stack = np.stack(refl_stack, axis=0)
+
+    # Sort levels by beam height and merge split cuts (two sweeps at the same
+    # nominal elevation; the Doppler cut's reflectivity goes NaN beyond its
+    # unambiguous range). Merging with fmax keeps whichever cut observed each
+    # gate, and removes the zero-thickness layers duplicates would create.
+    order = np.argsort(heights[:, -1], kind="stable")
+    stack = stack[order]
+    heights = heights[order]
+    merged_stack: list[np.ndarray] = []
+    merged_heights: list[np.ndarray] = []
+    for level, h in zip(stack, heights):
+        if merged_heights and np.allclose(h, merged_heights[-1], atol=1.0):
+            merged_stack[-1] = np.fmax(merged_stack[-1], level)
+        else:
+            merged_stack.append(level)
+            merged_heights.append(h)
+    stack = np.stack(merged_stack, axis=0)
+    heights = np.asarray(merged_heights, dtype=np.float32)
+    if stack.shape[0] == 1:
+        z_linear = 10.0 ** (np.clip(stack[0], 0.0, 75.0) / 10.0)
+        liquid = 3.44e-6 * np.power(z_linear, 4.0 / 7.0) * 5000.0
+        liquid[~(stack[0] >= REFLECTIVITY_THRESHOLD_DBZ)] = 0.0
+        return _make_sweep(np.clip(liquid, 0.0, 80.0), ref)
+
     height_grid_m = np.broadcast_to(heights[:, None, :] * 1000.0, stack.shape)
     z_linear = 10.0 ** (np.clip(stack, 0.0, 75.0) / 10.0)
     liquid = 3.44e-6 * np.power(z_linear, 4.0 / 7.0)
-    liquid[stack < REFLECTIVITY_THRESHOLD_DBZ] = 0.0
+    # Unobserved (NaN) or sub-threshold gates contribute no liquid — a NaN at
+    # any level would otherwise propagate through trapezoid and blank the
+    # whole column.
+    liquid = np.where(np.isfinite(stack) & (stack >= REFLECTIVITY_THRESHOLD_DBZ), liquid, 0.0)
     vil = np.trapezoid(liquid, x=height_grid_m, axis=0)
     vil[~np.isfinite(np.nanmax(stack, axis=0))] = np.nan
     return _make_sweep(np.clip(vil, 0.0, 80.0), ref)
