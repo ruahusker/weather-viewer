@@ -59,7 +59,7 @@ HOME_STATIC_KEEP = {
     "radar_quicklook_3.json",
     "satellite_latest.png",
     "satellite_latest.json",
-    "radar_composite_latest.png",
+    "radar_composite_latest.webp",
     "radar_composite_latest.json",
     "radar_composite_frames.json",
 }

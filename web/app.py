@@ -33,7 +33,18 @@ from pipeline.radar.color_tables import FIELD_CONFIG as RADAR_FIELD_CONFIG
 from pipeline.radar.grid_api import get_radar_grid_binary
 from pipeline.models.grid_api import get_model_grid_binary
 
-app = FastAPI(title="Weather Model Viewer")
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # _alerts_refresher is defined later in the module; resolved at runtime.
+    refresher = asyncio.create_task(_alerts_refresher())
+    yield
+    refresher.cancel()
+
+
+app = FastAPI(title="Weather Model Viewer", lifespan=_lifespan)
 
 # ─── Compression ────────────────────────────────────────────────
 from fastapi.middleware.gzip import GZipMiddleware
@@ -2444,11 +2455,33 @@ def _parse_spotter_feed(text: str) -> dict:
     }
 
 
-async def _fetch_alerts_data() -> dict:
-    now = time.time()
-    if _alerts_cache["data"] is not None and (now - _alerts_cache["ts"]) < _ALERTS_TTL:
-        return _alerts_cache["data"]
+_alerts_refresh_lock = asyncio.Lock()
 
+
+async def _fetch_alerts_data() -> dict:
+    """Return alerts, serving cache whenever possible.
+
+    The background refresher keeps the cache fresh, so requests normally never
+    wait on NWS. Stale data (refresher wedged / NWS outage) is still served up
+    to 3×TTL before a request refreshes inline.
+    """
+    now = time.time()
+    if _alerts_cache["data"] is not None and (now - _alerts_cache["ts"]) < _ALERTS_TTL * 3:
+        return _alerts_cache["data"]
+    return await _refresh_alerts_data()
+
+
+async def _refresh_alerts_data() -> dict:
+    async with _alerts_refresh_lock:
+        now = time.time()
+        # another waiter may have refreshed while we queued on the lock
+        if _alerts_cache["data"] is not None and (now - _alerts_cache["ts"]) < _ALERTS_TTL:
+            return _alerts_cache["data"]
+
+        return await _refresh_alerts_data_inner(now)
+
+
+async def _refresh_alerts_data_inner(now: float) -> dict:
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(NWS_ALERTS_URL, headers=NWS_HEADERS)
@@ -2546,6 +2579,17 @@ async def _fetch_alerts_data() -> dict:
     _alerts_cache["data"] = result
     _alerts_cache["ts"] = now
     return result
+
+
+async def _alerts_refresher() -> None:
+    """Refetch NWS alerts just before the TTL lapses so the warnings panel,
+    map overlay, and home overview always hit a warm cache."""
+    while True:
+        try:
+            await _refresh_alerts_data()
+        except Exception:
+            pass  # NWS hiccup — stale cache keeps serving; retry next tick
+        await asyncio.sleep(max(_ALERTS_TTL - 10, 15))
 
 
 async def _fetch_spc_geojson(product_id: str) -> dict:
@@ -4150,12 +4194,8 @@ def _home_quicklook_cards(warned_sites: list[dict], focus_sites: list[dict], mod
     return cards[:4]
 
 
-@app.get("/api/dashboard")
-async def get_dashboard():
+def _build_dashboard_payload() -> dict:
     now = time.time()
-    if _dashboard_cache["data"] is not None and (now - _dashboard_cache["ts"]) < _DASHBOARD_TTL:
-        return JSONResponse(_dashboard_cache["data"])
-
     # System resources — CPU% comes from background sampler (fresh 3s δ)
     cpu_pct = _cpu_sampler.system_cpu()
     cpu_freq = psutil.cpu_freq()
@@ -4205,7 +4245,46 @@ async def get_dashboard():
     }
     _dashboard_cache["data"] = payload
     _dashboard_cache["ts"] = now
-    return JSONResponse(payload)
+    return payload
+
+
+_dashboard_last_request: dict = {"ts": 0.0}
+_DASHBOARD_ACTIVE_WINDOW = 300  # keep cache warm for 5 min after the last hit
+
+
+def _dashboard_refresher() -> None:
+    """Keep the dashboard cache warm so no request pays the ~3s build cost.
+
+    The payload build scans processes and parses logs synchronously; doing it
+    on the request path would also block the event loop for every other
+    endpoint, so it runs here in a daemon thread instead. It idles once the
+    dashboard hasn't been requested for a while.
+    """
+    primed = False
+    while True:
+        try:
+            # Always build once at startup so no worker serves a cold first
+            # request; afterwards only refresh while the dashboard is in use.
+            if not primed or (time.time() - _dashboard_last_request["ts"]) < _DASHBOARD_ACTIVE_WINDOW:
+                _build_dashboard_payload()
+                primed = True
+        except Exception:
+            pass  # never crash the refresher; next tick retries
+        time.sleep(_DASHBOARD_TTL)
+
+
+threading.Thread(target=_dashboard_refresher, daemon=True, name="dashboard-refresher").start()
+
+
+@app.get("/api/dashboard")
+async def get_dashboard():
+    # Served from the cache the refresher thread keeps warm while the
+    # dashboard is in use. A cold/stale cache rebuilds off the event loop so
+    # other endpoints never stall behind the ~3s build.
+    _dashboard_last_request["ts"] = time.time()
+    if _dashboard_cache["data"] is None or (time.time() - _dashboard_cache["ts"]) > (_DASHBOARD_TTL * 2):
+        await asyncio.to_thread(_build_dashboard_payload)
+    return JSONResponse(_dashboard_cache["data"])
 
 
 @app.get("/api/home/overview")

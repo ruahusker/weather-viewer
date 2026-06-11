@@ -4858,6 +4858,33 @@ function updateHomeRadarMode() {
 }
 
 // --- Cached local national radar composite ---
+// Defer loop-frame and site-image preloading until the visible frame has
+// painted, so first page load isn't competing with tens of MB of background
+// fetches. Loop frames load first; site PNGs (~89 images) follow.
+let _homeBgPreloadTimer = null;
+function scheduleHomeBackgroundPreload() {
+  if (_homeBgPreloadTimer) clearTimeout(_homeBgPreloadTimer);
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    if (_homeBgPreloadTimer) { clearTimeout(_homeBgPreloadTimer); _homeBgPreloadTimer = null; }
+    if (state.dataSource !== 'home' || !state.radarCompositeEnabled) return;
+    preloadAllDesktopFrames();
+    setTimeout(() => {
+      if (state.dataSource === 'home' && state.radarCompositeEnabled) preloadHomeSiteImages();
+    }, 4000);
+  };
+  const overlayImg = state.radarCompositeLayer?.getElement?.();
+  if (overlayImg && !overlayImg.complete) {
+    overlayImg.addEventListener('load', start, { once: true });
+    overlayImg.addEventListener('error', start, { once: true });
+    _homeBgPreloadTimer = setTimeout(start, 8000); // fallback if load never fires
+  } else {
+    _homeBgPreloadTimer = setTimeout(start, 500);
+  }
+}
+
 async function initRainViewerLayer() {
   if (state.radarCompositeLayer) {
     leafletMap.removeLayer(state.radarCompositeLayer);
@@ -4897,13 +4924,12 @@ async function initRainViewerLayer() {
     clearLoadQueue();
     state.homeRadarFrames = frames;
     state.homeRadarFrameIdx = Math.max(0, frames.length - 1);
-    preloadAllDesktopFrames();
     updateScrubberForHomeRadar();
-    showHomeRadarFrame(state.homeRadarFrameIdx);
+    showHomeRadarFrame(state.homeRadarFrameIdx); // visible frame loads via the overlay itself
     updateMapInfoForHomeRadar();
     updateLegend();
     updateHomeRadarMode();
-    preloadHomeSiteImages(); // cache site PNGs in background before user zooms in
+    scheduleHomeBackgroundPreload();
   } catch (e) {
     console.warn('Local radar composite init failed:', e);
     syncScrubberVisibility();

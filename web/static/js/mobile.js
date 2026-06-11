@@ -1067,7 +1067,8 @@ async function initHome() {
       S.homeIdx = frames.length - 1;
       setupScrubber(frames.length, S.homeIdx);
       showHomeFrame();
-      preloadAllFrames();
+      // Defer loop preload so the visible frame wins the bandwidth race
+      setTimeout(() => { if (S.tab === 'home') preloadAllFrames(); }, 1500);
     } else {
       topInfo.textContent = 'No radar data';
     }

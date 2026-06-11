@@ -16,7 +16,7 @@ from PIL import Image
 RADAR_META_DIR = Path("/home/main/weather-viewer/data/rendered/radar/meta")
 RADAR_PNG_DIR = Path("/home/main/weather-viewer/data/rendered/radar/png")
 OUTPUT_DIR = Path("/home/main/weather-viewer/data/rendered/home")
-OUTPUT_PNG = OUTPUT_DIR / "radar_composite_latest.png"
+OUTPUT_IMAGE = OUTPUT_DIR / "radar_composite_latest.webp"
 OUTPUT_META = OUTPUT_DIR / "radar_composite_latest.json"
 OUTPUT_FRAMES = OUTPUT_DIR / "radar_composite_frames.json"
 
@@ -26,7 +26,9 @@ CONUS_BOUNDS = {
     "north": 53.0,
     "east": -66.0,
 }
-OUTPUT_SIZE = (9600, 5600)
+# 3840px spans CONUS at well past the zoom where the per-site renders take
+# over; lossless WebP keeps each frame ~2.5MB vs ~16MB for 9600px PNG.
+OUTPUT_SIZE = (3840, 2240)
 MAX_SITE_AGE_MIN = 15
 MAX_HISTORY_FRAMES = 12
 
@@ -69,10 +71,13 @@ def atomic_write_text(path: Path, content: str) -> None:
 
 def atomic_save_image(path: Path, image: Image.Image) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(suffix=".png", dir=path.parent, delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=path.suffix, dir=path.parent, delete=False) as tmp:
         tmp_path = Path(tmp.name)
     try:
-        image.save(tmp_path, format="PNG")
+        if path.suffix == ".webp":
+            image.save(tmp_path, format="WEBP", lossless=True, method=2)
+        else:
+            image.save(tmp_path, format="PNG")
         os.replace(tmp_path, path)
         path.chmod(0o644)
     finally:
@@ -100,11 +105,14 @@ def load_existing_frames() -> list[dict]:
 
 
 def prune_history(keep_images: set[str], keep_meta: set[str]) -> None:
-    for png_path in OUTPUT_DIR.glob("radar_composite_*.png"):
-        if png_path.name == OUTPUT_PNG.name:
-            continue
-        if png_path.name not in keep_images:
-            png_path.unlink(missing_ok=True)
+    for ext in ("png", "webp"):
+        for image_path in OUTPUT_DIR.glob(f"radar_composite_*.{ext}"):
+            if image_path.name == OUTPUT_IMAGE.name:
+                continue
+            if image_path.name not in keep_images:
+                image_path.unlink(missing_ok=True)
+    # The pre-WebP latest image is no longer written; drop the stale copy.
+    (OUTPUT_DIR / "radar_composite_latest.png").unlink(missing_ok=True)
     for meta_path in OUTPUT_DIR.glob("radar_composite_*.json"):
         if meta_path.name in {OUTPUT_META.name, OUTPUT_FRAMES.name}:
             continue
@@ -188,12 +196,12 @@ def main() -> int:
         default=None,
     ) or now
     timestamp = latest_site_ts.strftime("%Y%m%d_%H%M%S")
-    frame_image_name = f"radar_composite_{timestamp}.png"
+    frame_image_name = f"radar_composite_{timestamp}.webp"
     frame_meta_name = f"radar_composite_{timestamp}.json"
 
-    atomic_save_image(OUTPUT_PNG, canvas)
+    atomic_save_image(OUTPUT_IMAGE, canvas)
     payload = {
-        "image": "radar_composite_latest.png",
+        "image": OUTPUT_IMAGE.name,
         "timestamp": timestamp,
         "generated_at": now.isoformat().replace("+00:00", "Z"),
         "bounds": CONUS_BOUNDS,
@@ -227,7 +235,7 @@ def main() -> int:
     keep_meta = {f"{Path(item['image']).stem}.json" for item in frames}
     prune_history(keep_images, keep_meta)
 
-    print(f"generated radar composite: {OUTPUT_PNG} from {len(used_sites)} sites")
+    print(f"generated radar composite: {OUTPUT_IMAGE} from {len(used_sites)} sites")
     return 0
 
 
