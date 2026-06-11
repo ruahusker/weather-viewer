@@ -152,6 +152,7 @@ _NO_DIFFUSION_PARAMS = {
     "kuchera_6hr", "kuchera_12hr", "snow10_12hr",
     "lightning", "echo_tops", "hail",
     "uh_02km", "uh_03km", "uh_25km", "uh_25km_swath", "uh_03km_swath",
+    "cin", "mlcin", "mucin", "omega_700mb", "srh_01km", "srh_03km",
     "cti", "msi", "ship", "dcp", "citi", "cvi", "llmt", "ascent", "hp_risk",
     "refl_probability_40dbz", "uh_25km_probability",
     "precip_probability", "precip_probability_6h_05in", "precip_probability_6h_1in",
@@ -856,7 +857,13 @@ class OverlayRenderer:
     def _prepare_scalar_data(param, data):
         """Apply display-domain filtering before fill or contour rendering."""
         if param in {"cin", "mlcin", "mucin"}:
-            return np.clip(data, -300.0, 0.0)
+            # Weak/no inhibition is meteorologically uninteresting — mask it
+            # so quiet areas don't fill the whole map (CIN is negative).
+            return np.where(data <= -10.0, np.clip(data, -300.0, 0.0), np.nan)
+        if param == "omega_700mb":
+            # Near-zero vertical velocity covers most of the domain; only
+            # meaningful ascent/subsidence should render.
+            return np.where(np.abs(data) >= 0.5, data, np.nan)
         if param in {"cape", "mlcape", "mucape", "cape_03km"}:
             return np.maximum(data, 0.0)
         if param in {"uh_02km", "uh_03km", "uh_25km"}:
@@ -866,7 +873,8 @@ class OverlayRenderer:
         if param == "reflectivity":
             return np.where(data >= 5.0, data, np.nan)
         if param in {"srh_01km", "srh_03km"}:
-            return np.clip(data, -500.0, 500.0)
+            # SPC-style: only operationally significant helicity renders.
+            return np.where(data >= 25.0, np.minimum(data, 500.0), np.nan)
         if param in {"shear_06km", "shear_01km"}:
             return np.maximum(data, 0.0)
         if param == "lifted_index":

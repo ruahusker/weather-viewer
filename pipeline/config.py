@@ -14,6 +14,13 @@ def _register_custom_cmaps():
         # wx_temp: operational-standard temperature ramp (see pipeline/palettes.py).
         _register_palette_cmap("temp", "wx_temp")
 
+        # wx_temp_upper: same operational ramp for pressure-level temps,
+        # versioned separately because pre-v3 PNGs were rendered with RdBu_r.
+        _register_palette_cmap("temp_upper", "wx_temp_upper")
+
+        # wx_cin: blue inhibition ramp (weak cap light → strong cap violet).
+        _register_palette_cmap("cin", "wx_cin")
+
         # wx_wind: surface wind — clean green→yellow→orange→red→purple ramp.
         # Subtle tint at low speeds, vivid at high speeds for immediate readability.
         _wx_wind = _LSC.from_list("wx_wind", [
@@ -483,7 +490,7 @@ COLOR_SCALES = {
 
     # -- Pressure Levels --
     "temp_850mb": {
-        "cmap": "RdBu_r",
+        "cmap": "wx_temp_upper",
         "vmin": -25,
         "vmax": 95,
         "unit": "\u00b0F",
@@ -499,9 +506,9 @@ COLOR_SCALES = {
         },
     },
     "temp_700mb": {
-        "cmap": "RdBu_r",
+        "cmap": "wx_temp_upper",
         "vmin": -45,
-        "vmax": 40,
+        "vmax": 75,
         "unit": "\u00b0F",
         "label": "700mb Temperature (\u00b0F)",
         "contours": {
@@ -513,9 +520,9 @@ COLOR_SCALES = {
         },
     },
     "temp_500mb": {
-        "cmap": "RdBu_r",
+        "cmap": "wx_temp_upper",
         "vmin": -70,
-        "vmax": 5,
+        "vmax": 35,
         "unit": "\u00b0F",
         "label": "500mb Temperature (\u00b0F)",
         "contours": {
@@ -648,7 +655,7 @@ COLOR_SCALES = {
         },
     },
     "cin": {
-        "cmap": "RdYlBu",
+        "cmap": "wx_cin",
         "vmin": -200,
         "vmax": 0,
         "unit": "J/kg",
@@ -921,7 +928,7 @@ COLOR_SCALES = {
         },
     },
     "mlcin": {
-        "cmap": "RdYlBu",
+        "cmap": "wx_cin",
         "vmin": -200,
         "vmax": 0,
         "unit": "J/kg",
@@ -935,7 +942,7 @@ COLOR_SCALES = {
         },
     },
     "mucin": {
-        "cmap": "RdYlBu",
+        "cmap": "wx_cin",
         "vmin": -200,
         "vmax": 0,
         "unit": "J/kg",
@@ -1191,9 +1198,9 @@ COLOR_SCALES = {
 
     # -- Additional pressure levels --
     "temp_925mb": {
-        "cmap": "RdYlBu_r",
+        "cmap": "wx_temp_upper",
         "vmin": -10,
-        "vmax": 100,
+        "vmax": 110,
         "unit": "\u00b0F",
         "label": "925mb Temperature (\u00b0F)",
         "contours": {
@@ -1207,7 +1214,7 @@ COLOR_SCALES = {
         },
     },
     "temp_250mb": {
-        "cmap": "RdBu_r",
+        "cmap": "wx_temp_upper",
         "vmin": -85,
         "vmax": -20,
         "unit": "\u00b0F",
@@ -1508,7 +1515,7 @@ COLOR_SCALES = {
         "label": "925mb Heights (m)",
     },
     "temp_200mb": {
-        "cmap": "RdBu_r",
+        "cmap": "wx_temp_upper",
         "vmin": -85,
         "vmax": -25,
         "unit": "°F",
@@ -2178,6 +2185,10 @@ COLOR_SCALES.setdefault("cape_probability_1000", {
 for _scale_cfg in COLOR_SCALES.values():
     if _scale_cfg.get("cmap") == "wx_temp":
         _scale_cfg["palette"] = "temp"
+    elif _scale_cfg.get("cmap") == "wx_temp_upper":
+        _scale_cfg["palette"] = "temp_upper"
+    elif _scale_cfg.get("cmap") == "wx_cin":
+        _scale_cfg["palette"] = "cin"
     elif _scale_cfg.get("cmap") == "nws_refl":
         _scale_cfg["palette"] = "reflectivity"
     elif _scale_cfg.get("cmap") == "wx_enhanced_ir":

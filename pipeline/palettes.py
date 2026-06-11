@@ -13,11 +13,16 @@ Version 1: the legacy custom ramps (pre-revamp).
 Version 2: industry-standard palettes — NWS WSR-88D reflectivity, COD/
 Pivotal-style temperature and QPF, conventional rainbow IR enhancement and
 water-vapor curves.
+Version 3: upper-air temperature moves off matplotlib RdBu_r onto the
+operational temp ramp (registered here as "temp_upper", with v2 encoding
+the RdBu_r anchors that rendered older PNGs), and CIN moves off RdYlBu
+onto a blue inhibition ramp ("cin", with v2 encoding the RdYlBu anchors).
+Palettes without a v3 entry are unchanged and resolve via fallback.
 """
 
 from __future__ import annotations
 
-CURRENT_PALETTE_VERSION = 2
+CURRENT_PALETTE_VERSION = 3
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -107,6 +112,80 @@ _register("temp", 2, {
         (0.867, "#e60000"),  # 100F red
         (0.933, "#9e0000"),  # 110F dark red
         (1.000, "#ff00c8"),  # 120F magenta (extreme heat)
+    ],
+})
+
+# ---------------------------------------------------------------------------
+# Upper-air temperature (pressure-level temps; vmin/vmax set per level in
+# COLOR_SCALES — stops are a generic cold→hot ramp)
+# ---------------------------------------------------------------------------
+
+# v2: matplotlib RdBu_r (the ColorBrewer 11-anchor diverging map) — encoded
+# here so retained PNGs rendered before v3 keep reverse-mapping exactly.
+_register("temp_upper", 2, {
+    "vmin": -25, "vmax": 95,
+    "stops": [
+        (0.0, "#053061"), (0.1, "#2166ac"), (0.2, "#4393c3"),
+        (0.3, "#92c5de"), (0.4, "#d1e5f0"), (0.5, "#f7f7f7"),
+        (0.6, "#fddbc7"), (0.7, "#f4a582"), (0.8, "#d6604d"),
+        (0.9, "#b2182b"), (1.0, "#67001f"),
+    ],
+})
+
+# v3: same operational ramp as the surface "temp" palette so all temperature
+# products read identically (purples cold → blues → greens → yellow →
+# orange → red hot). Anchors are relative; per-level vmin/vmax position them.
+_register("temp_upper", 3, {
+    "vmin": -25, "vmax": 95,
+    "stops": [
+        (0.000, "#e8d0ff"),
+        (0.067, "#b266e0"),
+        (0.133, "#7a2ed6"),
+        (0.200, "#3b28c8"),
+        (0.267, "#2257e0"),
+        (0.333, "#3585e8"),
+        (0.400, "#62b8f2"),
+        (0.413, "#86d9e8"),
+        (0.467, "#4fc77c"),
+        (0.533, "#22a04e"),
+        (0.600, "#9fcf30"),
+        (0.667, "#ffe600"),
+        (0.733, "#ffb000"),
+        (0.800, "#ff6600"),
+        (0.867, "#e60000"),
+        (0.933, "#9e0000"),
+        (1.000, "#ff00c8"),
+    ],
+})
+
+# ---------------------------------------------------------------------------
+# CIN — convective inhibition (J/kg; vmin=-200 strong cap → vmax=0 none)
+# ---------------------------------------------------------------------------
+
+# v2: matplotlib RdYlBu (11 ColorBrewer anchors) — what rendered older PNGs.
+_register("cin", 2, {
+    "vmin": -200, "vmax": 0,
+    "stops": [
+        (0.0, "#a50026"), (0.1, "#d73027"), (0.2, "#f46d43"),
+        (0.3, "#fdae61"), (0.4, "#fee090"), (0.5, "#ffffbf"),
+        (0.6, "#e0f3f8"), (0.7, "#abd9e9"), (0.8, "#74add1"),
+        (0.9, "#4575b1"), (1.0, "#313695"),
+    ],
+})
+
+# v3: conventional "cool = capped" blue ramp — light blue for a weak cap
+# deepening through blue/indigo to violet for a strong cap. Weak CIN
+# (> -10 J/kg) is masked to transparent in the renderer, which fixes the
+# old full-domain blue wash where CIN ≈ 0.
+_register("cin", 3, {
+    "vmin": -200, "vmax": 0,
+    "stops": [
+        (0.000, "#5b21b6"),  # -200 J/kg violet — strong cap
+        (0.250, "#4338ca"),  # -150 indigo
+        (0.500, "#2563eb"),  # -100 blue
+        (0.700, "#38bdf8"),  #  -60 sky blue
+        (0.850, "#7dd3fc"),  #  -30 light blue
+        (1.000, "#cfeffc"),  #    0 pale blue (masked above -10)
     ],
 })
 
