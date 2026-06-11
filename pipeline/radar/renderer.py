@@ -10,7 +10,6 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image
-from scipy.ndimage import binary_dilation, binary_erosion
 
 from .color_tables import FIELD_CONFIG
 from .config import RADAR_RENDERED_DIR, OUTPUT_SIZE, CC_CLUTTER_THRESHOLD, PNG_OPTIMIZE, FAST_RENDER_PRODUCTS
@@ -216,8 +215,7 @@ def render_sweep_to_png(data: np.ndarray,
                         output_size: int = 1800,
                         cc_data: Optional[np.ndarray] = None,
                         cc_threshold: float = 0.3,
-                        bounds: Optional[dict] = None,
-                        threshold_overlays: Optional[list[dict]] = None) -> Image.Image:
+                        bounds: Optional[dict] = None) -> Image.Image:
     """Render one sweep to a transparent RGBA PIL Image.
 
     When ``bounds`` is provided (a dict with north/south/east/west/max_range_km/
@@ -273,65 +271,7 @@ def render_sweep_to_png(data: np.ndarray,
     rgba = lut[indices]
     rgba[~pixel_mask] = [0, 0, 0, 0]
 
-    if threshold_overlays:
-        _apply_threshold_overlays(rgba, raw_data, pixel_mask, threshold_overlays)
-
     return Image.fromarray(rgba, 'RGBA')
-
-
-def _apply_threshold_overlays(
-    rgba: np.ndarray,
-    data: np.ndarray,
-    valid_mask: np.ndarray,
-    overlays: list[dict],
-) -> None:
-    """Draw sparse threshold outlines over filled radar rasters.
-
-    This is deliberately limited to high-value thresholds. Radar base moments
-    should remain raster products; outlines are only for severe/diagnostic
-    thresholds where a thin edge helps scanning without turning radar into
-    a contour chart.
-    """
-    structure = np.ones((3, 3), dtype=bool)
-    finite = np.isfinite(data)
-    for overlay in overlays:
-        level = overlay.get("level")
-        if level is None:
-            continue
-        op = overlay.get("op", ">=")
-        if op == "<=":
-            mask = valid_mask & finite & (data <= float(level))
-        else:
-            mask = valid_mask & finite & (data >= float(level))
-        if not np.any(mask):
-            continue
-
-        eroded = binary_erosion(mask, structure=structure, border_value=0)
-        edge = mask & ~eroded
-        width = max(1, int(overlay.get("width", 1)))
-        if width > 1:
-            edge = binary_dilation(edge, structure=structure, iterations=width - 1)
-            edge &= valid_mask
-
-        color = overlay.get("color", (255, 255, 255, 220))
-        if isinstance(color, str) and color.startswith("#") and len(color) == 7:
-            color = (
-                int(color[1:3], 16),
-                int(color[3:5], 16),
-                int(color[5:7], 16),
-                int(overlay.get("alpha", 220)),
-            )
-        if len(color) == 3:
-            color = (*color, int(overlay.get("alpha", 220)))
-        src = np.asarray(color, dtype=np.float32)
-        alpha = np.clip(src[3] / 255.0, 0.0, 1.0)
-        if alpha >= 0.99:
-            rgba[edge] = src.astype(np.uint8)
-        else:
-            dst = rgba[edge].astype(np.float32)
-            dst[:, :3] = dst[:, :3] * (1.0 - alpha) + src[:3] * alpha
-            dst[:, 3] = np.maximum(dst[:, 3], src[3])
-            rgba[edge] = np.clip(dst, 0, 255).astype(np.uint8)
 
 
 def radar_bounds(site_lat: float, site_lon: float, max_range_km: float) -> dict:
@@ -430,7 +370,6 @@ class Level2Renderer:
                 cc_data=cc_for_filter,
                 cc_threshold=CC_CLUTTER_THRESHOLD,
                 bounds=bounds,
-                threshold_overlays=cfg.get("threshold_overlays"),
             )
         except Exception as e:
             logger.error(f"Render failed for {site}/{field}: {e}")

@@ -29,25 +29,6 @@ def _lerp_colors(breakpoints: list[tuple[float, tuple]],
     return lut
 
 
-def _step_colors(thresholds: list[float],
-                 colors: list[tuple],
-                 vmin: float,
-                 vmax: float,
-                 n: int = 256,
-                 under: tuple = (0, 0, 0, 0)) -> np.ndarray:
-    """Build a stepped LUT where each threshold starts a new color bin."""
-    lut = np.zeros((n, 4), dtype=np.uint8)
-    thresholds_arr = np.asarray(thresholds, dtype=np.float32)
-    for i in range(n):
-        val = vmin + (vmax - vmin) * i / (n - 1)
-        idx = np.searchsorted(thresholds_arr, val, side="right") - 1
-        if idx < 0:
-            lut[i] = under
-        else:
-            lut[i] = colors[min(idx, len(colors) - 1)]
-    return lut
-
-
 # NWS WSR-88D reflectivity — sourced from the shared versioned palette
 # registry so radar and model reflectivity stay identical.
 from pipeline.palettes import reflectivity_table as _reflectivity_table
@@ -68,9 +49,10 @@ REFLECTIVITY_COLORS = [_hex_to_rgba(c) for c in REFLECTIVITY_HEX]
 
 
 def reflectivity_lut() -> tuple[np.ndarray, float, float]:
-    """NWS/RadarScope-style stepped reflectivity, -20 to 80 dBZ."""
+    """NWS reflectivity palette with smooth interpolation, -20 to 80 dBZ."""
     vmin, vmax = -20.0, 80.0
-    return _step_colors(REFLECTIVITY_BOUNDS[:-1], REFLECTIVITY_COLORS, vmin, vmax), vmin, vmax
+    bp = [(float(b), c) for b, c in zip(REFLECTIVITY_BOUNDS[:-1], REFLECTIVITY_COLORS)]
+    return _lerp_colors(bp, vmin, vmax), vmin, vmax
 
 
 def velocity_lut() -> tuple[np.ndarray, float, float]:
@@ -347,14 +329,6 @@ def rainfall_rate_lut() -> tuple[np.ndarray, float, float]:
     return _lerp_colors(bp, vmin, vmax), vmin, vmax
 
 
-def _black_underlay(level: float, width: int = 2, alpha: int = 150) -> dict:
-    return {"level": level, "color": (0, 0, 0, alpha), "width": width}
-
-
-def _white_line(level: float, width: int = 1, alpha: int = 230) -> dict:
-    return {"level": level, "color": (255, 255, 255, alpha), "width": width}
-
-
 # Field name → LUT builder + rendering metadata
 FIELD_CONFIG = {
     "reflectivity": {
@@ -367,10 +341,6 @@ FIELD_CONFIG = {
         "bounds": REFLECTIVITY_BOUNDS,
         "colors": REFLECTIVITY_HEX,
         "legend_ticks": [5, 15, 25, 35, 45, 55, 65, 75],
-        "threshold_overlays": [
-            _black_underlay(50, 2, 125), _white_line(50, 1, 210),
-            _black_underlay(60, 2, 155), _white_line(60, 1, 235),
-        ],
     },
     "velocity": {
         "lut_fn": velocity_lut,
@@ -420,10 +390,6 @@ FIELD_CONFIG = {
         "unit": "deg/km",
         "mask_below": 0.05,
         "prefer_long_range": False,
-        "threshold_overlays": [
-            _black_underlay(2.0, 2, 120), _white_line(2.0, 1, 205),
-            _black_underlay(4.0, 2, 140), _white_line(4.0, 1, 220),
-        ],
     },
     "storm_relative_velocity": {
         "lut_fn": velocity_lut,
@@ -441,11 +407,6 @@ FIELD_CONFIG = {
         "unit": "s^-1",
         "mask_below": 0.002,
         "prefer_long_range": False,
-        "threshold_overlays": [
-            _black_underlay(0.010, 2, 120), _white_line(0.010, 1, 205),
-            _black_underlay(0.020, 2, 145), _white_line(0.020, 1, 225),
-            _black_underlay(0.030, 2, 170), _white_line(0.030, 1, 240),
-        ],
     },
     "divergence": {
         "lut_fn": divergence_lut,
@@ -478,10 +439,6 @@ FIELD_CONFIG = {
         "unit": "",
         "mask_below": 0.1,
         "prefer_long_range": False,
-        "threshold_overlays": [
-            _black_underlay(0.40, 2, 145), _white_line(0.40, 1, 220),
-            _black_underlay(0.60, 2, 170), _white_line(0.60, 1, 240),
-        ],
     },
     "composite_reflectivity": {
         "lut_fn": reflectivity_lut,
@@ -493,10 +450,6 @@ FIELD_CONFIG = {
         "bounds": REFLECTIVITY_BOUNDS,
         "colors": REFLECTIVITY_HEX,
         "legend_ticks": [5, 15, 25, 35, 45, 55, 65, 75],
-        "threshold_overlays": [
-            _black_underlay(50, 2, 125), _white_line(50, 1, 210),
-            _black_underlay(60, 2, 155), _white_line(60, 1, 235),
-        ],
     },
     "echo_tops": {
         "lut_fn": echo_tops_lut,
@@ -505,11 +458,6 @@ FIELD_CONFIG = {
         "unit": "kft",
         "mask_below": 1.0,
         "prefer_long_range": True,
-        "threshold_overlays": [
-            _black_underlay(40, 2, 120), _white_line(40, 1, 205),
-            _black_underlay(50, 2, 145), _white_line(50, 1, 225),
-            _black_underlay(60, 2, 170), _white_line(60, 1, 240),
-        ],
     },
     "vertically_integrated_liquid": {
         "lut_fn": vil_lut,
@@ -518,11 +466,6 @@ FIELD_CONFIG = {
         "unit": "kg/m^2",
         "mask_below": 1.0,
         "prefer_long_range": True,
-        "threshold_overlays": [
-            _black_underlay(40, 2, 120), _white_line(40, 1, 205),
-            _black_underlay(55, 2, 145), _white_line(55, 1, 225),
-            _black_underlay(70, 2, 170), _white_line(70, 1, 240),
-        ],
     },
     "velocity_texture": {
         "lut_fn": velocity_texture_lut,
@@ -539,11 +482,6 @@ FIELD_CONFIG = {
         "unit": "%",
         "mask_below": 1.0,
         "prefer_long_range": True,
-        "threshold_overlays": [
-            _black_underlay(25, 2, 120), _white_line(25, 1, 205),
-            _black_underlay(50, 2, 145), _white_line(50, 1, 225),
-            _black_underlay(75, 2, 170), _white_line(75, 1, 240),
-        ],
     },
     "rainfall_rate": {
         "lut_fn": rainfall_rate_lut,
@@ -552,10 +490,5 @@ FIELD_CONFIG = {
         "unit": "in/hr",
         "mask_below": 0.5,
         "prefer_long_range": False,
-        "threshold_overlays": [
-            _black_underlay(1.0, 2, 120), _white_line(1.0, 1, 205),
-            _black_underlay(2.0, 2, 145), _white_line(2.0, 1, 225),
-            _black_underlay(4.0, 2, 170), _white_line(4.0, 1, 240),
-        ],
     },
 }
