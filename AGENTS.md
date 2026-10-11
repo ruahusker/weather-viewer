@@ -116,9 +116,12 @@ weather-viewer/
 │   ├── app.py                   # API endpoints, NWS alerts, dashboard data
 │   └── static/                  # Frontend assets
 │       ├── index.html           # Main SPA (models + satellite + radar)
+│       ├── mobile.html          # Phone SPA (served when UA is a phone, or ?view=mobile / wx_view cookie)
 │       ├── dashboard.html       # Pipeline monitor dashboard (/wx/monitor)
-│       ├── js/app.js            # Main application logic
-│       └── css/style.css
+│       ├── js/app.js            # Main application logic (desktop)
+│       ├── js/mobile.js         # Phone application logic
+│       ├── css/style.css        # Single stylesheet (theme-refresh.css was folded into its end)
+│       └── vendor/              # Self-hosted third-party assets (leaflet, html2canvas, three)
 ├── nginx/weather.conf           # nginx site configuration
 ├── systemd/                     # systemd service definitions
 │   ├── weather-pipeline.service # Pipeline scheduler daemon

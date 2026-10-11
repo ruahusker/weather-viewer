@@ -45,3 +45,17 @@ sudo systemctl start weather-radar
 ```
 
 Runtime status and data availability are exposed through the FastAPI endpoints in `web/app.py`.
+
+## Regression Checks
+
+Run the API, downloader, map renderer, browser-state, and service-worker checks:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+node tests/frontend.test.cjs
+.venv/bin/python scripts/audit_product_catalog.py --disk --fail-on-issues
+```
+
+For browser checks, start an isolated API with `python -m uvicorn web.app:app --host 127.0.0.1 --port 8011`, then run `node tests/viewer.browser.cjs`. This requires Playwright and Chromium. `WX_TEST_URL`, `WX_PLAYWRIGHT_PATH`, and `WX_CHROMIUM` can override the API URL, Playwright package location, and browser executable. The browser suite uses delayed API fixtures to exercise tab/model races, radar tilts, empty data, and narrow phone layouts without depending on changing weather.
+
+When serving the site under `/wx/`, include `nginx/wx-site-routes.conf` inside the existing nginx server block. It routes the landing page through FastAPI for device selection and prevents caching mutable run metadata and latest-image pointers. Validate with `nginx -t` before reloading nginx.

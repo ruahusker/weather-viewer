@@ -16,6 +16,7 @@ export const state = {
   runMeta: null,
   availableFxx: [],
   availableByParam: {},
+  vectorAvailableByParam: {},
   overlayBounds: null,
   overlayLayer: null,
   chaseReflectivityLayer: null,

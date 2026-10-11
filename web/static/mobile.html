@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>WxViewer</title>
 
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -15,13 +15,14 @@
   <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
 
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css?v=1.9.4">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
-  <link rel="stylesheet" href="/static/css/tokens.css?v=20260610a">
+  <link rel="stylesheet" href="/static/css/tokens.css?v=20260930e">
   <link rel="stylesheet" href="/static/css/mobile.css?v=20260610a">
   <link rel="stylesheet" href="/static/css/surface-obs.css?v=20260330b">
-  <link rel="stylesheet" href="/static/css/mobile-refresh.css?v=20260610b">
+  <link rel="stylesheet" href="/static/css/mobile-refresh.css?v=20261008g">
+  <link rel="stylesheet" href="/static/css/pressure-contours.css?v=20261008d">
 </head>
 <body>
   <!-- Map (full viewport) -->
@@ -59,8 +60,10 @@
 
   <!-- Legend bar -->
   <div id="legendBar" class="legend-bar hidden">
+    <div id="legendLabel" class="legend-label"></div>
     <canvas id="legendCanvas" width="240" height="12"></canvas>
     <div id="legendTicks" class="legend-ticks"></div>
+    <div id="legendNote" class="legend-note"></div>
   </div>
 
   <!-- Scrubber -->
@@ -70,7 +73,7 @@
         <svg id="playIcon" width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><polygon points="5,3 17,10 5,17"/></svg>
         <svg id="pauseIcon" width="20" height="20" viewBox="0 0 20 20" fill="currentColor" class="hidden"><rect x="4" y="3" width="4" height="14"/><rect x="12" y="3" width="4" height="14"/></svg>
       </button>
-      <input id="scrubSlider" type="range" min="0" max="0" value="0" class="scrub-slider">
+      <input id="scrubSlider" aria-label="Weather animation frame" type="range" min="0" max="0" value="0" class="scrub-slider">
       <button id="speedBtn" class="speed-btn">1x</button>
     </div>
     <div class="scrub-info">
@@ -103,7 +106,7 @@
   <div id="sheetBackdrop" class="sheet-backdrop hidden"></div>
 
   <!-- Bottom sheet -->
-  <div id="bottomSheet" class="bottom-sheet hidden">
+  <div id="bottomSheet" class="bottom-sheet hidden" role="dialog" aria-label="Choose weather products">
     <div class="sheet-handle"><div class="handle-bar"></div></div>
     <div id="sheetContent" class="sheet-content"></div>
   </div>
@@ -113,7 +116,7 @@
     <div class="share-sheet-inner">
       <button id="shareCopyLink" class="share-option">Copy Link</button>
       <button id="shareNative" class="share-option">Share...</button>
-      <a href="/wx/?desktop=1" class="share-option">Desktop Version</a>
+      <a href="?view=desktop" data-desktop-link class="share-option">Desktop Version</a>
       <button id="shareCancel" class="share-option cancel">Cancel</button>
     </div>
   </div>
@@ -137,10 +140,16 @@
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <footer class="mobile-view-footer">
+    <a href="?view=desktop" data-desktop-link>Switch to desktop view</a>
+  </footer>
+
+  <script src="/static/vendor/leaflet/leaflet.js?v=1.9.4"></script>
+  <script src="/static/js/pressure-contours.js?v=20261008f"></script>
+  <script src="/static/js/map-capture.js?v=20261008e"></script>
+  <script src="/static/js/viewer-ui.js?v=20261008g"></script>
   <script src="/static/js/mobile-sounding.js?v=43"></script>
-  <script src="/static/js/surface-obs.js?v=20260331"></script>
-  <script src="/static/js/mobile.js?v=20260611a"></script>
+  <script src="/static/js/surface-obs.js?v=20260930e"></script>
+  <script src="/static/js/mobile.js?v=20261008g"></script>
 </body>
 </html>

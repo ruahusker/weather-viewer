@@ -34,6 +34,7 @@ const SurfaceObs = (() => {
   let _stations = [];         // raw array from API
   let _generated = 0;         // epoch of dataset
   let _visible = false;
+  let _requestId = 0;
   let _radarOverlay = false;  // when true, obs shows on radar tab as overlay
   let _refreshTimer = null;
   let _activeMarker = null;   // currently open detail panel marker
@@ -296,10 +297,12 @@ const SurfaceObs = (() => {
 
   // ─── Fetch data from API ─────────────────────────────────────
   async function _fetch() {
+    const requestId = ++_requestId;
     try {
       const r = await fetch(`${_base}/api/surface/current`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
+      if (requestId !== _requestId || !_visible) return;
       _stations = d.stations || [];
       _generated = d.generated || 0;
       _render();
@@ -356,21 +359,22 @@ const SurfaceObs = (() => {
     _map.on('click', _hideDetail);
   }
 
-  function show() {
+  function show({ autoRefresh = true } = {}) {
     if (!_map || _visible) return;
     _visible = true;
     _group.addTo(_map);
-    if (_stations.length === 0) {
+    if (_stations.length === 0 && autoRefresh) {
       _fetch();
     } else {
       _render();
     }
-    _startRefresh();
+    if (autoRefresh) _startRefresh();
   }
 
   function hide() {
     if (!_map || !_visible) return;
     _visible = false;
+    ++_requestId;
     _group.remove();
     _hideDetail();
     _stopRefresh();
@@ -379,6 +383,7 @@ const SurfaceObs = (() => {
   function isVisible() { return _visible; }
 
   function setPayload(payload) {
+    ++_requestId;
     _stations = Array.isArray(payload?.stations) ? payload.stations : [];
     _generated = Number.isFinite(payload?.generated) ? payload.generated : 0;
     if (_visible) _render();

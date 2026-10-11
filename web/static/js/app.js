@@ -1,7 +1,23 @@
-/**
- * WX Viewer — Leaflet-based Weather Model & Satellite Viewer
- */
 'use strict';
+
+/** WX Viewer — Leaflet-based Weather Model & Satellite Viewer */
+
+/** Flag old model initialization times without confusing them with valid time. */
+function modelRunIsOld(runId, model, now = Date.now()) {
+  if (!/^\d{10}$/.test(runId || '')) return false;
+  const init = Date.UTC(+runId.slice(0, 4), +runId.slice(4, 6) - 1, +runId.slice(6, 8), +runId.slice(8, 10));
+  const limitHours = ['hrrr', 'rap', 'rtma'].includes(model) ? 6 : 24;
+  return now - init > limitHours * 3600000;
+}
+
+
+/** Prefer recent complete runs, then fresh partial data, before old archives. */
+function prioritizeModelRuns(runs, model) {
+  return [...runs.filter((run) => run.is_complete && !modelRunIsOld(run.run_id, model)),
+    ...runs.filter((run) => !run.is_complete && !modelRunIsOld(run.run_id, model)),
+    ...runs.filter((run) => modelRunIsOld(run.run_id, model))];
+}
+
 
 // BASE comes from js/core/api.js (exposed on window by js/main.js).
 
@@ -11,7 +27,16 @@ const CAPTURE_SOURCE = (URL_PARAMS.get('source') || '').toLowerCase();
 const CAPTURE_FRAME = URL_PARAMS.get('frame') || 'latest';
 const BACKGROUND_ONLY = URL_PARAMS.get('background_only') === '1';
 const DEBUG_SCRUBBER = URL_PARAMS.get('debug_scrubber') === '1';
-const MODEL_IMAGE_VERSION = '20260528d';
+const MODEL_IMAGE_VERSION = '20261008a';
+const SHAREABLE_VIEWS = new Set(['home', 'models', 'satellite', 'radar', 'chase', 'surface']);
+const SHAREABLE_MODELS = new Set([
+  'ecmwf', 'gdps', 'gefs', 'gfs', 'href', 'hrrr', 'nam12km', 'nam3km', 'rap', 'rrfs', 'rtma',
+]);
+const SHAREABLE_SATELLITES = new Set(['goes18', 'goes19']);
+const SHAREABLE_QUERY_KEYS = [
+  'view', 'source', 'model', 'run', 'param', 'fxx', 'satellite', 'sat_product', 'sat_region',
+  'site', 'product', 'tilt', 'frame', 'lat', 'lon', 'z',
+];
 
 if (CAPTURE_MODE) {
   document.documentElement.dataset.captureMode = '1';
@@ -72,6 +97,10 @@ let _soundingRequestSeq = 0;
 let _mapLoadingCount = 0;
 let _mapLoadingTimer = null;
 let _satelliteResumeAfterZoom = false;
+let _modelRunsId = 0;
+let _modelSelectionId = 0;
+let _legendRequestId = 0;
+let _chaseRequestId = 0;
 
 function getCaptureConfig() {
   if (!CAPTURE_MODE) return null;
@@ -89,6 +118,39 @@ function getCaptureConfig() {
     radarSite: URL_PARAMS.get('site') || 'KTLX',
     radarProduct: URL_PARAMS.get('product') || 'REF',
     radarTilt: Number.parseFloat(URL_PARAMS.get('tilt') || '0.5'),
+  };
+}
+
+function getSharedViewConfig() {
+  if (CAPTURE_MODE) return null;
+  const cleanId = (value) => (/^[a-z0-9_]+$/i.test(value || '') ? value : null);
+  const rawView = URL_PARAMS.get('view');
+  const view = (SHAREABLE_VIEWS.has(rawView) ? rawView : URL_PARAMS.get('source') || '').toLowerCase();
+  const lat = Number.parseFloat(URL_PARAMS.get('lat') || '');
+  const lon = Number.parseFloat(URL_PARAMS.get('lon') || '');
+  const zoom = Number.parseFloat(URL_PARAMS.get('z') || '');
+  const site = (URL_PARAMS.get('site') || '').toUpperCase();
+  const product = (URL_PARAMS.get('product') || '').toUpperCase();
+  return {
+    view: SHAREABLE_VIEWS.has(view) ? view : null,
+    model: SHAREABLE_MODELS.has(URL_PARAMS.get('model') || '') ? URL_PARAMS.get('model') : null,
+    runId: /^\d{10}$/.test(URL_PARAMS.get('run') || '') ? URL_PARAMS.get('run') : null,
+    parameter: cleanId(URL_PARAMS.get('param')),
+    fxx: URL_PARAMS.has('fxx') ? URL_PARAMS.get('fxx') : null,
+    satellite: SHAREABLE_SATELLITES.has(URL_PARAMS.get('satellite') || '')
+      ? URL_PARAMS.get('satellite')
+      : null,
+    satProduct: cleanId(URL_PARAMS.get('sat_product')),
+    satRegion: cleanId(URL_PARAMS.get('sat_region')) || '',
+    radarSite: /^[A-Z0-9]{3,4}$/.test(site) ? site : null,
+    radarProduct: /^[A-Z0-9_]{2,12}$/.test(product) ? product : null,
+    radarTilt: Number.parseFloat(URL_PARAMS.get('tilt') || ''),
+    frame: URL_PARAMS.get('frame') || null,
+    mapView: Number.isFinite(lat) && lat >= -90 && lat <= 90
+      && Number.isFinite(lon) && lon >= -180 && lon <= 180
+      && Number.isFinite(zoom) && zoom >= 0 && zoom <= 20
+      ? { lat, lon, zoom }
+      : null,
   };
 }
 
@@ -113,6 +175,26 @@ function applyCaptureConfig(config) {
     state.radarProduct = config.radarProduct;
     state.radarTilt = Number.isFinite(config.radarTilt) ? config.radarTilt : 0.5;
   }
+}
+
+function applySharedViewConfig(config) {
+  if (!config) return;
+  if (config.view) state.dataSource = config.view;
+  if (config.model) state.model = config.model;
+  if (config.runId) state.runId = config.runId;
+  if (config.parameter) state.parameter = config.parameter;
+  if (config.fxx !== null) {
+    state.currentFxx = /^\d+$/.test(config.fxx) ? Number.parseInt(config.fxx, 10) : config.fxx;
+  }
+  if (config.satellite) state.satellite = config.satellite;
+  if (config.satProduct) state.satProduct = config.satProduct;
+  if (config.satRegion !== null) {
+    state.satRegion = config.satRegion;
+    state.satScope = config.satRegion ? 'regional' : 'national';
+  }
+  if (config.radarSite) state.radarSite = config.radarSite;
+  if (config.radarProduct) state.radarProduct = config.radarProduct;
+  if (Number.isFinite(config.radarTilt)) state.radarTilt = config.radarTilt;
 }
 
 function clearCaptureReady() {
@@ -164,7 +246,17 @@ function markCaptureReady(reason = '') {
   }, 900);
 }
 
-applyCaptureConfig(getCaptureConfig());
+const SHARED_VIEW_CONFIG = getSharedViewConfig();
+let sharedModelSelectionPending = Boolean(
+  SHARED_VIEW_CONFIG?.view === 'models'
+  && (SHARED_VIEW_CONFIG.runId || SHARED_VIEW_CONFIG.fxx !== null)
+);
+let sharedChaseSelectionPending = Boolean(SHARED_VIEW_CONFIG?.view === 'chase');
+let sharedFramePending = SHARED_VIEW_CONFIG?.frame || null;
+let sharedMapViewPending = SHARED_VIEW_CONFIG?.mapView || null;
+
+if (CAPTURE_MODE) applyCaptureConfig(getCaptureConfig());
+else applySharedViewConfig(SHARED_VIEW_CONFIG);
 
 function getStoredRadarSite() {
   if (CAPTURE_MODE) return null;
@@ -237,6 +329,7 @@ const MODEL_CITY_ZOOM_THRESHOLD = 6.75;
 const MODEL_ROADS_ZOOM_THRESHOLD = 5.5;
 const MODEL_COUNTY_ZOOM_THRESHOLD = 6.5;
 const REFERENCE_COUNTY_ZOOM_THRESHOLD = 7.0;
+const REFERENCE_COUNTRY_COAST_ZOOM_THRESHOLD = 3.0;
 
 const SATELLITE_REFERENCE_CITIES = [
   ['Seattle', 47.6062, -122.3321],
@@ -532,6 +625,198 @@ const SATELLITE_SCOPE_DEFAULTS = {
   regional: { product: 'vis_1km', region: 'central_plains' },
 };
 
+// Regional satellite products — one generated button list; the region is
+// applied to the buttons' data-sat-region attribute by syncSatelliteRegionButtons().
+const SATELLITE_REGIONAL_PRODUCTS = [
+  ['vis_1km', 'Visible 1km — Band 2 (0.64µm)'],
+  ['ir_native', 'Clean IR Native — Band 13 (10.3µm)'],
+  ['ir_14', 'Longwave IR — Band 14 (11.2µm)'],
+  ['veggie', 'Veggie — Band 3 (0.86µm)'],
+  ['cloud_particle', 'Cloud Particle — Band 6 (2.2µm)'],
+];
+
+function buildSatelliteRegionalProducts() {
+  const container = document.getElementById('satRegionalProducts');
+  if (!container) return;
+  container.innerHTML = SATELLITE_REGIONAL_PRODUCTS.map(([product, label]) =>
+    `<button class="param-btn" data-sat-product="${product}" data-sat-region="">` +
+    `<span class="param-icon"></span>${label}</button>`,
+  ).join('');
+}
+
+function syncSatelliteRegionButtons() {
+  const region = state.satRegion || SATELLITE_SCOPE_DEFAULTS.regional.region;
+  document.querySelectorAll('#satRegionalProducts .param-btn').forEach((btn) => {
+    btn.dataset.satRegion = region;
+  });
+  const sel = document.getElementById('satRegionSelect');
+  if (sel && sel.value !== region) sel.value = region;
+}
+
+// Server Status cards — generated so markup stays in one place. Ids/classes
+// must match what updateMiniModelStatus() queries (mini-{fill,badge,text}-<name>).
+const MODEL_STATUS_CARDS = [
+  ['ecmwf', 'ECMWF', 'ecmwf'],
+  ['gdps', 'GDPS', 'gdps'],
+  ['gfs', 'GFS', 'gfs'],
+  ['hrrr', 'HRRR', 'hrrr'],
+  ['href', 'HREF', 'href'],
+  ['nam12km', 'NAM 12km', 'nam'],
+  ['nam3km', 'NAM 3km', 'nam3km'],
+  ['rap', 'RAP', 'rap'],
+  ['rrfs', 'RRFS', 'rrfs'],
+  ['rtma', 'RTMA', 'rtma'],
+  ['gefs', 'GEFS', 'gefs'],
+];
+
+function buildModelStatusCards() {
+  const container = document.getElementById('modelStatusCompact');
+  if (!container) return;
+  container.innerHTML = MODEL_STATUS_CARDS.map(([key, label, color]) =>
+    `<div class="model-compact" id="mini-${key}">` +
+    `<div class="model-compact-header">` +
+    `<span class="model-compact-name ${color}">${label}</span>` +
+    `<span class="model-compact-badge" id="mini-badge-${key}">IDLE</span>` +
+    `</div>` +
+    `<div class="model-compact-bar"><div class="model-compact-fill ${color}" id="mini-fill-${key}" style="width:0%"></div></div>` +
+    `<div class="model-compact-text" id="mini-text-${key}">--</div>` +
+    `</div>`,
+  ).join('');
+}
+
+// Models sidebar parameter filter — hides non-matching .param-btn buttons by
+// label text and collapses groups with no visible matches.
+function initParamFilter() {
+  const input = document.getElementById('paramFilter');
+  const sidebar = document.getElementById('modelSidebar');
+  if (!input || !sidebar) return;
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    sidebar.querySelectorAll('.param-btn[data-param]').forEach((btn) => {
+      btn.classList.toggle('param-filter-hidden', !!q && !btn.textContent.toLowerCase().includes(q));
+    });
+    sidebar.querySelectorAll('.param-group').forEach((group) => {
+      const buttons = [...group.querySelectorAll('.param-btn[data-param]')];
+      if (!buttons.length) return;
+      const anyVisible = buttons.some((b) =>
+        !b.classList.contains('param-filter-hidden') && b.style.display !== 'none');
+      group.classList.toggle('param-filter-empty', !!q && !anyVisible);
+      const toggle = group.querySelector(':scope > .param-group-toggle');
+      if (q && anyVisible && !group.classList.contains('expanded')) {
+        group.classList.add('expanded');
+        group.dataset.filterExpanded = '1';
+        toggle?.setAttribute('aria-expanded', 'true');
+      } else if (!q && group.dataset.filterExpanded) {
+        group.classList.remove('expanded');
+        delete group.dataset.filterExpanded;
+        toggle?.setAttribute('aria-expanded', 'false');
+      }
+    });
+  });
+}
+
+/** Keep pinned products visible without duplicating the parameter catalog. */
+function renderModelFavorites() {
+  const list = document.getElementById('favoriteProducts');
+  const toggle = document.getElementById('favoriteProductToggle');
+  const note = document.getElementById('favoriteProductsNote');
+  if (!list || !toggle || !note || !window.ViewerUI) return;
+  const favorites = window.ViewerUI.favorites;
+  const selected = document.querySelector(`.param-btn[data-param="${state.parameter}"]`);
+  const selectedName = selected?.textContent.trim() || state.parameter;
+  toggle.textContent = favorites.has(state.parameter) ? '★ Remove selected' : '☆ Save selected';
+  toggle.setAttribute('aria-pressed', String(favorites.has(state.parameter)));
+  toggle.setAttribute('aria-label', `${favorites.has(state.parameter) ? 'Remove' : 'Save'} ${selectedName} ${favorites.has(state.parameter) ? 'from' : 'to'} favorites`);
+  toggle.title = selectedName;
+  toggle.disabled = !selected;
+  list.replaceChildren();
+  let visibleCount = 0;
+  const saved = favorites.list();
+  const availabilityReady = Object.keys(state.availableByParam || {}).length > 0;
+  for (const parameter of saved) {
+    const original = document.querySelector(`.param-btn[data-param="${parameter}"]`);
+    if (!original || !original.dataset.models?.split(',').includes(state.model)) continue;
+    if (availabilityReady && !state.availableByParam[parameter]?.length) continue;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'favorite-product';
+    button.dataset.favoriteParam = parameter;
+    button.textContent = original.textContent.trim();
+    button.classList.toggle('active', parameter === state.parameter);
+    button.setAttribute('aria-pressed', String(parameter === state.parameter));
+    list.appendChild(button);
+    visibleCount++;
+  }
+  note.hidden = visibleCount > 0;
+  note.textContent = saved.length ? 'Saved favorites are unavailable for this model/run.' : 'Select a product, then save it here.';
+}
+
+function handleFavoriteProductClick(event) {
+  const button = event.target.closest('[data-favorite-param]');
+  if (!button) return;
+  document.querySelector(`.param-btn[data-param="${button.dataset.favoriteParam}"]`)?.click();
+}
+
+function toggleSelectedFavorite() {
+  window.ViewerUI.favorites.toggle(state.parameter);
+}
+
+function initModelFavorites() {
+  document.getElementById('favoriteProductToggle')?.addEventListener('click', toggleSelectedFavorite);
+  document.getElementById('favoriteProducts')?.addEventListener('click', handleFavoriteProductClick);
+  window.ViewerUI.favorites.subscribe(renderModelFavorites);
+  renderModelFavorites();
+}
+
+// Plain-English tooltips for cryptic parameter buttons (applied at init).
+const PARAM_TOOLTIPS = {
+  pwat: 'Precipitable water — total moisture in a column of air; high values signal heavy-rain potential',
+  mlcape: 'Mixed-layer CAPE — storm fuel (instability) averaged over the lowest ~1 km of the atmosphere',
+  mlcin: 'Mixed-layer CIN — the warm-air "cap" that storms must break through to form',
+  cape_ml: 'Mixed-layer CAPE — storm fuel (instability) averaged over the lowest ~1 km of the atmosphere',
+  cin_ml: 'Mixed-layer CIN — the warm-air "cap" that storms must break through to form',
+  mucape: 'Most-unstable CAPE — storm fuel of the single most buoyant air parcel near the ground',
+  mucin: 'Most-unstable CIN — inhibition for the most buoyant parcel; small values mean an easy cap break',
+  cape: 'Surface-based CAPE — storm fuel (instability) for air rising from the surface',
+  cape_surface: 'Surface-based CAPE — storm fuel (instability) for air rising from the surface',
+  cin: 'Surface-based CIN — the "cap" that inhibits surface-based storms',
+  cin_surface: 'Surface-based CIN — the "cap" that inhibits surface-based storms',
+  stp: 'Significant tornado parameter — composite of instability, shear, and spin; values above 1 favor strong tornadoes',
+  srh_01km: 'Storm-relative helicity, 0–1 km — low-level spin available to storms; key for tornado potential',
+  srh_03km: 'Storm-relative helicity, 0–3 km — low-level spin available to storms over a deeper layer',
+  vil: 'Vertically integrated liquid — radar estimate of total liquid water aloft; spikes can indicate hail',
+  uh_25km: 'Updraft helicity, 2–5 km — rotating-updraft (mesocyclone) tracks; highlights supercell paths',
+  uh_02km: 'Updraft helicity, 0–2 km — lowest-level rotation tracks; tornado-scale spin',
+  uh_03km: 'Updraft helicity, 0–3 km — low-to-mid-level rotating-updraft tracks',
+  echo_tops: 'Echo tops — height of the storm top; taller storms are usually stronger',
+  lifted_index: 'Lifted index — surface-parcel stability; negative values mean unstable air',
+  lcl: 'Lifted condensation level — approximate cloud-base height; low values favor tornadoes',
+  kuchera_6hr: '6-hour snowfall using the Kuchera ratio — adjusts totals for colder, fluffier snow',
+  kuchera_12hr: '12-hour snowfall using the Kuchera ratio — adjusts totals for colder, fluffier snow',
+};
+
+const RADAR_PRODUCT_TOOLTIPS = {
+  VIL: 'Vertically integrated liquid — radar estimate of total liquid water aloft; spikes can indicate hail',
+};
+
+function applyParamTooltips() {
+  document.querySelectorAll('.param-btn[data-param]').forEach((btn) => {
+    const tip = PARAM_TOOLTIPS[btn.dataset.param];
+    if (tip && !btn.title) btn.title = tip;
+  });
+  document.querySelectorAll('.param-btn[data-radar-product]').forEach((btn) => {
+    const tip = RADAR_PRODUCT_TOOLTIPS[btn.dataset.radarProduct];
+    if (tip && !btn.title) btn.title = tip;
+  });
+}
+
+// Sync aria-pressed with the .active class on toggle buttons (param/speed).
+function syncAriaPressed() {
+  document.querySelectorAll('.param-btn, .speed-btn').forEach((btn) => {
+    btn.setAttribute('aria-pressed', btn.classList.contains('active') ? 'true' : 'false');
+  });
+}
+
 function updateSatelliteScopeButtons() {
   document.querySelectorAll('[data-sat-scope]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.satScope === state.satScope);
@@ -551,6 +836,7 @@ function updateSatelliteProductButtons() {
       btn.dataset.satProduct === state.satProduct && (btn.dataset.satRegion || '') === state.satRegion,
     );
   });
+  syncAriaPressed();
 }
 
 function ensureValidSatelliteRegionProduct() {
@@ -602,6 +888,7 @@ function setSatelliteScope(scope, preserveSelection = true) {
     }
   }
   ensureValidSatelliteScopeSelection();
+  syncSatelliteRegionButtons();
   updateSatelliteScopeButtons();
   updateSatelliteScopeVisibility();
   updateSatelliteProductButtons();
@@ -621,7 +908,6 @@ const tabChase = $('tabChase');
 const tabSurface = $('tabSurface');
 
 // Controls
-const modelControls = $('modelControls');
 const satelliteControls = $('satelliteControls');
 const radarControls = $('radarControls');
 
@@ -632,7 +918,6 @@ const radarSidebar = $('radarSidebar');
 const surfaceSidebar = $('surfaceSidebar');
 const chaseSidebar = $('chaseSidebar');
 const scrubberBar = $('scrubberBar');
-const mapOverlayControl = $('mapOverlayControl');
 const mapSection = document.querySelector('.map-section');
 const homeLayerPanel = $('homeLayerPanel');
 const homeLayerPanelToggle = $('homeLayerPanelToggle');
@@ -673,8 +958,15 @@ function _pumpQueue() {
   while (_loadActive < PRELOAD_CONCURRENCY && _loadQueue.length) {
     const url = _loadQueue.shift();
     const s = _imgCache.get(url);
-    if (s === 'ok' || s === 'error') { _pumpQueue(); return; }
+    if (s === 'ok' || s === 'error') continue;
     _loadActive++;
+    if (window.PressureContours?.isUrl(url)) {
+      window.PressureContours.load(url).then(
+        () => { _imgCache.set(url, 'ok'); },
+        () => { _imgCache.set(url, 'error'); },
+      ).finally(() => { _loadActive--; _pumpQueue(); updateLoadStatus(); });
+      continue;
+    }
     const img = new Image();
     img.onload  = () => { _imgCache.set(url, 'ok');    _loadActive--; _pumpQueue(); updateLoadStatus(); };
     img.onerror = () => { _imgCache.set(url, 'error'); _loadActive--; _pumpQueue(); updateLoadStatus(); };
@@ -696,6 +988,8 @@ function isErrored(url) { return url ? _imgCache.get(url) === 'error' : false; }
 
 // Clear pending queue when switching products (already-loaded images stay in browser cache)
 function clearLoadQueue() {
+  // Canceled entries must be eligible for loading when this product is revisited.
+  for (const url of _loadQueue) _imgCache.delete(url);
   _loadQueue.length = 0;
   _productUrls = [];
 }
@@ -1300,7 +1594,7 @@ async function handleMapValueQuery(lat, lon, source) {
 
   if (source === 'radar' && state.radarSite && state.radarProduct) {
     try {
-      const path = `${BASE}/api/value/radar/${encodeURIComponent(state.radarSite)}/${encodeURIComponent(state.radarProduct)}?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&tilt=${encodeURIComponent(state.radarTilt)}`;
+      const path = `${BASE}/api/value/radar/${encodeURIComponent(state.radarSite)}/${encodeURIComponent(state.radarProduct)}?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&tilt=${encodeURIComponent(state.radarFrames[state.radarFrameIdx]?.tilt ?? state.radarTilt)}${state.radarFrames[state.radarFrameIdx]?.timestamp ? `&frame=${encodeURIComponent(state.radarFrames[state.radarFrameIdx].timestamp)}` : ''}`;
       const resp = await fetch(path, { signal: _hoverAbortController.signal });
       if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
       const data = await resp.json();
@@ -2142,6 +2436,18 @@ function attachImageFallbacks(scope = document) {
 }
 
 function buildCaptureMetadata() {
+  if (state.dataSource === 'models' || state.dataSource === 'chase') {
+    const chase = state.dataSource === 'chase';
+    const selection = chase ? chaseState : state;
+    const parameter = chase ? selection.param : selection.parameter;
+    const product = chase
+      ? document.querySelector(`.chase-product-btn[data-chase-param="${parameter}"] .chase-product-name`)?.textContent?.trim()
+      : document.getElementById('legendLabel')?.textContent?.trim();
+    return window.MapCaptureMetadata.model({
+      model: selection.model, product: product || parameter,
+      runId: selection.runId, fxx: selection.currentFxx,
+    });
+  }
   const modelText = document.getElementById('mapInfoModel')?.textContent?.trim() || '';
   const productText = document.getElementById('mapInfoProduct')?.textContent?.trim() || '';
   let timeText;
@@ -2171,40 +2477,75 @@ function buildCaptureFilename() {
 }
 
 function stampCaptureMetadata(canvas, text, bottomOffset = 18) {
-  if (!canvas || !text) return canvas;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return canvas;
+  const width = document.querySelector('.map-section')?.clientWidth || canvas.width;
+  return window.MapCaptureMetadata.stamp(canvas, text, { scale: canvas.width / width, bottomOffset });
+}
 
-  const fontSize = Math.max(12, Math.round(canvas.width / 70));
-  const padX = Math.round(fontSize * 0.8);
-  const padY = Math.round(fontSize * 0.55);
-  ctx.save();
-  ctx.font = `400 ${fontSize}px "JetBrains Mono", monospace`;
-  ctx.textBaseline = 'middle';
-  const metrics = ctx.measureText(text);
-  const boxW = Math.ceil(metrics.width + padX * 2);
-  const boxH = Math.ceil(fontSize + padY * 2);
-  const x = canvas.width - boxW - 18;
-  const y = canvas.height - boxH - bottomOffset;
-  ctx.fillStyle = 'rgba(7, 10, 16, 0.50)';
-  ctx.strokeStyle = 'rgba(152, 184, 228, 0.28)';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.roundRect(x, y, boxW, boxH, 12);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = 'rgba(241, 246, 255, 0.94)';
-  ctx.fillText(text, x + padX, y + boxH / 2);
-  ctx.restore();
-  return canvas;
+// Play/pause button icons (inline SVG, matching the other hand-tuned icons).
+const PLAY_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+const PAUSE_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
+
+// ---------------------------------------------------------------------------
+// Toast notifications
+// ---------------------------------------------------------------------------
+function showToast(message, type = 'info', timeoutMs = 5000) {
+  let container = document.getElementById('toastContainer');
+  if (!container) {
+    container = document.createElement('div');
+    container.className = 'toast-container';
+    container.id = 'toastContainer';
+    document.body.appendChild(container);
+  }
+  const toast = document.createElement('div');
+  toast.className = `toast toast--${type === 'error' ? 'error' : 'info'}`;
+  toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  toast.textContent = message;
+  let dismissed = false;
+  const dismiss = () => {
+    if (dismissed) return;
+    dismissed = true;
+    toast.classList.add('is-leaving');
+    setTimeout(() => toast.remove(), 220);
+  };
+  toast.addEventListener('click', dismiss);
+  container.appendChild(toast);
+  if (timeoutMs > 0) setTimeout(dismiss, timeoutMs);
+}
+
+// html2canvas is only needed for screenshot capture; load it lazily on first use.
+let html2canvasPromise = null;
+function loadHtml2Canvas() {
+  if (typeof window.html2canvas !== 'undefined') return Promise.resolve(window.html2canvas);
+  if (!html2canvasPromise) {
+    html2canvasPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '/static/vendor/html2canvas/html2canvas.min.js?v=1.4.1';
+      script.onload = () => resolve(window.html2canvas);
+      script.onerror = () => {
+        html2canvasPromise = null;
+        showToast('Screenshot library failed to load', 'error');
+        reject(new Error('Failed to load html2canvas'));
+      };
+      document.head.appendChild(script);
+    });
+  }
+  return html2canvasPromise;
 }
 
 async function captureMapSectionCanvas() {
   const mapSectionEl = document.querySelector('.map-section');
   if (!mapSectionEl) throw new Error('Map section not found');
-  const cleanupCaptureOverlay = prepareBoundaryCaptureOverlay();
+  beginMapLoading('Loading screenshot library…');
+  try {
+    await loadHtml2Canvas();
+  } finally {
+    endMapLoading();
+  }
+  if (state.overlayLayer?.isPressureContours) await state.overlayLayer._loading;
+  const cleanupCaptureOverlay = prepareMapCaptureOverlays();
   try {
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const metadata = buildCaptureMetadata();
     const canvas = await html2canvas(mapSectionEl, {
       useCORS: true,
       allowTaint: true,
@@ -2215,7 +2556,7 @@ async function captureMapSectionCanvas() {
         el?.classList?.contains('leaflet-control-attribution'),
     });
     const bottomOffset = state.dataSource === 'radar' ? 52 : 2;
-    return stampCaptureMetadata(canvas, buildCaptureMetadata(), bottomOffset);
+    return stampCaptureMetadata(canvas, metadata, bottomOffset);
   } finally {
     cleanupCaptureOverlay?.();
   }
@@ -2269,53 +2610,76 @@ function drawCaptureVectorLayer(ctx, layer) {
   });
 }
 
-function prepareBoundaryCaptureOverlay() {
+/** Rasterize Leaflet vectors for export without clipping their SVG viewports. */
+function prepareMapCaptureOverlays() {
   if (!leafletMap) return null;
   const mapEl = leafletMap.getContainer?.();
-  const boundaryPane = leafletMap.getPane?.('boundaryPane');
-  if (!mapEl || !boundaryPane) return null;
+  if (!mapEl) return null;
 
   const width = mapEl.clientWidth;
   const height = mapEl.clientHeight;
   if (!width || !height) return null;
 
   const ratio = window.devicePixelRatio || 1;
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(width * ratio);
-  canvas.height = Math.round(height * ratio);
-  canvas.style.position = 'absolute';
-  canvas.style.left = '0';
-  canvas.style.top = '0';
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  canvas.style.pointerEvents = 'none';
-  canvas.style.zIndex = '446';
+  const origin = leafletMap.containerPointToLayerPoint([0, 0]);
+  const cleanups = [];
+  const pressureCleanup = state.overlayLayer?.isPressureContours ? state.overlayLayer.prepareCapture() : null;
+  if (pressureCleanup) cleanups.push(pressureCleanup);
+  const groups = [
+    {
+      paneName: 'modelCanvasPane',
+      layers: [window._modelCanvasBackingLayer],
+    },
+    {
+      paneName: 'boundaryPane',
+      layers: [
+        window._modelFrameShadowLayer,
+        window._modelFrameOuterBorderLayer,
+        window._modelFrameBorderLayer,
+        window._countryBoundaryOutlineLayer,
+        window._countryBoundaryLayer,
+        window._stateBoundaryOutlineLayer,
+        window._stateBoundaryLayer,
+        window._coastlineBoundaryOutlineLayer,
+        window._coastlineBoundaryLayer,
+        window._lakesBoundaryLayer,
+        window._roadsBoundaryLayer,
+        window._countyBoundaryLayer,
+      ],
+    },
+  ];
 
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-  ctx.scale(ratio, ratio);
+  for (const { paneName, layers } of groups) {
+    const pane = leafletMap.getPane?.(paneName);
+    if (!pane || !layers.some((layer) => layer && leafletMap.hasLayer(layer))) continue;
 
-  [
-    window._modelFrameOuterBorderLayer,
-    window._modelFrameBorderLayer,
-    window._countryBoundaryOutlineLayer,
-    window._countryBoundaryLayer,
-    window._stateBoundaryOutlineLayer,
-    window._stateBoundaryLayer,
-    window._coastlineBoundaryOutlineLayer,
-    window._coastlineBoundaryLayer,
-    window._lakesBoundaryLayer,
-    window._roadsBoundaryLayer,
-    window._countyBoundaryLayer,
-  ].forEach((layer) => drawCaptureVectorLayer(ctx, layer));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+    canvas.style.position = 'absolute';
+    // Cancel the map pane's pan offset while retaining the pane's stacking order.
+    canvas.style.left = `${origin.x}px`;
+    canvas.style.top = `${origin.y}px`;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    canvas.style.pointerEvents = 'none';
 
-  mapEl.appendChild(canvas);
-  const previousVisibility = boundaryPane.style.visibility;
-  boundaryPane.style.visibility = 'hidden';
+    const ctx = canvas.getContext('2d');
+    if (!ctx) continue;
+    ctx.scale(ratio, ratio);
+    layers.forEach((layer) => drawCaptureVectorLayer(ctx, layer));
+
+    const originals = [...pane.children].map((child) => [child, child.style.visibility]);
+    originals.forEach(([child]) => { child.style.visibility = 'hidden'; });
+    pane.appendChild(canvas);
+    cleanups.push(() => {
+      originals.forEach(([child, visibility]) => { child.style.visibility = visibility; });
+      canvas.remove();
+    });
+  }
 
   return () => {
-    boundaryPane.style.visibility = previousVisibility;
-    canvas.remove();
+    cleanups.forEach((cleanup) => cleanup());
   };
 }
 
@@ -2373,6 +2737,7 @@ async function captureSoundingPanelCanvas() {
   if (!soundingPanel || soundingPanel.classList.contains('hidden')) {
     throw new Error('Sounding panel is not open');
   }
+  await loadHtml2Canvas();
   const rect = soundingPanel.getBoundingClientRect();
   const clone = soundingPanel.cloneNode(true);
   clone.id = 'soundingPanelCaptureClone';
@@ -2437,24 +2802,89 @@ async function copySoundingScreenshot() {
 // apiFetch comes from js/core/api.js via js/main.js.
 
 const VIEW_STORAGE_KEY = 'wx_viewer_active_view';
+let shareableUrlSyncTimer = null;
+
+function currentShareableFrame() {
+  if (state.dataSource === 'satellite') {
+    return state.satFrames[state.satFrameIdx]?.timestamp || null;
+  }
+  if (state.dataSource === 'radar') {
+    return state.radarFrames[state.radarFrameIdx]?.timestamp || null;
+  }
+  return null;
+}
+
+function buildShareableDesktopUrl() {
+  const url = new URL(window.location.href);
+  for (const key of [...SHAREABLE_QUERY_KEYS, 'desktop']) url.searchParams.delete(key);
+  url.searchParams.set('view', state.dataSource || 'home');
+
+  if (state.dataSource === 'models') {
+    if (state.model) url.searchParams.set('model', state.model);
+    if (state.runId) url.searchParams.set('run', state.runId);
+    if (state.parameter) url.searchParams.set('param', state.parameter);
+    if (state.currentFxx !== null && state.currentFxx !== undefined) {
+      url.searchParams.set('fxx', String(state.currentFxx));
+    }
+  } else if (state.dataSource === 'chase') {
+    if (chaseState.model) url.searchParams.set('model', chaseState.model);
+    if (chaseState.runId) url.searchParams.set('run', chaseState.runId);
+    if (chaseState.param) url.searchParams.set('param', chaseState.param);
+    if (chaseState.currentFxx !== null && chaseState.currentFxx !== undefined) {
+      url.searchParams.set('fxx', String(chaseState.currentFxx));
+    }
+  } else if (state.dataSource === 'satellite') {
+    if (state.satellite) url.searchParams.set('satellite', state.satellite);
+    if (state.satProduct) url.searchParams.set('sat_product', state.satProduct);
+    if (state.satRegion) url.searchParams.set('sat_region', state.satRegion);
+  } else if (state.dataSource === 'radar') {
+    if (state.radarSite) url.searchParams.set('site', state.radarSite);
+    if (state.radarProduct) url.searchParams.set('product', state.radarProduct);
+    if (Number.isFinite(state.radarTilt)) url.searchParams.set('tilt', String(state.radarTilt));
+  }
+
+  const frame = currentShareableFrame();
+  if (frame) url.searchParams.set('frame', frame);
+
+  if (leafletMap && ['home', 'radar', 'surface', 'chase'].includes(state.dataSource)) {
+    const center = leafletMap.getCenter();
+    const zoom = leafletMap.getZoom();
+    if (center && Number.isFinite(zoom)) {
+      url.searchParams.set('lat', center.lat.toFixed(4));
+      url.searchParams.set('lon', center.lng.toFixed(4));
+      url.searchParams.set('z', Number(zoom.toFixed(2)).toString());
+    }
+  }
+
+  url.hash = '';
+  return url;
+}
+
+function syncShareableDesktopUrl() {
+  if (CAPTURE_MODE) return;
+  if (shareableUrlSyncTimer) clearTimeout(shareableUrlSyncTimer);
+  shareableUrlSyncTimer = setTimeout(() => {
+    shareableUrlSyncTimer = null;
+    const url = buildShareableDesktopUrl();
+    const target = `${url.pathname}${url.search}${url.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (target !== current) history.replaceState(null, '', target);
+  }, 120);
+}
+
+function restoreSharedMapView(source) {
+  if (!leafletMap || !sharedMapViewPending || SHARED_VIEW_CONFIG?.view !== source) return false;
+  const { lat, lon, zoom } = sharedMapViewPending;
+  sharedMapViewPending = null;
+  leafletMap.setView([lat, lon], zoom, { animate: false });
+  return true;
+}
 
 function persistActiveView(source) {
   try {
     localStorage.setItem(VIEW_STORAGE_KEY, source);
   } catch {}
-  try {
-    const baseUrl = `${window.location.origin}${window.location.pathname || '/'}${window.location.search || ''}`;
-    const targetUrl = source === 'home'
-      ? baseUrl
-      : `${baseUrl}#${source}`;
-    if (DEBUG_SCRUBBER && typeof window.__wxPushDebugEvent === 'function') {
-      window.__wxPushDebugEvent(`persistActiveView(${source}) from hash=${window.location.hash || '-'} to ${targetUrl}`);
-    }
-    const currentUrl = window.location.href;
-    if (currentUrl !== targetUrl) {
-      history.replaceState(null, '', targetUrl);
-    }
-  } catch {}
+  syncShareableDesktopUrl();
 }
 
 function getStoredActiveView() {
@@ -2471,6 +2901,7 @@ function getInitialView() {
   if (CAPTURE_MODE) {
     return getCaptureConfig()?.source || 'models';
   }
+  if (SHARED_VIEW_CONFIG?.view) return SHARED_VIEW_CONFIG.view;
   const hashView = (window.location.hash || '').replace('#', '');
   if (['home', 'models', 'satellite', 'radar', 'chase', 'surface'].includes(hashView)) {
     return hashView;
@@ -2763,6 +3194,16 @@ const chaseState = {
   reflectivityEnabled: false,
   reflectivityAvailableFxx: [],
 };
+if (SHARED_VIEW_CONFIG?.view === 'chase') {
+  if (SHARED_VIEW_CONFIG.model) chaseState.model = SHARED_VIEW_CONFIG.model;
+  if (SHARED_VIEW_CONFIG.runId) chaseState.runId = SHARED_VIEW_CONFIG.runId;
+  if (SHARED_VIEW_CONFIG.parameter) chaseState.param = SHARED_VIEW_CONFIG.parameter;
+  if (SHARED_VIEW_CONFIG.fxx !== null) {
+    chaseState.currentFxx = /^\d+$/.test(SHARED_VIEW_CONFIG.fxx)
+      ? Number.parseInt(SHARED_VIEW_CONFIG.fxx, 10)
+      : SHARED_VIEW_CONFIG.fxx;
+  }
+}
 let _chaseOverlayGen = 0;
 let _chaseReflectivityGen = 0;
 
@@ -2853,6 +3294,9 @@ function initChaseTab() {
   }
 
   modelSel.value = chaseState.model;
+  document.querySelectorAll('.chase-product-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.chaseParam === chaseState.param);
+  });
   updateChaseProductVisibility();
   loadChaseRuns();
 }
@@ -2903,6 +3347,10 @@ async function loadChaseRuns() {
       }
       runSel.appendChild(opt);
     });
+    const requestedRun = sharedChaseSelectionPending ? SHARED_VIEW_CONFIG?.runId : null;
+    if (requestedRun && runs.some((run) => String(run.run_id || run) === String(requestedRun))) {
+      runSel.value = requestedRun;
+    }
     chaseState.runId = runSel.value;
     loadChaseData();
   } catch (e) {
@@ -2911,6 +3359,8 @@ async function loadChaseRuns() {
 }
 
 async function loadChaseData() {
+  const requestId = ++_chaseRequestId;
+  const isCurrent = () => requestId === _chaseRequestId && state.dataSource === 'chase';
   if (!chaseState.runId) return;
   beginMapLoading('Loading chase guidance…');
   const model = chaseState.model;
@@ -2925,6 +3375,7 @@ async function loadChaseData() {
     // Get available fxx for this param
     const availResp = await fetch(BASE + '/api/available/' + model + '/' + runId);
     const avail = await availResp.json();
+    if (!isCurrent()) return;
     const fxxList = avail[param] || [];
     chaseState.reflectivityAvailableFxx = (avail.reflectivity || []).slice().sort((a, b) => a - b);
     if (fxxList.length === 0) {
@@ -2936,22 +3387,31 @@ async function loadChaseData() {
     }
     hideMapNotice();
     chaseState.availableFxx = fxxList.sort((a, b) => a - b);
-    chaseState.currentFxx = fxxList[0];
+    const requestedFxx = sharedChaseSelectionPending ? SHARED_VIEW_CONFIG?.fxx : null;
+    const sharedFxx = requestedFxx !== null
+      ? chaseState.availableFxx.find((value) => String(value) === String(requestedFxx))
+      : undefined;
+    chaseState.currentFxx = sharedFxx !== undefined ? sharedFxx : fxxList[0];
+    sharedChaseSelectionPending = false;
 
     // Get bounds
     const boundsResp = await fetch(BASE + '/api/bounds/' + model + '/' + runId);
-    chaseState.overlayBounds = await boundsResp.json();
+    const bounds = await boundsResp.json();
+    if (!isCurrent()) return;
+    chaseState.overlayBounds = bounds;
 
     // Populate scrubber
     populateChaseScrubber();
     updateChaseOverlay();
     updateChaseReflectivityOverlay();
   } catch (e) {
+    if (!isCurrent()) return;
     clearChaseOverlayState();
     showMapNotice('Unable to load this chase product right now.');
     updateLegend();
     console.error('Chase data load failed:', e);
   } finally {
+    syncShareableDesktopUrl();
     endMapLoading();
   }
 }
@@ -2960,10 +3420,10 @@ function populateChaseScrubber() {
   const fxxList = chaseState.availableFxx;
   if (!fxxList || fxxList.length === 0) return;
   state.availableFxx = fxxList;
-  state.fxxIndex = 0;
+  state.fxxIndex = Math.max(0, fxxList.findIndex((value) => String(value) === String(chaseState.currentFxx)));
   scrubber.min = 0;
   scrubber.max = Math.max(0, fxxList.length - 1);
-  scrubber.value = 0;
+  scrubber.value = state.fxxIndex;
   renderScrubberTicks(fxxList);
   syncScrubberVisibility();
 }
@@ -3010,6 +3470,7 @@ function updateChaseOverlay() {
       overlayImg.addEventListener('error', onError, { once: true });
     }
   }
+  syncShareableDesktopUrl();
 }
 
 function updateChaseReflectivityOverlay() {
@@ -3081,6 +3542,13 @@ function switchDataSource(source) {
   }
   pause();
   stopRadarAutoRefresh();
+  ++_modelRunsId;
+  ++_modelSelectionId;
+  ++_legendRequestId;
+  ++_chaseRequestId;
+  ++state.satRequestId;
+  ++state.radarRequestId;
+  clearLoadQueue();
   state.dataSource = source;
   setReferenceOverlayMode(source);
   if (!CAPTURE_MODE) persistActiveView(source);
@@ -3101,9 +3569,6 @@ function switchDataSource(source) {
   satelliteControls.classList.toggle('hidden', source !== 'satellite');
   radarControls.classList.toggle('hidden', source !== 'radar');
   document.getElementById('radarSiteInline')?.classList.toggle('hidden', source !== 'radar');
-  if (mapOverlayControl) {
-    mapOverlayControl.classList.toggle('hidden', source !== 'radar');
-  }
   
   // Toggle sidebar visibility
   modelSidebar.classList.toggle('hidden', source !== 'models');
@@ -3130,7 +3595,10 @@ function switchDataSource(source) {
 
   scheduleLeafletResize();
 
-  if (source === 'home' && leafletMap && usaBounds) {
+  const restoringSharedMap = Boolean(
+    sharedMapViewPending && SHARED_VIEW_CONFIG?.view === source
+  );
+  if (source === 'home' && leafletMap && usaBounds && !restoringSharedMap) {
     applyUsaViewport({ animate: false });
     scheduleUsaViewportRefresh(true);
   }
@@ -3179,7 +3647,7 @@ function switchDataSource(source) {
   if (source === 'home') {
     initHomeDashboard();
   } else if (source === 'models') {
-    setModelReferenceMode(true);
+    setModelReferenceMode(true, { fitViewport: true });
     loadRuns();
     updateMapInfoForModel();
   } else if (source === 'satellite') {
@@ -3187,19 +3655,23 @@ function switchDataSource(source) {
     loadSatelliteData();
     updateMapInfoForSatellite();
     refreshSatelliteStatus();
-  } else if (source === 'chase') {
-    setModelReferenceMode(true);
+  } else if (source === 'chase') {
+    setModelReferenceMode(true, { fitViewport: true });
     initChaseTab();
   } else if (source === 'radar') {
-    loadRadarData();
-    loadRadarTilts();
-    updateMapInfoForRadar();
-    refreshRadarStatus();
-    flyToRadarSite(state.radarSite);
+    if (state.radarTilt === 0.5) loadRadarData();
+    else loadRadarTilt();
+    loadRadarTilts();
+    updateMapInfoForRadar();
+    refreshRadarStatus();
+    void refreshSevereWarnings();
+    if (!restoringSharedMap) flyToRadarSite(state.radarSite);
     _radarSiteBuildPromise = buildRadarSiteMarkers().then(showRadarSiteMarkers);
   } else if (source === 'surface') {
-    flyToRadarSite(state.radarSite);
-  }
+    if (!restoringSharedMap) flyToRadarSite(state.radarSite);
+  }
+
+  if (restoringSharedMap) restoreSharedMapView(source);
 
   // Hide radar site markers when leaving radar view
   if (source !== 'radar') {
@@ -3436,7 +3908,7 @@ function updateModelFrame(bounds = state.overlayBounds) {
   }
 }
 
-function setReferenceOverlayMode(mode) {
+function setReferenceOverlayMode(mode, { fitViewport = false } = {}) {
   if (!leafletMap) return;
 
   const baseTile = baseTileLayer?.getContainer?.();
@@ -3445,12 +3917,12 @@ function setReferenceOverlayMode(mode) {
   if (labelTile) labelTile.style.display = (mode === 'satellite') ? 'none' : '';
 
   if (mode === 'satellite') {
-    updateSatelliteViewport();
+    if (fitViewport) updateSatelliteViewport();
     resetModelBackgroundWash();
   } else if (mode === 'models') {
     resetSatelliteBackgroundWash();
     resetModelBackgroundWash();
-    updateModelViewport();
+    if (fitViewport) updateModelViewport();
   } else {
     leafletMap.setMaxBounds(null);
     leafletMap.setMinZoom(defaultMinZoom);
@@ -3465,8 +3937,8 @@ function setReferenceOverlayMode(mode) {
       outline: { color: '#05080d', weight: 2.7, opacity: 0.42, lineJoin: 'round', lineCap: 'round' },
     },
     models: {
-      line: { color: '#333', weight: 1.2, opacity: 0.85, lineJoin: 'round', lineCap: 'round' },
-      outline: { color: '#05080d', weight: 2.2, opacity: 0.0, lineJoin: 'round', lineCap: 'round' },
+      line: { color: '#243040', weight: 1.1, opacity: 0.85, lineJoin: 'round', lineCap: 'round' },
+      outline: { color: '#f4f7fb', weight: 2.4, opacity: 0.48, lineJoin: 'round', lineCap: 'round' },
     },
     default: {
       line: { color: '#333', weight: 1.2, opacity: 0.85, lineJoin: 'round', lineCap: 'round' },
@@ -3557,7 +4029,7 @@ function setReferenceOverlayMode(mode) {
 }
 
 function setSatelliteBasemapMode(enabled) {
-  setReferenceOverlayMode(enabled ? 'satellite' : 'default');
+  setReferenceOverlayMode(enabled ? 'satellite' : 'default', { fitViewport: enabled });
   const mapEl = leafletMap?.getContainer?.();
   if (mapEl) mapEl.classList.toggle('satellite-canvas', enabled);
   if (!enabled) clearSatellitePaneClip();
@@ -3568,8 +4040,8 @@ function setSatelliteBasemapMode(enabled) {
   }
 }
 
-function setModelReferenceMode(enabled) {
-  setReferenceOverlayMode(enabled ? 'models' : 'default');
+function setModelReferenceMode(enabled, options = {}) {
+  setReferenceOverlayMode(enabled ? 'models' : 'default', options);
 }
 
 
@@ -3669,7 +4141,7 @@ function initMap() {
   });
 
   baseTileLayer = L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png?key=cb1_2l3n_1_eb188b07acba78da03ca3c9c', {
       attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/">OSM</a>',
       subdomains: 'abcd',
       maxZoom: 19,
@@ -3720,7 +4192,11 @@ function initMap() {
   radarSitePane.style.zIndex = 490;
   radarSitePane.style.pointerEvents = 'auto';
 
-  fetch(`${BASE}/static/boundaries_states.json`)
+    // Boundary fetches: states/lakes are visible at the default zoom but are
+  // deferred until after first paint; countries/coastline are coarse low-zoom
+  // context and only load once the zoom level can actually show them.
+  const loadStateBoundaries = () => {
+    fetch(`${BASE}/static/boundaries_states.json`)
     .then(r => r.json())
     .then(geojson => {
       const filtered = filterGeoJSONToBounds(geojson, conusReferenceBounds);
@@ -3744,9 +4220,34 @@ function initMap() {
       if (shouldUseSatelliteImageViewer() && state.satFrames[state.satFrameIdx]) {
         renderSatelliteImageViewerOverlay(state.satFrames[state.satFrameIdx]);
       }
-    }).catch(e => console.warn('State boundaries failed:', e));
+    }).catch(e => { console.warn('State boundaries failed:', e); showToast('State boundary overlay failed to load', 'error'); });
+  };
 
-  fetch(`${BASE}/static/boundaries_countries.json`)
+  const loadLakeBoundaries = () => {
+    fetch(`${BASE}/static/boundaries_lakes.json`)
+    .then(r => r.json())
+    .then(geojson => {
+      const filtered = filterGeoJSONToBounds(geojson, conusReferenceBounds);
+      _viewerLakeGeoJSON = filtered;
+      _viewerOverlayCache.key = null;
+      window._lakesBoundaryLayer = L.geoJSON(filtered, {
+        pane: 'boundaryPane',
+        renderer: boundaryRenderer,
+        style: { color: '#4a90b8', weight: 0, fillColor: '#4a90b8', fillOpacity: 0.5, opacity: 0 },
+        interactive: false,
+      }).addTo(leafletMap);
+      if (state.dataSource === 'satellite' || state.dataSource === 'models') {
+        setReferenceOverlayMode(state.dataSource);
+      }
+      if (shouldUseSatelliteImageViewer() && state.satFrames[state.satFrameIdx]) {
+        renderSatelliteImageViewerOverlay(state.satFrames[state.satFrameIdx]);
+      }
+
+    }).catch(e => { console.warn('Lakes failed:', e); showToast('Lake overlay failed to load', 'error'); });
+  };
+
+  const loadCountryCoastBoundaries = () => {
+    fetch(`${BASE}/static/boundaries_countries.json`)
     .then(r => r.json())
     .then(geojson => {
       const filtered = filterGeoJSONToBounds(geojson, regionalReferenceBounds);
@@ -3770,30 +4271,9 @@ function initMap() {
       if (shouldUseSatelliteImageViewer() && state.satFrames[state.satFrameIdx]) {
         renderSatelliteImageViewerOverlay(state.satFrames[state.satFrameIdx]);
       }
-    }).catch(e => console.warn('Country boundaries failed:', e));
+    }).catch(e => { console.warn('Country boundaries failed:', e); showToast('Country boundary overlay failed to load', 'error'); });
 
-  fetch(`${BASE}/static/boundaries_lakes.json`)
-    .then(r => r.json())
-    .then(geojson => {
-      const filtered = filterGeoJSONToBounds(geojson, conusReferenceBounds);
-      _viewerLakeGeoJSON = filtered;
-      _viewerOverlayCache.key = null;
-      window._lakesBoundaryLayer = L.geoJSON(filtered, {
-        pane: 'boundaryPane',
-        renderer: boundaryRenderer,
-        style: { color: '#4a90b8', weight: 0, fillColor: '#4a90b8', fillOpacity: 0.5, opacity: 0 },
-        interactive: false,
-      }).addTo(leafletMap);
-      if (state.dataSource === 'satellite' || state.dataSource === 'models') {
-        setReferenceOverlayMode(state.dataSource);
-      }
-      if (shouldUseSatelliteImageViewer() && state.satFrames[state.satFrameIdx]) {
-        renderSatelliteImageViewerOverlay(state.satFrames[state.satFrameIdx]);
-      }
-
-    }).catch(e => console.warn('Lakes failed:', e));
-
-  fetch(`${BASE}/static/boundaries_coastline.json`)
+    fetch(`${BASE}/static/boundaries_coastline.json`)
     .then(r => r.json())
     .then(geojson => {
       _viewerCoastGeoJSON = geojson;
@@ -3818,7 +4298,31 @@ function initMap() {
       if (shouldUseSatelliteImageViewer() && state.satFrames[state.satFrameIdx]) {
         renderSatelliteImageViewerOverlay(state.satFrames[state.satFrameIdx]);
       }
-    }).catch(e => console.warn('Coastline failed:', e));
+    }).catch(e => { console.warn('Coastline failed:', e); showToast('Coastline overlay failed to load', 'error'); });
+  };
+
+  let _countryCoastLoadStarted = false;
+  const lazyLoadCountryCoastBoundaries = () => {
+    if (_countryCoastLoadStarted) return;
+    if (leafletMap.getZoom() < REFERENCE_COUNTRY_COAST_ZOOM_THRESHOLD) return;
+    _countryCoastLoadStarted = true;
+    loadCountryCoastBoundaries();
+  };
+  leafletMap.on('zoomend', lazyLoadCountryCoastBoundaries);
+
+  let _deferredBoundariesRan = false;
+  const runDeferredBoundaries = () => {
+    if (_deferredBoundariesRan) return;
+    _deferredBoundariesRan = true;
+    const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
+    idle(() => {
+      loadStateBoundaries();
+      loadLakeBoundaries();
+      lazyLoadCountryCoastBoundaries();
+    }, { timeout: 1000 });
+  };
+  // The initial map load may already have fired before listeners were attached.
+  runDeferredBoundaries();
 
   // Lazy-load counties and roads — deferred until zoom level needs them
   let _countyLoadStarted = false, _roadsLoadStarted = false;
@@ -3866,7 +4370,7 @@ function initMap() {
   labelsPane.style.zIndex = 450;
   labelsPane.style.pointerEvents = 'none';
   labelTileLayer = L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+    'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png?key=cb1_2l3n_1_eb188b07acba78da03ca3c9c', {
       pane: 'labelsPane',
       subdomains: 'abcd',
       maxZoom: 19,
@@ -3943,6 +4447,7 @@ function initMap() {
   });
   leafletMap.on('moveend', updateModelCityLayerVisibility);
   leafletMap.on('moveend', updateModelDetailLayerVisibility);
+  leafletMap.on('moveend', syncShareableDesktopUrl);
 
   window.addEventListener('resize', () => {
     scheduleActiveSourceReflow();
@@ -3982,11 +4487,11 @@ async function loadSatelliteData() {
     try {
       frames = await apiFetch(`${BASE}/api/satellite/frames/${state.satellite}/${state.satProduct}${satQuery}`);
     } catch (_) {}
-    if (requestId !== state.satRequestId) return;
+    if (requestId !== state.satRequestId || state.dataSource !== 'satellite') return;
 
     // Fetch latest as fallback / always show latest on load
     const meta = await apiFetch(`${BASE}/api/satellite/latest/${state.satellite}/${state.satProduct}${satQuery}`);
-    if (requestId !== state.satRequestId) return;
+    if (requestId !== state.satRequestId || state.dataSource !== 'satellite') return;
     state.satMetadata = meta;
 
     if (meta && meta.bounds) {
@@ -3994,14 +4499,19 @@ async function loadSatelliteData() {
       setSatelliteBasemapMode(true);
     }
 
-    // Build frame list: timestamped history + latest
-    if (frames.length > 0) {
-      state.satFrames = frames;
-    } else {
-      // Only latest available — wrap it as a single frame
-      state.satFrames = [{ timestamp: meta.timestamp, png_path: meta.png_path, bounds: meta.bounds }];
-    }
-    state.satFrameIdx = state.satFrames.length - 1; // start at newest
+    // Build frame list: timestamped history + latest
+    if (frames.length > 0) {
+      state.satFrames = frames;
+    } else {
+      // Only latest available — wrap it as a single frame
+      state.satFrames = [{ timestamp: meta.timestamp, png_path: meta.png_path, bounds: meta.bounds }];
+    }
+    state.satFrameIdx = state.satFrames.length - 1; // start at newest
+    if (sharedFramePending && SHARED_VIEW_CONFIG?.view === 'satellite') {
+      const sharedIdx = state.satFrames.findIndex((frame) => String(frame.timestamp) === sharedFramePending);
+      if (sharedIdx >= 0) state.satFrameIdx = sharedIdx;
+      sharedFramePending = null;
+    }
 
     preloadAllDesktopFrames();
     updateSatScrubber();
@@ -4014,6 +4524,7 @@ async function loadSatelliteData() {
     }
   } catch (e) {
     console.error('Failed to load satellite data:', e);
+    showToast('Failed to load satellite imagery', 'error');
   } finally {
     endMapLoading();
   }
@@ -4160,9 +4671,11 @@ function showSatelliteFrame(idx) {
   } else {
     markCaptureReady('satellite');
   }
+  syncShareableDesktopUrl();
 }
 
 function updateSatScrubber() {
+  scrubber.disabled = state.satFrames.length < 2;
   const frames = state.satFrames;
   scrubber.min = 0;
   scrubber.max = Math.max(0, frames.length - 1);
@@ -4270,99 +4783,73 @@ let _radarStatusInterval = null;
 let _radarAutoRefreshTimer = null;
 const RADAR_AUTO_REFRESH_MS = 30_000;  // poll for new scans every 30s
 
-async function renderCurrentRadarFrameOnDemand() {
-  const site = state.radarSite;
-  const product = state.radarProduct;
-  const tilt = state.radarTilt || 0.5;
-  try {
-    const response = await fetch(`${BASE}/api/radar/render/${site}/${product}/${tilt}`);
-    if (!response.ok) return false;
-    const frame = await response.json();
-    if (!frame || !frame.png_path) return false;
-    state.radarFrames = [{
-      timestamp: frame.timestamp || '',
-      png_path: frame.png_path,
-      bounds: frame.bounds,
-      tilt: frame.tilt || tilt,
-      site,
-      product,
-      field: frame.field || '',
-    }];
-    state.radarFrameIdx = 0;
-    updateScrubberForRadar();
-    showRadarFrame(0);
-    updateMapInfoForRadar();
-    updateLegend();
-    return true;
-  } catch (e) {
-    console.warn('Radar on-demand render failed:', e);
-    return false;
+async function renderCurrentRadarFrameOnDemand(requestId = state.radarRequestId) {
+  const { radarSite: site, radarProduct: product, radarTilt: tilt } = state;
+  const frame = await apiFetch(`${BASE}/api/radar/render/${site}/${product}/${tilt}`, { timeoutMs: 60_000 });
+  if (requestId !== state.radarRequestId || state.dataSource !== 'radar') return null;
+  if (frame?.png_path && Number.isFinite(frame.tilt)) {
+    state.radarTilt = frame.tilt;
+    const select = document.getElementById('radarTiltSelect');
+    if (select) {
+      if (![...select.options].some((option) => Number(option.value) === frame.tilt)) {
+        const option = document.createElement('option');
+        option.value = String(frame.tilt);
+        option.textContent = `${frame.tilt.toFixed(1)}°`;
+        select.appendChild(option);
+      }
+      select.value = String(frame.tilt);
+    }
   }
+  return frame?.png_path ? frame : null;
 }
 
 async function loadRadarData() {
-  console.log('Loading radar data for', state.radarSite, state.radarProduct);
+  const requestId = ++state.radarRequestId;
+  const { radarSite: site, radarProduct: product, radarTilt: tilt } = state;
+  const isCurrent = () => requestId === state.radarRequestId && state.dataSource === 'radar';
+  pause();
+  stopRadarAutoRefresh();
+  clearLoadQueue();
+  clearRadarLayers();
+  state.radarFrames = [];
+  state.radarFrameIdx = 0;
+  updateScrubberForRadar();
+  hideMapNotice();
   clearCaptureReady();
   beginMapLoading('Loading radar frames…');
-  const requestId = ++state.radarRequestId;
-  
-  try {
-    // Fetch frames for this site/product
-    const response = await fetch(`${BASE}/api/radar/frames/${state.radarSite}/${state.radarProduct}`);
-    
-    if (!response.ok) {
-      if (response.status === 404) {
-        if (await renderCurrentRadarFrameOnDemand()) return;
-        // No data available yet
-        console.log('No radar data available yet for', state.radarSite, state.radarProduct);
-        if (state.radarOverlayLayer) {
-          leafletMap.removeLayer(state.radarOverlayLayer);
-          state.radarOverlayLayer = null;
-        }
-        updateMapInfoForRadar();
-        return;
-      }
-      throw new Error(`HTTP ${response.status}`);
-    }
-    
-    let frames = await response.json();
-    if (requestId !== state.radarRequestId) return;
-    if (state.dataSource !== 'radar') return; // tab changed during fetch
-    
-    if (!frames || frames.length === 0) {
-      if (await renderCurrentRadarFrameOnDemand()) return;
-      console.log('No radar frames available');
-      state.radarFrames = [];
-      if (state.radarOverlayLayer) {
-        leafletMap.removeLayer(state.radarOverlayLayer);
-        state.radarOverlayLayer = null;
-      }
-      updateMapInfoForRadar();
-      return;
-    }
-    
-    // Apply loop length filter using elapsed time rather than raw scan count.
-    frames = filterRadarFramesByLoopLength(frames, state.radarLoopLength);
-    state.radarFrames = frames;
-    state.radarFrameIdx = frames.length - 1;  // Start with most recent
-    
-    // Update scrubber
-    updateScrubberForRadar();
-    
-    // Show the latest frame
-    showRadarFrame(state.radarFrameIdx);
-    preloadAllDesktopFrames();
-    updateMapInfoForRadar();
-    updateLegend();
-
+  try {
+    let frames = await apiFetch(`${BASE}/api/radar/frames/${site}/${product}?tilt=${tilt}`);
+    if (!isCurrent()) return;
+    if (!frames?.length || tilt > 0.65) {
+      const frame = await renderCurrentRadarFrameOnDemand(requestId);
+      if (!isCurrent()) return;
+      frames = frame ? [frame] : [];
+    }
+    if (!frames.length) {
+      showMapNotice('No radar data available for this product and elevation.');
+      return;
+    }
+    state.radarFrames = filterRadarFramesByLoopLength(frames, state.radarLoopLength);
+    state.radarFrameIdx = state.radarFrames.length - 1;
+    if (sharedFramePending && SHARED_VIEW_CONFIG?.view === 'radar') {
+      const sharedIdx = state.radarFrames.findIndex((frame) => String(frame.timestamp) === sharedFramePending);
+      if (sharedIdx >= 0) state.radarFrameIdx = sharedIdx;
+      sharedFramePending = null;
+    }
+    updateScrubberForRadar();
+    showRadarFrame(state.radarFrameIdx);
+    preloadAllDesktopFrames();
+    updateMapInfoForRadar();
+    updateLegend();
     startRadarAutoRefresh();
-
-    
-  } catch (e) {
-    console.error('Failed to load radar data:', e);
-  } finally {
-    endMapLoading();
-  }
+  } catch (error) {
+    if (isCurrent()) {
+      validTimeDisplay.textContent = 'Radar data unavailable';
+      showMapNotice('Unable to load this radar product. Select a product to retry.');
+    }
+  } finally {
+    endMapLoading();
+  }
 }
 
 function startRadarAutoRefresh() {
@@ -4379,11 +4866,17 @@ function stopRadarAutoRefresh() {
 
 async function refreshRadarFrames() {
   if (state.dataSource !== 'radar') { stopRadarAutoRefresh(); return; }
+  const requestId = state.radarRequestId;
   try {
-    const response = await fetch(`${BASE}/api/radar/frames/${state.radarSite}/${state.radarProduct}`);
+    const response = await fetch(`${BASE}/api/radar/frames/${state.radarSite}/${state.radarProduct}?tilt=${state.radarTilt}`);
     if (!response.ok) return;
     let frames = await response.json();
-    if (state.dataSource !== 'radar') return;
+    if (state.dataSource !== 'radar' || requestId !== state.radarRequestId) return;
+    if (state.radarTilt > 0.65) {
+      const frame = await renderCurrentRadarFrameOnDemand(requestId);
+      if (requestId !== state.radarRequestId || state.dataSource !== 'radar') return;
+      frames = frame ? [frame] : [];
+    }
     if (!frames || !frames.length) return;
 
     frames = filterRadarFramesByLoopLength(frames, state.radarLoopLength);
@@ -4397,25 +4890,26 @@ async function refreshRadarFrames() {
     // No new data
     if (newLatest === oldLatest && frames.length === oldCount) return;
 
+    const selectedTimestamp = state.radarFrames[state.radarFrameIdx]?.timestamp;
     state.radarFrames = frames;
+    state.radarFrameIdx = wasAtEnd ? frames.length - 1 : Math.max(0, frames.findIndex((frame) => frame.timestamp === selectedTimestamp));
 
-    if (wasAtEnd) {
-      // Jump to the newest frame
-      state.radarFrameIdx = frames.length - 1;
-      showRadarFrame(state.radarFrameIdx);
-    }
+    showRadarFrame(state.radarFrameIdx);
     // Always update scrubber to reflect new frame count
     updateScrubberForRadar();
     preloadAllDesktopFrames();
     updateMapInfoForRadar();
   } catch (e) {
     console.log('Radar auto-refresh failed:', e);
+    showToast('Radar auto-refresh failed', 'error');
   }
 }
 
 function updateScrubberForRadar() {
   syncScrubberVisibility();
   const frameCount = state.radarFrames.length;
+  scrubber.disabled = frameCount < 2;
+  document.getElementById('frameCounter').textContent = frameCount ? `${state.radarFrameIdx + 1}/${frameCount}` : '—';
   scrubberTicks.classList.remove('satellite-mode');
   scrubberTicks.innerHTML = '';
   
@@ -5939,12 +6433,17 @@ async function refreshMcdOverlay() {
         },
         onEachFeature: (feature, layer) => {
           const props = feature.properties || {};
-          bindOverlayPopup(layer, `<strong>MCD ${props.number || ''}</strong>`, [
-            props.title || 'Mesoscale Discussion',
-            props.issued ? `Issued: ${props.issued}` : '',
-            props.expires ? `Expires: ${props.expires}` : '',
-            Array.isArray(props.probabilities) ? props.probabilities.join(' · ') : '',
-          ]);
+          bindSpcPopup(
+            layer,
+            `<strong>MCD ${props.number || ''}</strong>`,
+            [
+              props.issued ? `Issued: ${props.issued}` : '',
+              props.expires ? `Expires: ${props.expires}` : '',
+              Array.isArray(props.probabilities) ? props.probabilities.join(' · ') : '',
+            ],
+            props.discussion_text || '',
+            props.discussion_source_url || ''
+          );
         },
       }).addTo(leafletMap);
       if (state.homeMcdLayer?.bringToFront) state.homeMcdLayer.bringToFront();
@@ -5974,12 +6473,17 @@ async function refreshMcdOverlay() {
       },
       onEachFeature: (feature, layer) => {
         const props = feature.properties || {};
-        bindOverlayPopup(layer, `<strong>MCD ${props.number || ''}</strong>`, [
-          props.title || 'Mesoscale Discussion',
-          props.issued ? `Issued: ${props.issued}` : '',
-          props.expires ? `Expires: ${props.expires}` : '',
-          Array.isArray(props.probabilities) ? props.probabilities.join(' · ') : '',
-        ]);
+        bindSpcPopup(
+          layer,
+          `<strong>MCD ${props.number || ''}</strong>`,
+          [
+            props.issued ? `Issued: ${props.issued}` : '',
+            props.expires ? `Expires: ${props.expires}` : '',
+            Array.isArray(props.probabilities) ? props.probabilities.join(' · ') : '',
+          ],
+          props.discussion_text || '',
+          props.discussion_source_url || ''
+        );
       },
     }).addTo(leafletMap);
   } catch (e) {
@@ -6107,15 +6611,22 @@ async function refreshExternalOverlays() {
   ]);
 }
 
+let radarLegendPaletteVersion = null;
+
 function showRadarFrame(idx) {
   if (state.dataSource !== 'radar') return;
   const frame = state.radarFrames[idx];
   if (!frame) return;
 
-  const oldLayer = state.radarOverlayLayer;
+  const paletteVersion = frame.palette_version || 1;
+  if (radarLegendPaletteVersion !== paletteVersion) {
+    radarLegendPaletteVersion = paletteVersion;
+    updateLegend();
+  }
+  const oldLayer = state.radarOverlayLayer;
 
   // Stable URL so preloaded browser cache is reused
-  const url = `${BASE}/rendered/${frame.png_path}?_=${frame.timestamp || ""}`;
+  const url = `${BASE}/rendered/${frame.png_path}?_=${frame.timestamp || ""}&palette=${frame.palette_version || 1}`;
   const bounds = [[frame.bounds.south, frame.bounds.west], [frame.bounds.north, frame.bounds.east]];
 
   const newLayer = L.imageOverlay(url, bounds, {
@@ -6155,8 +6666,9 @@ function showRadarFrame(idx) {
   const frameCounter = document.getElementById('frameCounter');
   if (frameCounter) {
     frameCounter.textContent = `${idx + 1}/${state.radarFrames.length}`;
-  }
+  }
   markCaptureReady('radar');
+  syncShareableDesktopUrl();
 
 }
 
@@ -6210,6 +6722,34 @@ async function centerRadarSiteInView(site, { animate = true, zoom = 8 } = {}) {
 
 async function flyToRadarSite(site) {
   return centerRadarSiteInView(site, { animate: true, zoom: 8 });
+}
+
+// Populate the radar site <select> from the API (reuses the site-location cache).
+async function populateRadarSiteSelect() {
+  const sel = document.getElementById('radarSiteSelect');
+  if (!sel) return;
+  if (!_radarSiteLocations) {
+    try {
+      const resp = await fetch(`${BASE}/api/radar/sites`);
+      if (resp.ok) {
+        const data = await resp.json();
+        _radarSiteLocations = data.sites || {};
+      }
+    } catch (e) {
+      console.log('Failed to fetch radar site locations:', e);
+    }
+  }
+  const sites = _radarSiteLocations;
+  if (!sites || Object.keys(sites).length === 0) {
+    sel.innerHTML = '<option value="" disabled>Radar sites unavailable</option>';
+    return;
+  }
+  const entries = Object.entries(sites)
+    .sort((a, b) => String(a[1].name || a[0]).localeCompare(String(b[1].name || b[0])));
+  sel.innerHTML = entries.map(([siteId, info]) =>
+    `<option value="${siteId}">${info.name || siteId} (${siteId})</option>`,
+  ).join('');
+  sel.value = state.radarSite;
 }
 
 // ---------------------------------------------------------------------------
@@ -6292,6 +6832,7 @@ function hideRadarSiteMarkers() {
 
 // Load available tilts for current site and populate the dropdown
 async function loadRadarTilts() {
+  const site = state.radarSite;
   const tiltSelect = document.getElementById('radarTiltSelect');
   if (!tiltSelect) return;
 
@@ -6299,9 +6840,10 @@ async function loadRadarTilts() {
     const resp = await fetch(`${BASE}/api/radar/tilts/${state.radarSite}`);
     if (!resp.ok) return;
     const data = await resp.json();
+    if (site !== state.radarSite || state.dataSource !== 'radar') return;
     const tilts = data.tilts || [0.5];
 
-    const currentVal = tiltSelect.value;
+    const currentVal = String(state.radarTilt);
     tiltSelect.innerHTML = '';
     tilts.forEach(t => {
       const opt = document.createElement('option');
@@ -6318,49 +6860,13 @@ async function loadRadarTilts() {
     }
   } catch (e) {
     console.log('Failed to load radar tilts:', e);
+    showToast('Failed to load radar tilts', 'error');
   }
 }
 
 // Render an upper tilt on demand
 async function loadRadarTilt() {
-  const tilt = state.radarTilt;
-  const product = state.radarProduct;
-  const site = state.radarSite;
-  console.log(`On-demand tilt render: ${site}/${product}/${tilt}`);
-
-  try {
-    const resp = await fetch(`${BASE}/api/radar/render/${site}/${product}/${tilt}`);
-    if (!resp.ok) {
-      console.warn('On-demand render failed:', resp.status);
-      return;
-    }
-    const frame = await resp.json();
-    if (!frame || !frame.png_path) return;
-
-    // Remove existing overlay
-    if (state.radarOverlayLayer) {
-      leafletMap.removeLayer(state.radarOverlayLayer);
-      state.radarOverlayLayer = null;
-    }
-
-    const cacheBuster = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const url = `${BASE}/rendered/${frame.png_path}?_=${cacheBuster}`;
-    const bounds = [[frame.bounds.south, frame.bounds.west], [frame.bounds.north, frame.bounds.east]];
-
-    state.radarOverlayLayer = L.imageOverlay(url, bounds, {
-      pane: 'radarCompositePane',
-      opacity: 1.0, interactive: false, crossOrigin: true, className: 'radar-overlay'
-    });
-    state.radarOverlayLayer.addTo(leafletMap);
-
-    if (frame.timestamp) {
-      const ts = frame.timestamp;
-      document.getElementById('validTimeDisplay').textContent = ts;
-    }
-    markCaptureReady('radar_tilt');
-  } catch (e) {
-    console.error('On-demand tilt render error:', e);
-  }
+  return loadRadarData();
 }
 
 // ---------------------------------------------------------------------------
@@ -6368,7 +6874,8 @@ async function loadRadarTilt() {
 // ---------------------------------------------------------------------------
 function overlayUrl(runId, param, fxx) {
   const fxxStr = typeof fxx === 'number' ? String(fxx).padStart(2, '0') : fxx;
-  return `${BASE}/rendered/${state.model}/${runId}/${param}/f${fxxStr}.png?v=${MODEL_IMAGE_VERSION}`;
+  const vector = window.PressureContours && state.vectorAvailableByParam?.[param]?.some((frame) => String(frame) === String(fxx));
+  return `${BASE}/rendered/${state.model}/${runId}/${param}/f${fxxStr}.${vector ? 'contours.json' : 'png'}?v=${MODEL_IMAGE_VERSION}`;
 }
 
 function modelOverlayParamClass(param) {
@@ -6380,6 +6887,7 @@ function modelOverlayClass(param) {
 }
 
 function applyModelOverlayClass(param) {
+  if (state.overlayLayer?.isPressureContours) return;
   const img = state.overlayLayer?.getElement?.();
   if (!img) return;
   for (const cls of Array.from(img.classList)) {
@@ -6400,10 +6908,17 @@ function showOverlay() {
   if (existing) existing.remove();
 
   const url = overlayUrl(state.runId, param, fxx);
+  const vector = !!window.PressureContours?.isUrl(url);
+  if (state.overlayLayer && !!state.overlayLayer.isPressureContours !== vector) {
+    leafletMap.removeLayer(state.overlayLayer);
+    state.overlayLayer = null;
+  }
 
   if (state.overlayLayer) {
     state.overlayLayer.setUrl(url);
     state.overlayLayer.setBounds(state.overlayBounds);
+  } else if (vector) {
+    state.overlayLayer = window.PressureContours.layer(url).addTo(leafletMap);
   } else {
     state.overlayLayer = L.imageOverlay(url, state.overlayBounds, {
       opacity: 1.0,
@@ -6414,63 +6929,81 @@ function showOverlay() {
   applyModelOverlayClass(param);
   updateModelFrame();
   markCaptureReady('model');
+  syncShareableDesktopUrl();
 }
 
 async function loadAvailability() {
+  const requestId = _modelSelectionId;
+  const model = state.model;
+  const runId = state.runId;
   if (!state.runId) return;
   try {
-    const data = await apiFetch(
-      `${BASE}/api/available/${state.model}/${state.runId}?_=${Date.now()}`
-    );
-    state.availableByParam = data || {};
+    const [data, vectors] = await Promise.all([
+      apiFetch(`${BASE}/api/available/${model}/${runId}?_=${Date.now()}`),
+      apiFetch(`${BASE}/api/available/${model}/${runId}/vectors?_=${Date.now()}`).catch(() => ({})),
+    ]);
+    if (requestId !== _modelSelectionId || model !== state.model || runId !== state.runId || state.dataSource !== 'models') return;
+    state.availableByParam = data || {};
+    state.vectorAvailableByParam = vectors;
     state.availableFxx = state.availableByParam[state.parameter] || [];
   } catch (e) {
     console.error('Failed to load availability:', e);
   }
 }
 
-async function loadBounds() {
-  if (!state.runId) return;
-  if (state.overlayLayer) {
-    leafletMap.removeLayer(state.overlayLayer);
-    state.overlayLayer = null;
-  }
-  try {
-    const b = await apiFetch(`${BASE}/api/bounds/${state.model}/${state.runId}`);
-    state.overlayBounds = [[b.south, b.west], [b.north, b.east]];
-    updateModelFrame();
-    if (state.dataSource === 'models') {
-      setModelReferenceMode(true);
-    }
-  } catch (e) {
-    console.error('Failed to load bounds:', e);
-    state.overlayBounds = [[21.0, -135.0], [53.0, -60.0]];
-    updateModelFrame();
-    if (state.dataSource === 'models') {
-      setModelReferenceMode(true);
-    }
-  }
+function clearModelDisplay() {
+  pause();
+  clearLoadQueue();
+  if (state.overlayLayer) leafletMap.removeLayer(state.overlayLayer);
+  state.overlayLayer = null;
+  state.overlayBounds = null;
+  state.runMeta = null;
+  state.availableByParam = {};
+  state.vectorAvailableByParam = {};
+  state.availableFxx = [];
+  updateScrubber();
+  if (fxxProgress) fxxProgress.innerHTML = '';
+  validTimeDisplay.textContent = 'Loading model data…';
+  document.getElementById('frameCounter').textContent = '—';
 }
 
 async function loadRuns(preferredValidTime = null) {
-  if (state.dataSource !== 'models') return;
+	if (state.dataSource !== 'models') return;
+  const requestId = ++_modelRunsId;
+  ++_modelSelectionId;
+  const model = state.model;
+  const isCurrent = () => requestId === _modelRunsId && state.dataSource === 'models' && model === state.model;
+  clearModelDisplay();
+  hideMapNotice();
   beginMapLoading('Loading model runs…');
-  try {
-    const runs = await apiFetch(`${BASE}/api/runs?model=${state.model}`);
-    state.runPaletteVersions = {};
-    for (const r of runs) state.runPaletteVersions[String(r.run_id)] = r.palette_version || 1;
-    populateRunSelect(runs);
-    if (runs.length > 0) {
+	try {
+    const runs = await apiFetch(`${BASE}/api/runs?model=${model}`);
+    if (!isCurrent()) return;
+    state.runPaletteVersions = {};
+    for (const r of runs) state.runPaletteVersions[String(r.run_id)] = r.palette_version || 1;
+    populateRunSelect(runs);
+    if (!runs.length) {
+      state.runId = null;
+      validTimeDisplay.textContent = 'No model runs available';
+      showMapNotice('No runs available for this model yet.');
+    }
+    if (runs.length > 0) {
       const captureRunId = CAPTURE_MODE && state.runId ? String(state.runId) : null;
+      const sharedRunId = sharedModelSelectionPending && state.runId ? String(state.runId) : null;
       const selectedRun = (captureRunId && runs.find(r => String(r.run_id) === captureRunId))
-        || runs.find(r => r.is_complete)
-        || runs.find(r => r.completed_fxx && r.completed_fxx.length > 0)
+        || (sharedRunId && runs.find(r => String(r.run_id) === sharedRunId))
+        || prioritizeModelRuns(runs, model).find(r => r.is_complete || r.completed_fxx?.length)
         || runs[0];
       await selectRun(selectedRun.run_id, preferredValidTime);
-      updateParamVisibilityForModel(state.model);
+      if (isCurrent()) updateParamVisibilityForModel(state.model);
     }
   } catch (e) {
     console.error('Failed to load runs:', e);
+    if (isCurrent()) {
+      state.runId = null;
+      validTimeDisplay.textContent = 'Unable to load model runs';
+      showMapNotice('Unable to load model runs. Select a model to retry.');
+    }
   } finally {
     endMapLoading();
   }
@@ -6485,17 +7018,16 @@ function populateRunSelect(runs) {
   for (const run of runs) {
     const opt = document.createElement('option');
     opt.value = run.run_id;
-    const status = run.is_complete ? '\u2713' : (run.completed_fxx && run.completed_fxx.length > 0 ? '\u25cf' : '\u25cb');
-    opt.textContent = formatRunId(run.run_id) + ' ' + status;
+    const status = window.ViewerUI.runStatus(run, modelRunIsOld(run.run_id, state.model));
+    opt.textContent = `${formatRunId(run.run_id)} · ${status}`;
+    opt.title = `${run.run_id.slice(0,4)}-${run.run_id.slice(4,6)}-${run.run_id.slice(6,8)} ${run.run_id.slice(8,10)}:00 UTC · ${status}`;
     runSelect.appendChild(opt);
   }
 }
 
 function formatRunId(runId) {
   if (runId.length === 10) {
-    const utcStr = `${runId.slice(0,4)}-${runId.slice(4,6)}-${runId.slice(6,8)}T${runId.slice(8,10)}:00:00Z`;
-    const ct = centralTime(new Date(utcStr));
-    return `${runId.slice(4,6)}/${runId.slice(6,8)} ${runId.slice(8,10)}Z (${ct})`;
+    return `${runId.slice(4,6)}/${runId.slice(6,8)} ${runId.slice(8,10)}Z`;
   }
   return runId;
 }
@@ -6528,19 +7060,32 @@ function findClosestAvailableFxx(runId, availableFxx, targetValidTime) {
 }
 
 async function selectRun(runId, preferredValidTime = null) {
-  state.runId = runId;
+  const requestId = ++_modelSelectionId;
+  const model = state.model;
+  const isCurrent = () => requestId === _modelSelectionId && model === state.model && state.dataSource === 'models';
+  clearModelDisplay();
+  hideMapNotice();
+  const requestedSharedFxx = sharedModelSelectionPending ? SHARED_VIEW_CONFIG?.fxx : null;
+	state.runId = runId;
   if (runSelect) runSelect.value = runId;
   clearLoadQueue();
   clearCaptureReady();
   beginMapLoading('Loading model data…');
 
   try {
-    const [meta] = await Promise.all([
-      apiFetch(`${BASE}/api/runs/${state.model}/${runId}`),
-      loadAvailability(),
-      loadBounds(),
-    ]);
-    state.runMeta = meta;
+    const [meta, availability, bounds, vectors] = await Promise.all([
+      apiFetch(`${BASE}/api/runs/${model}/${runId}`),
+      apiFetch(`${BASE}/api/available/${model}/${runId}`),
+      apiFetch(`${BASE}/api/bounds/${model}/${runId}`),
+      apiFetch(`${BASE}/api/available/${model}/${runId}/vectors`).catch(() => ({})),
+    ]);
+    if (!isCurrent()) return;
+    state.runMeta = meta;
+    state.availableByParam = availability || {};
+    state.vectorAvailableByParam = vectors;
+    state.overlayBounds = [[bounds.south, bounds.west], [bounds.north, bounds.east]];
+    updateModelFrame();
+    setModelReferenceMode(true);
     updateParamVisibilityForModel(state.model);
     state.availableFxx = state.availableByParam[state.parameter] || [];
 
@@ -6555,6 +7100,9 @@ async function selectRun(runId, preferredValidTime = null) {
           ? state.availableFxx.find((value) => String(value) === String(captureFxx))
           : undefined;
         state.currentFxx = matchedFxx !== undefined ? matchedFxx : state.availableFxx[state.availableFxx.length - 1];
+      } else if (requestedSharedFxx !== null && requestedSharedFxx !== undefined) {
+        const sharedFxx = state.availableFxx.find((value) => String(value) === String(requestedSharedFxx));
+        state.currentFxx = sharedFxx !== undefined ? sharedFxx : state.availableFxx[0];
       } else {
         const matchedFxx = findClosestAvailableFxx(runId, state.availableFxx, preferredValidTime);
         state.currentFxx = matchedFxx !== null ? matchedFxx : state.availableFxx[0];
@@ -6567,9 +7115,17 @@ async function selectRun(runId, preferredValidTime = null) {
     }
   } catch (e) {
     console.error('Failed to select run:', e);
-  } finally {
-    endMapLoading();
-  }
+    if (isCurrent()) {
+      validTimeDisplay.textContent = 'Unable to load this run';
+      showMapNotice('Unable to load this run. Select another run to retry.');
+    }
+  } finally {
+    if (isCurrent()) {
+      sharedModelSelectionPending = false;
+      syncShareableDesktopUrl();
+    }
+	  endMapLoading();
+  }
 }
 
 // ── Unified frame URL + smart preloading (mirrors mobile.js) ──────────────
@@ -6586,7 +7142,7 @@ function desktopFrameUrl(idx) {
   }
   if (state.dataSource === 'radar') {
     const frame = state.radarFrames[idx];
-    return frame?.png_path ? `${BASE}/rendered/${frame.png_path}?_=${frame.timestamp || ''}` : null;
+    return frame?.png_path ? `${BASE}/rendered/${frame.png_path}?_=${frame.timestamp || ''}&palette=${frame.palette_version || 1}` : null;
   }
   if (state.dataSource === 'home') {
     const frame = state.homeRadarFrames[idx];
@@ -6746,13 +7302,14 @@ function updateMapInfoForModel() {
     const utcM = parsed.minutes > 0 ? `:${String(valid.getUTCMinutes()).padStart(2,'0')}` : '';
     const day = String(valid.getUTCDate()).padStart(2, '0');
     const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][valid.getUTCMonth()];
-    timeEl.textContent = `Valid: ${utcH}${utcM}Z ${day} ${month}`;
+    timeEl.textContent = `Valid: ${utcH}${utcM}Z ${day} ${month}${modelRunIsOld(state.runId, state.model) ? ' · Older run' : ''}`;
   } else {
     timeEl.textContent = 'Valid: --';
   }
 }
 
 function updateScrubber() {
+  scrubber.disabled = state.availableFxx.length < 2;
   if (state.dataSource !== 'models') return;
   syncScrubberVisibility();
   const fxxList = state.availableFxx;
@@ -6825,67 +7382,62 @@ function getActiveOverlayImage() {
   return null;
 }
 
+let _loopPlaybackId = 0;
+let _playbackImageCleanup = null;
+const LOOP_END_HOLD_MS = 1000;
+
+/** Whether the frame on screen is the last frame of the active sequence. */
+function isLastPlaybackFrame() {
+  if (state.dataSource === 'radar') return state.radarFrameIdx === state.radarFrames.length - 1;
+  if (state.dataSource === 'satellite') return state.satFrameIdx === state.satFrames.length - 1;
+  if (state.dataSource === 'home') return state.homeRadarFrameIdx === state.homeRadarFrames.length - 1;
+  if (state.dataSource === 'chase') return chaseState.currentFxx === chaseState.availableFxx.at(-1);
+  return state.currentFxx === state.availableFxx.at(-1);
+}
+
 function startLoopPlayback(interval, advanceFrame) {
+  const playbackId = ++_loopPlaybackId;
+  clearTimeout(state.playTimer);
+  if (_playbackImageCleanup) _playbackImageCleanup();
+  const isCurrent = () => state.isPlaying && playbackId === _loopPlaybackId;
+  const scheduleNext = () => {
+    if (!isCurrent()) return;
+    const delay = isLastPlaybackFrame()
+      ? Math.max(LOOP_END_HOLD_MS, Math.round(interval * LOOP_END_PAUSE_MULTIPLIER))
+      : interval;
+    const img = getActiveOverlayImage();
+    const queue = () => {
+      if (!isCurrent()) return;
+      if (_playbackImageCleanup) _playbackImageCleanup();
+      if (isCurrent()) state.playTimer = setTimeout(tick, delay);
+    };
+    if (img && !img.complete) {
+      _playbackImageCleanup = () => {
+        img.removeEventListener('load', queue);
+        img.removeEventListener('error', queue);
+        _playbackImageCleanup = null;
+      };
+      img.addEventListener('load', queue);
+      img.addEventListener('error', queue);
+    } else queue();
+  };
   const tick = () => {
-    if (!state.isPlaying) return;
-    // If the next frame is still downloading, wait briefly instead of advancing
-    const _nextUrl = _getNextDesktopFrameUrl();
-    if (_nextUrl && _imgCache.get(_nextUrl) === 'pending') {
+    if (!isCurrent()) return;
+    const nextUrl = _getNextDesktopFrameUrl();
+    if (nextUrl && _imgCache.get(nextUrl) === 'pending') {
       state.playTimer = setTimeout(tick, 50);
       return;
     }
-    const wrapped = advanceFrame();
-    const nextDelay = wrapped
-      ? Math.round(interval * LOOP_END_PAUSE_MULTIPLIER)
-      : interval;
-
-    // Wait for the active Leaflet image overlay to finish loading before
-    // scheduling the next tick. At high speeds this prevents setUrl() from
-    // repeatedly cancelling in-flight image loads, which can make loops
-    // appear stuck on satellite and model products.
-    const img = getActiveOverlayImage();
-    if (img) {
-      if (img && !img.complete) {
-        const onReady = () => {
-          img.removeEventListener('load', onReady);
-          img.removeEventListener('error', onReady);
-          if (state.isPlaying) {
-            state.playTimer = setTimeout(tick, nextDelay);
-          }
-        };
-        img.addEventListener('load', onReady);
-        img.addEventListener('error', onReady);
-        return;
-      }
-    }
-    state.playTimer = setTimeout(tick, nextDelay);
+    advanceFrame();
+    scheduleNext();
   };
 
   state.isPlaying = true;
   leafletMap?.getContainer?.()?.classList.add('is-playing');
-  playBtn.innerHTML = '&#10074;&#10074;';
-  // Advance the first frame immediately so the user sees instant response
-  const wrapped = advanceFrame();
-  const firstDelay = wrapped
-    ? Math.round(interval * LOOP_END_PAUSE_MULTIPLIER)
-    : interval;
-
-  const img = getActiveOverlayImage();
-  if (img) {
-    if (img && !img.complete) {
-      const onReady = () => {
-        img.removeEventListener('load', onReady);
-        img.removeEventListener('error', onReady);
-        if (state.isPlaying) {
-          state.playTimer = setTimeout(tick, firstDelay);
-        }
-      };
-      img.addEventListener('load', onReady);
-      img.addEventListener('error', onReady);
-      return;
-    }
-  }
-  state.playTimer = setTimeout(tick, firstDelay);
+  playBtn.innerHTML = PAUSE_ICON_SVG;
+  playBtn.title = 'Pause (Space)';
+  playBtn.setAttribute('aria-label', 'Pause');
+  tick();
 }
 
 function play() {
@@ -6955,11 +7507,11 @@ function play() {
     });
     return;
   }
-  if (state.availableFxx.length === 0) return;
+  if (state.availableFxx.length <= 1) return;
   const interval = Math.round(state.playSpeedMs / state.playSpeed);
   startLoopPlayback(interval, () => {
-    if (state.currentFxx >= Math.max(...state.availableFxx)) {
-      state.currentFxx = Math.min(...state.availableFxx);
+    if (state.currentFxx === state.availableFxx.at(-1)) {
+      state.currentFxx = state.availableFxx[0];
       scrubber.value = state.availableFxx.indexOf(state.currentFxx);
       displayCurrentFrame();
       return true;
@@ -6974,6 +7526,7 @@ function setPlaySpeed(speed) {
   document.querySelectorAll('.speed-btn').forEach(b => {
     b.classList.toggle('active', parseInt(b.dataset.speed) === speed);
   });
+  syncAriaPressed();
   if (state.isPlaying) {
     clearTimeout(state.playTimer);
     play();
@@ -6981,9 +7534,13 @@ function setPlaySpeed(speed) {
 }
 
 function pause() {
+  ++_loopPlaybackId;
+  if (_playbackImageCleanup) _playbackImageCleanup();
   state.isPlaying = false;
   leafletMap?.getContainer?.()?.classList.remove('is-playing');
-  playBtn.innerHTML = '&#9654;';
+  playBtn.innerHTML = PLAY_ICON_SVG;
+  playBtn.title = 'Play (Space)';
+  playBtn.setAttribute('aria-label', 'Play');
   clearTimeout(state.playTimer);
 }
 
@@ -7096,9 +7653,13 @@ function updateFxxProgress() {
 
 async function pollForNewFrames() {
   if (state.dataSource !== 'models' || !state.runId) return;
-  try {
+  const requestId = _modelSelectionId;
+  const model = state.model;
+  const runId = state.runId;
+  try {
     const data = await apiFetch(`${BASE}/api/available/${state.model}/${state.runId}?_=${Date.now()}`);
-    const previous = new Set(state.availableFxx);
+    if (requestId !== _modelSelectionId || model !== state.model || runId !== state.runId || state.dataSource !== 'models') return;
+    const previous = new Set(state.availableFxx);
     state.availableByParam = data || {};
     state.availableFxx = state.availableByParam[state.parameter] || [];
     updateParamVisibilityForModel(state.model);
@@ -7141,6 +7702,7 @@ function updateParamVisibilityForModel(selectedModel) {
   if (availabilityReady && !activeStillVisible && firstVisibleParam) {
     document.querySelectorAll('.param-btn[data-param]').forEach(btn => btn.classList.remove('active'));
     firstVisibleParam.classList.add('active');
+    syncAriaPressed();
     state.parameter = firstVisibleParam.dataset.param;
     state.availableFxx = state.availableByParam[state.parameter] || [];
     updateLegend();
@@ -7150,6 +7712,7 @@ function updateParamVisibilityForModel(selectedModel) {
     const visibleItems = group.querySelectorAll('.param-btn[data-param][style*="flex"]');
     group.style.display = visibleItems.length > 0 ? 'block' : 'none';
   });
+  renderModelFavorites();
 }
 
 async function loadColorScales() {
@@ -7162,11 +7725,15 @@ async function loadColorScales() {
 }
 
 async function updateLegend() {
+  const requestId = ++_legendRequestId;
   const legendLabel = document.getElementById('legendLabel');
   const legendCanvas = document.getElementById('legendCanvas');
   const legendTicks = document.getElementById('legendTicks');
   
   if (!legendLabel || !legendCanvas || !legendTicks) return;
+  document.getElementById('legendNote').textContent = '';
+  legendCanvas.hidden = false;
+  legendTicks.hidden = false;
   const activeModelParamBtn = document.querySelector('.param-btn[data-param].active');
   const preferredLabel = state.dataSource === 'models'
     ? (activeModelParamBtn?.dataset.legendLabel || activeModelParamBtn?.textContent || '').trim()
@@ -7265,8 +7832,16 @@ async function updateLegend() {
   }
   
   try {
-    const data = await apiFetch(`${BASE}/api/legend/${param}${paletteQueryForCurrentRun()}`);
-    legendLabel.textContent = preferredLabel || data.label || label || param;
+    const paletteQuery = state.dataSource === 'radar'
+      ? `?radar_palette_version=${state.radarFrames[state.radarFrameIdx]?.palette_version || 1}`
+      : state.dataSource === 'home' ? '?radar_palette_version=1' : paletteQueryForCurrentRun();
+    const data = await apiFetch(`${BASE}/api/legend/${param}${paletteQuery}`);
+    if (requestId !== _legendRequestId) return;
+    const title = preferredLabel || data.label || label || param;
+    legendLabel.textContent = `${title}${data.unit && !title.includes(data.unit) ? ` · ${data.unit}` : ''}`;
+    document.getElementById('legendNote').textContent = data.annotation || '';
+    legendCanvas.hidden = Boolean(data.contour_only);
+    legendTicks.hidden = Boolean(data.contour_only);
     
     const ctx = legendCanvas.getContext('2d');
     ctx.clearRect(0, 0, legendCanvas.width, legendCanvas.height);
@@ -7295,9 +7870,9 @@ async function updateLegend() {
     const ticks = Array.isArray(data.tick_vals) && data.tick_vals.length > 0
       ? data.tick_vals
       : null;
-    if (ticks && data.bounds && data.bounds.length >= 2) {
-      const min = Number(data.bounds[0]);
-      const max = Number(data.bounds[data.bounds.length - 1]);
+    if (ticks) {
+      const min = Number(data.bounds?.[0] ?? data.vmin);
+      const max = Number(data.bounds?.at(-1) ?? data.vmax);
       const range = Math.max(max - min, 1e-6);
       for (const rawValue of ticks) {
         const value = Number(rawValue);
@@ -7317,7 +7892,7 @@ async function updateLegend() {
       }
     }
   } catch (e) {
-    legendLabel.textContent = preferredLabel || label || param;
+    if (requestId === _legendRequestId) legendLabel.textContent = preferredLabel || label || param;
   }
   
   if (state.dataSource === 'models') {
@@ -7346,7 +7921,11 @@ function updateMiniModelStatus(models) {
     const pct = m.total_fxx ? (m.completed_fxx / m.total_fxx) * 100 : 0;
     fill.style.width = `${pct}%`;
 
-    if (m.status === 'processing') {
+    if (m.data_stale && m.status !== 'processing') {
+      badge.textContent = 'STALE';
+      badge.className = 'model-compact-badge stale';
+      text.textContent = `Last run ${m.last_run || '--'}`;
+    } else if (m.status === 'processing') {
       badge.textContent = 'PROCESSING';
       badge.className = 'model-compact-badge processing';
       text.textContent = `${m.completed_fxx}/${m.total_fxx} (${Math.round(pct)}%)`;
@@ -7449,6 +8028,15 @@ function renderSatelliteStatus() {
 // Initialization
 // ---------------------------------------------------------------------------
 async function init() {
+  const mobileLink = document.querySelector('[data-mobile-link]');
+  if (mobileLink) {
+    mobileLink.href = `${BASE}/mobile.html`;
+    mobileLink.addEventListener('click', () => {
+      const url = buildShareableDesktopUrl();
+      url.pathname = `${BASE}/mobile.html`;
+      mobileLink.href = url.href;
+    });
+  }
   window.__wxInitCount = (window.__wxInitCount || 0) + 1;
   initMap();
   ensureScrubberDebug();
@@ -7460,9 +8048,12 @@ async function init() {
   }
   if (modelSelect) modelSelect.value = state.model;
   if (satelliteSelect) satelliteSelect.value = state.satellite;
+  buildSatelliteRegionalProducts();
+  buildModelStatusCards();
   setSatelliteScope(state.satScope || (state.satRegion ? 'regional' : 'national'), true);
   const radarSiteSelectInit = document.getElementById('radarSiteSelect');
   if (radarSiteSelectInit) radarSiteSelectInit.value = state.radarSite;
+  populateRadarSiteSelect();
   const radarTiltSelectInit = document.getElementById('radarTiltSelect');
   if (radarTiltSelectInit && Number.isFinite(state.radarTilt)) {
     radarTiltSelectInit.value = String(state.radarTilt);
@@ -7474,8 +8065,11 @@ async function init() {
     btn.classList.toggle('active', btn.dataset.param === state.parameter);
   });
 
-  await refreshSevereWarnings();
-  await refreshExternalOverlays();
+  syncAriaPressed();
+  initParamFilter();
+  initModelFavorites();
+  applyParamTooltips();
+
   state.severeWarningTimer = setInterval(refreshSevereWarnings, 60000);
   state.overlayRefreshTimer = setInterval(refreshExternalOverlays, 120000);
   setInterval(refreshModelStatus, 15000);
@@ -7484,17 +8078,27 @@ async function init() {
   // Keyboard navigation for the data-source tablist (ARIA tabs pattern)
   const _sourceTablist = document.querySelector('.source-tabs');
   if (_sourceTablist) {
+    // ARIA tabs pattern with manual activation: arrows only move focus
+    // (roving tabindex); Enter/Space activate the focused tab natively.
+    const tabs = [..._sourceTablist.querySelectorAll('[role="tab"]')];
+    const focusTab = (tab) => {
+      tabs.forEach((t) => { t.tabIndex = -1; });
+      tab.tabIndex = 0;
+      tab.focus();
+    };
+    tabs.forEach((t) => { t.tabIndex = t.classList.contains('active') ? 0 : -1; });
+    tabs.forEach((t) => t.addEventListener('click', () => {
+      tabs.forEach((u) => { u.tabIndex = -1; });
+      t.tabIndex = 0;
+    }));
     _sourceTablist.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-      const tabs = [..._sourceTablist.querySelectorAll('[role="tab"]')];
       const idx = tabs.indexOf(document.activeElement);
       if (idx === -1) return;
       e.preventDefault();
-      const next = e.key === 'ArrowRight'
+      focusTab(e.key === 'ArrowRight'
         ? tabs[(idx + 1) % tabs.length]
-        : tabs[(idx - 1 + tabs.length) % tabs.length];
-      next.focus();
-      next.click();
+        : tabs[(idx - 1 + tabs.length) % tabs.length]);
     });
   }
 
@@ -7578,14 +8182,15 @@ async function init() {
   }
   
   // Model controls
-  modelSelect.addEventListener('change', () => {
+	modelSelect.addEventListener('change', () => {
     const preferredValidTime = getModelValidTime(state.runId, state.currentFxx);
     pause();
     clearModelLayers();
-    state.model = modelSelect.value;
-    loadRuns(preferredValidTime);
-    updateParamVisibilityForModel(state.model);
-  });
+    state.model = modelSelect.value;
+    syncShareableDesktopUrl();
+    loadRuns(preferredValidTime);
+	  updateParamVisibilityForModel(state.model);
+	});
   
   runSelect.addEventListener('change', () => {
     const preferredValidTime = getModelValidTime(state.runId, state.currentFxx);
@@ -7639,9 +8244,10 @@ async function init() {
   satelliteSelect.addEventListener('change', () => {
     pause();
     clearSatelliteLayers();
-    state.satellite = satelliteSelect.value;
-    loadSatelliteData();
-  });
+    state.satellite = satelliteSelect.value;
+    syncShareableDesktopUrl();
+    loadSatelliteData();
+	});
 
   // Scrubber controls
   scrubber.addEventListener('input', () => {
@@ -7661,11 +8267,12 @@ async function init() {
         chaseState.currentFxx = chaseState.availableFxx[idx];
         updateChaseOverlay();
       }
-    } else if (state.availableFxx[idx] !== undefined) {
-      state.currentFxx = state.availableFxx[idx];
-      displayCurrentFrame();
-    }
-  });
+    } else if (state.availableFxx[idx] !== undefined) {
+      state.currentFxx = state.availableFxx[idx];
+      displayCurrentFrame();
+    }
+    syncShareableDesktopUrl();
+  });
   
   playBtn.addEventListener('click', togglePlay);
 
@@ -7675,7 +8282,9 @@ async function init() {
   
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' ||
+        e.target.tagName === 'BUTTON' || e.target.tagName === 'TEXTAREA' ||
+        e.target.isContentEditable) return;
     
     switch (e.key) {
       case ' ':
@@ -7698,11 +8307,14 @@ async function init() {
   });
   
   // Parameter buttons
-  document.querySelectorAll('.param-btn[data-param]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.param-btn[data-param]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      state.parameter = btn.dataset.param;
+	document.querySelectorAll('.param-btn[data-param]').forEach(btn => {
+	  btn.addEventListener('click', () => {
+	    document.querySelectorAll('.param-btn[data-param]').forEach(b => b.classList.remove('active'));
+	    btn.classList.add('active');
+	    syncAriaPressed();
+	    state.parameter = btn.dataset.param;
+      renderModelFavorites();
+      syncShareableDesktopUrl();
       
       if (state.dataSource === 'models') {
         const preferredValidTime = getModelValidTime(state.runId, state.currentFxx);
@@ -7730,14 +8342,15 @@ async function init() {
   
   // Satellite product buttons
   const satButtons = document.querySelectorAll('.param-btn[data-sat-product]');
-  console.log(`Found ${satButtons.length} satellite product buttons`);
+  if (DEBUG_SCRUBBER) console.log(`Found ${satButtons.length} satellite product buttons`);
   satButtons.forEach(btn => {
     btn.addEventListener('click', () => {
-      console.log(`Satellite button clicked: ${btn.dataset.satProduct}`);
+      if (DEBUG_SCRUBBER) console.log(`Satellite button clicked: ${btn.dataset.satProduct}`);
       const wasPlaying = state.isPlaying;
       pause();
     state.satProduct = btn.dataset.satProduct;
       state.satRegion = btn.getAttribute('data-sat-region') ?? '';
+      syncShareableDesktopUrl();
       // Determine scope from the button's parent group, not just the region attribute
       const scopeGroup = btn.closest('[data-sat-scope-group]');
       const btnScope = (scopeGroup && scopeGroup.dataset.satScopeGroup === 'regional') || state.satRegion ? 'regional' : 'national';
@@ -7768,11 +8381,33 @@ async function init() {
       const wasPlaying = state.isPlaying;
       pause();
       setSatelliteScope(nextScope, true);
+      syncShareableDesktopUrl();
       clearSatelliteLayers();
       loadSatelliteData().then(() => { if (wasPlaying) play(); });
       updateLegend();
     });
   });
+
+  // Regional satellite: region selector drives the generated product list
+  const satRegionSelect = document.getElementById('satRegionSelect');
+  if (satRegionSelect) {
+    satRegionSelect.addEventListener('change', () => {
+      if (satRegionSelect.value === state.satRegion) return;
+      const wasPlaying = state.isPlaying;
+      pause();
+      state.satRegion = satRegionSelect.value;
+      state.satScope = 'regional';
+      syncShareableDesktopUrl();
+      syncSatelliteSourceForRegion();
+      ensureValidSatelliteRegionProduct();
+      syncSatelliteRegionButtons();
+      updateSatelliteScopeButtons();
+      updateSatelliteProductButtons();
+      clearSatelliteLayers();
+      loadSatelliteData().then(() => { if (wasPlaying) play(); });
+      updateLegend();
+    });
+  }
   
   // Radar controls
   const radarSiteSelect = document.getElementById('radarSiteSelect');
@@ -7781,9 +8416,10 @@ async function init() {
       const wasPlaying = state.isPlaying;
       pause();
       clearRadarLayers();
-      state.radarSite = radarSiteSelect.value;
+      state.radarSite = radarSiteSelect.value;
       persistRadarSite(state.radarSite);
-      state.radarTilt = 0.5;
+      state.radarTilt = 0.5;
+      syncShareableDesktopUrl();
       loadRadarData().then(() => { if (wasPlaying) play(); });
       loadRadarTilts();
       flyToRadarSite(state.radarSite);
@@ -7792,16 +8428,18 @@ async function init() {
   
   // Radar product buttons
   const radarButtons = document.querySelectorAll('.param-btn[data-radar-product]');
-  console.log(`Found ${radarButtons.length} radar product buttons`);
+  if (DEBUG_SCRUBBER) console.log(`Found ${radarButtons.length} radar product buttons`);
   radarButtons.forEach(btn => {
     btn.addEventListener('click', () => {
-      console.log(`Radar button clicked: ${btn.dataset.radarProduct}`);
+      if (DEBUG_SCRUBBER) console.log(`Radar button clicked: ${btn.dataset.radarProduct}`);
       const wasPlaying = state.isPlaying;
       pause();
-      document.querySelectorAll('.param-btn[data-radar-product]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      state.radarProduct = btn.dataset.radarProduct;
-      state.radarTilt = 0.5;  // Reset to lowest tilt on product change
+	    document.querySelectorAll('.param-btn[data-radar-product]').forEach(b => b.classList.remove('active'));
+	    btn.classList.add('active');
+	    syncAriaPressed();
+      state.radarProduct = btn.dataset.radarProduct;
+      state.radarTilt = 0.5; // Reset to lowest tilt on product change
+      syncShareableDesktopUrl();
       clearRadarLayers();
       const tiltSelect = document.getElementById('radarTiltSelect');
       if (tiltSelect) tiltSelect.value = '0.5';
@@ -7813,10 +8451,11 @@ async function init() {
   // Radar tilt selector
   const radarTiltSelect = document.getElementById('radarTiltSelect');
   if (radarTiltSelect) {
-    radarTiltSelect.addEventListener('change', () => {
+	  radarTiltSelect.addEventListener('change', () => {
       pause();
       clearRadarLayers();
-      state.radarTilt = parseFloat(radarTiltSelect.value);
+      state.radarTilt = parseFloat(radarTiltSelect.value);
+      syncShareableDesktopUrl();
       if (state.radarTilt === 0.5) {
         loadRadarData();  // Pre-rendered, use normal frames API
       } else {
@@ -7937,7 +8576,7 @@ async function init() {
 
   switchDataSource(getInitialView());
   updateSoundingProbeUi();
-  await refreshModelStatus();
+  void refreshModelStatus();
 
 }
 

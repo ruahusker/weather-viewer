@@ -32,6 +32,7 @@ from scipy.ndimage import (
     minimum_filter,
 )
 from scipy.spatial import cKDTree
+from shapely.geometry import LineString
 
 from .config import COLOR_SCALES, RENDER_DPI
 
@@ -1108,22 +1109,22 @@ class OverlayRenderer:
         if param == "psfc":
             thin_levels = np.arange(500, 1064, 4)
             bold_levels = np.arange(500, 1064, 20)
-            thin_alpha = 0.32
-            bold_alpha = 0.68
+            thin_alpha = 0.26
+            bold_alpha = 0.60
         else:
             thin_levels = np.arange(900, 1060, 2)
             bold_levels = np.arange(900, 1060, 4)
-            thin_alpha = 0.4
-            bold_alpha = 0.75
+            thin_alpha = 0.30
+            bold_alpha = 0.65
 
         # Thin contours show pressure structure without overpowering the map.
-        ax.contour(
+        cs_thin = ax.contour(
             lon_grid,
             lat_merc_grid,
             contour_data,
-            levels=thin_levels,
+            levels=np.setdiff1d(thin_levels, bold_levels),
             colors="white",
-            linewidths=0.15,
+            linewidths=0.10,
             alpha=thin_alpha,
         )
         cs_bold = ax.contour(
@@ -1132,24 +1133,36 @@ class OverlayRenderer:
             contour_data,
             levels=bold_levels,
             colors="white",
-            linewidths=0.7,
+            linewidths=0.35,
             alpha=bold_alpha,
         )
-        ax.clabel(
+        vector_features = (
+            self._pressure_line_features(cs_thin, major=False, opacity=thin_alpha)
+            + self._pressure_line_features(cs_bold, major=True, opacity=bold_alpha)
+        )
+        labels = ax.clabel(
             cs_bold,
             levels=bold_levels,
             inline=True,
-            fontsize=5.5,
+            fontsize=5.0,
             fmt="%d",
             colors="white",
         )
+        for label in labels:
+            x, y = label.get_position()
+            vector_features.append(self._pressure_point_feature(
+                x, y, {"kind": "label", "value": int(label.get_text()),
+                       "rotation": -float(label.get_rotation())},
+            ))
 
         if param == "psfc":
+            self._write_pressure_vectors(output_path, vector_features)
             return self._mpl_to_pil(fig, output_path)
 
         # --- H/L pressure center detection on gaussian-filtered data (handles NaN) ---
         # Inner window ~50km, outer window ~150km (synoptic-scale)
-        inner, outer = 15, 45
+        inner = max(7, int(target_w * 0.008) | 1)
+        outer = max(45, int(target_w * 0.08) | 1)
         if contour_data.shape[0] < outer or contour_data.shape[1] < outer:
             inner, outer = 7, 21
 
@@ -1158,18 +1171,24 @@ class OverlayRenderer:
         outer_min = minimum_filter(contour_data, size=outer)
         outer_max = maximum_filter(contour_data, size=outer)
 
-        atol = 0.1  # hPa tolerance for floating-point equality
-        is_low = np.isclose(contour_data, local_min, atol=atol)
-        is_high = np.isclose(contour_data, local_max, atol=atol)
-        low_prom = local_min - outer_min
-        high_prom = outer_max - local_max
+        # Exact local extrema exclude flat shoulders around another system.
+        # A tolerance can misidentify those shoulders as lows/highs and then
+        # suppress the real center in the minimum-separation pass below.
+        local_range = local_max - local_min
+        is_low = (contour_data == local_min) & (local_range > 0.1)
+        is_high = (contour_data == local_max) & (local_range > 0.1)
+        # Compare each extremum with the surrounding opposite extreme. At a
+        # true low, local_min and outer_min are equal (likewise for highs),
+        # so subtracting like extrema suppressed every H/L marker.
+        low_prom = outer_max - local_min
+        high_prom = local_max - outer_min
 
         min_prom = 5.0  # minimum 5mb prominence for significant systems
         low_mask = is_low & (low_prom >= min_prom)
         high_mask = is_high & (high_prom >= min_prom)
 
         # Suppression radius ~300km (~150 grid points for 2km HRRR grid)
-        suppression_radius = 150
+        suppression_radius = max(15, int(target_w * 0.06))
         low_centers, high_centers = [], []
         kept = np.full(contour_data.shape, False, dtype=bool)
 
@@ -1199,7 +1218,62 @@ class OverlayRenderer:
         self._annotate_pressure_centers(ax, low_centers, "L", "#ff6666")
         self._annotate_pressure_centers(ax, high_centers, "H", "#66ff66")
 
+        for symbol, centers in (("L", low_centers), ("H", high_centers)):
+            for pressure, x, y in centers:
+                vector_features.append(self._pressure_point_feature(
+                    x, y, {"kind": "center", "symbol": symbol,
+                           "value": int(round(float(pressure)))},
+                ))
+        self._write_pressure_vectors(output_path, vector_features)
+
         return self._mpl_to_pil(fig, output_path)
+
+    @staticmethod
+    def _pressure_point_feature(x: float, y: float, properties: dict) -> dict:
+        """Convert a pressure annotation from Mercator coordinates to GeoJSON."""
+        latitude = np.degrees(2 * np.arctan(np.exp(np.radians(y))) - np.pi / 2)
+        return {"type": "Feature", "properties": properties,
+                "geometry": {"type": "Point", "coordinates": [round(float(x), 5), round(float(latitude), 5)]}}
+
+    @staticmethod
+    def _pressure_line_features(contours, *, major: bool, opacity: float) -> list[dict]:
+        """Export the same smoothed isobars as geographic vector paths."""
+        features = []
+        for level, segments in zip(contours.levels, contours.allsegs):
+            lines = []
+            for segment in segments:
+                if len(segment) < 2 or not np.isfinite(segment).all():
+                    continue
+                # Subpixel tolerance at the desktop's maximum zoom. Simplify
+                # in Mercator space so horizontal and vertical errors match.
+                points = np.asarray(LineString(segment).simplify(0.001).coords)
+                latitudes = np.degrees(2 * np.arctan(np.exp(np.radians(points[:, 1]))) - np.pi / 2)
+                coordinates = np.round(np.column_stack((points[:, 0], latitudes)), 5).tolist()
+                if len(coordinates) >= 2 and coordinates[0] != coordinates[1]:
+                    lines.append(coordinates)
+            if lines:
+                features.append({"type": "Feature",
+                    "properties": {"kind": "isobar", "value": float(level), "major": major, "opacity": opacity},
+                    "geometry": {"type": "MultiLineString", "coordinates": lines}})
+        return features
+
+    @staticmethod
+    def _write_pressure_vectors(output_path: Path, features: list[dict]) -> None:
+        """Publish complete vector sidecars atomically alongside the PNG."""
+        destination = output_path.with_suffix(".contours.json")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", dir=destination.parent,
+                                             prefix=f".{destination.stem}-", suffix=".tmp", delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump({"type": "FeatureCollection", "features": features}, handle,
+                          separators=(",", ":"), allow_nan=False)
+            temporary.chmod(0o644)
+            temporary.replace(destination)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def _draw_height_contours(
         self,
@@ -1269,8 +1343,7 @@ class OverlayRenderer:
             alpha=line_alpha,
             zorder=zorder,
         )
-        for coll in getattr(cs, "collections", []):
-            coll.set_path_effects(stroke)
+        cs.set_path_effects(stroke)
 
         label_levels = [float(level) for level in label_levels if np.any(np.isclose(levels, level))]
         if label_levels:
@@ -1368,8 +1441,7 @@ class OverlayRenderer:
 
             if stroke:
                 stroke.append(pe.Normal())
-                for coll in getattr(cs, "collections", []):
-                    coll.set_path_effects(stroke)
+                cs.set_path_effects(stroke)
 
             if item.get("labels"):
                 label_levels = item.get("label_levels", levels)
@@ -1470,8 +1542,8 @@ class OverlayRenderer:
         """Draw High/Low markers with pressure values beneath them."""
         if not centers:
             return
-        y_offset = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.022
-        stroke = [pe.withStroke(linewidth=2.4, foreground=(0, 0, 0, 0.78))]
+        y_offset = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.012
+        stroke = [pe.withStroke(linewidth=1.0, foreground=(0, 0, 0, 0.65))]
         for pressure, x, y in centers:
             ax.text(
                 x,
@@ -1479,8 +1551,8 @@ class OverlayRenderer:
                 symbol,
                 ha="center",
                 va="center",
-                fontsize=16,
-                fontweight="bold",
+                fontsize=8,
+                fontweight="normal",
                 color=color,
                 path_effects=stroke,
                 zorder=10,
@@ -1491,8 +1563,8 @@ class OverlayRenderer:
                 f"{int(round(pressure))}",
                 ha="center",
                 va="top",
-                fontsize=7,
-                fontweight="bold",
+                fontsize=5,
+                fontweight="normal",
                 color="white",
                 path_effects=stroke,
                 zorder=10,
@@ -1525,7 +1597,7 @@ class OverlayRenderer:
         if param == "wind_speed":
             return {
                 "fill_floor": 5.0,
-                "barb_floor": 10.0 / 1.15078,  # mph -> kt
+                "barb_floor": 10.0,  # surface speed shading is in mph
                 "contours": [],                 # surface: fill + barbs only
                 "major_contours": [],
                 "target_cols": 48,              # dense grid for surface detail
@@ -1749,14 +1821,9 @@ class OverlayRenderer:
 
         rgba[:, :, 3] = np.clip(base_alpha, 0, 255).astype(np.uint8)
 
-        if np.ndim(lon) == 2:
-            rgba = self._extend_outside_domain(
-                rgba,
-                ~valid_domain_mask,
-                fade_start=0.0,
-                fade_end=0.45,
-                apply_alpha_fade=True,
-            )
+        # Outside the model grid there is no forecast. Extending edge colors
+        # here produced a bright ring that looked like additional wind data.
+        rgba[~valid_domain_mask, 3] = 0
 
         ax.imshow(
             rgba,
@@ -1790,17 +1857,24 @@ class OverlayRenderer:
                 alpha=m_alpha,
                 zorder=2,
             )
-            for coll in getattr(cs_major, "collections", []):
-                coll.set_path_effects([
+            cs_major.set_path_effects([
                     pe.Stroke(
                         linewidth=m_width + 0.5,
                         foreground=(0, 0, 0, m_stroke),
                     ),
                     pe.Normal(),
-                ])
+            ])
+            labels = ax.clabel(cs_major, inline=True, fontsize=4.5,
+                               fmt=lambda value: f"{value:.0f} kt")
+            for label in labels:
+                label.set_color("#f4f7fb")
+                label.set_path_effects([pe.withStroke(linewidth=1.1, foreground="#111827")])
 
         # -- Wind barbs with outline for contrast on any background --------
-        u_earth, v_earth = self._rotate_to_earth_relative(lon, lat, tg, grid_u, grid_v)
+        # Surface shading uses mph, while meteorological barbs use knots.
+        barb_u = grid_u / 1.15078 if param == "wind_speed" else grid_u
+        barb_v = grid_v / 1.15078 if param == "wind_speed" else grid_v
+        u_earth, v_earth = self._rotate_to_earth_relative(lon, lat, tg, barb_u, barb_v)
 
         target_cols = style.get("target_cols", 24)
         skip = max(1, grid_speed.shape[1] // target_cols)
@@ -1817,8 +1891,8 @@ class OverlayRenderer:
             barb_color = style.get("barb_color", "#222222")
             barb_lw = style.get("barb_lw", 0.45)
             outline_color = style.get("barb_outline_color", "white")
-            outline_lw = style.get("barb_outline_lw", 0.15)
-            outline_alpha = style.get("barb_outline_alpha", 0.5)
+            outline_lw = max(style.get("barb_outline_lw", 0.15), 0.5)
+            outline_alpha = max(style.get("barb_outline_alpha", 0.5), 0.8)
 
             # Very light keyline for contrast without producing a fuzzy double-stroke.
             ax.barbs(

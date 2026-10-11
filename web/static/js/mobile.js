@@ -1,5 +1,23 @@
 'use strict';
 
+/** Flag old model initialization times without confusing them with valid time. */
+function modelRunIsOld(runId, model, now = Date.now()) {
+  if (!/^\d{10}$/.test(runId || '')) return false;
+  const init = Date.UTC(+runId.slice(0, 4), +runId.slice(4, 6) - 1, +runId.slice(6, 8), +runId.slice(8, 10));
+  const limitHours = ['hrrr', 'rap', 'rtma'].includes(model) ? 6 : 24;
+  return now - init > limitHours * 3600000;
+}
+
+
+/** Prefer recent complete runs, then fresh partial data, before old archives. */
+function prioritizeModelRuns(runs, model) {
+  return [...runs.filter((run) => run.is_complete && !modelRunIsOld(run.run_id, model)),
+    ...runs.filter((run) => !run.is_complete && !modelRunIsOld(run.run_id, model)),
+    ...runs.filter((run) => modelRunIsOld(run.run_id, model))];
+}
+
+
+
 /* ═══════════════════════════════════════════════════════════════
    WX Viewer — Mobile PWA
    ═══════════════════════════════════════════════════════════════ */
@@ -9,6 +27,47 @@ const BASE = (() => {
   if (p.startsWith('/wx/')) return '/wx';
   return '';
 })();
+const MODEL_IMAGE_VERSION = '20261008a';
+const URL_PARAMS = new URLSearchParams(window.location.search || '');
+const MOBILE_VIEWS = new Set(['radar', 'surface', 'models', 'satellite']);
+const MOBILE_MODELS = new Set(['ecmwf', 'gdps', 'gefs', 'gfs', 'href', 'hrrr', 'nam12km', 'nam3km', 'rap', 'rrfs', 'rtma']);
+const MOBILE_SATELLITES = new Set(['goes18', 'goes19']);
+const MOBILE_SHARE_QUERY_KEYS = [
+  'view', 'source', 'model', 'run', 'param', 'fxx', 'satellite', 'sat_product',
+  'sat_region', 'site', 'product', 'tilt', 'frame', 'lat', 'lon', 'z',
+];
+
+function getMobileSharedConfig() {
+  const cleanId = (value) => (/^[a-z0-9_]+$/i.test(value || '') ? value : null);
+  const rawView = URL_PARAMS.get('view');
+  const view = (MOBILE_VIEWS.has(rawView) ? rawView : URL_PARAMS.get('source') || '').toLowerCase();
+  const site = (URL_PARAMS.get('site') || '').toUpperCase();
+  const product = (URL_PARAMS.get('product') || '').toUpperCase();
+  const lat = Number.parseFloat(URL_PARAMS.get('lat') || '');
+  const lon = Number.parseFloat(URL_PARAMS.get('lon') || '');
+  const zoom = Number.parseFloat(URL_PARAMS.get('z') || '');
+  return {
+    view: MOBILE_VIEWS.has(view) ? view : 'radar',
+    model: MOBILE_MODELS.has(URL_PARAMS.get('model') || '') ? URL_PARAMS.get('model') : null,
+    runId: /^\d{10}$/.test(URL_PARAMS.get('run') || '') ? URL_PARAMS.get('run') : null,
+    param: cleanId(URL_PARAMS.get('param')),
+    fxx: URL_PARAMS.has('fxx') ? URL_PARAMS.get('fxx') : null,
+    satellite: MOBILE_SATELLITES.has(URL_PARAMS.get('satellite') || '')
+      ? URL_PARAMS.get('satellite')
+      : null,
+    satProduct: cleanId(URL_PARAMS.get('sat_product')),
+    satRegion: cleanId(URL_PARAMS.get('sat_region')) || '',
+    radarSite: /^[A-Z0-9]{3,4}$/.test(site) ? site : null,
+    radarProduct: /^[A-Z0-9_]{2,12}$/.test(product) ? product : null,
+    radarTilt: Number.parseFloat(URL_PARAMS.get('tilt') || ''),
+    frame: URL_PARAMS.get('frame') || null,
+    mapView: Number.isFinite(lat) && lat >= -90 && lat <= 90
+      && Number.isFinite(lon) && lon >= -180 && lon <= 180
+      && Number.isFinite(zoom) && zoom >= 0 && zoom <= 20
+      ? { lat, lon, zoom }
+      : null,
+  };
+}
 
 // ── State ──────────────────────────────────────────────────────
 const S = {
@@ -18,6 +77,9 @@ const S = {
   model: 'hrrr',
   runId: null,
   modelRuns: [],  // cached list of available runs
+  modelAvailability: {},
+  vectorAvailability: {},
+  paletteVersion: null,
   param: 'temp_2m',
   modelParamGroupsOpen: {},
   fxx: 0,
@@ -79,6 +141,61 @@ const S = {
   soundingSeq: 0,
 };
 
+const MOBILE_SHARED_CONFIG = getMobileSharedConfig();
+S.tab = MOBILE_SHARED_CONFIG.view;
+if (MOBILE_SHARED_CONFIG.model) S.model = MOBILE_SHARED_CONFIG.model;
+if (MOBILE_SHARED_CONFIG.runId) S.runId = MOBILE_SHARED_CONFIG.runId;
+if (MOBILE_SHARED_CONFIG.param) S.param = MOBILE_SHARED_CONFIG.param;
+if (MOBILE_SHARED_CONFIG.fxx !== null) {
+  S.fxx = /^\d+$/.test(MOBILE_SHARED_CONFIG.fxx)
+    ? Number.parseInt(MOBILE_SHARED_CONFIG.fxx, 10)
+    : MOBILE_SHARED_CONFIG.fxx;
+}
+if (MOBILE_SHARED_CONFIG.satellite) S.sat = MOBILE_SHARED_CONFIG.satellite;
+if (MOBILE_SHARED_CONFIG.satProduct) S.satProduct = MOBILE_SHARED_CONFIG.satProduct;
+S.satRegion = MOBILE_SHARED_CONFIG.satRegion;
+S.satScope = S.satRegion ? 'regional' : 'national';
+if (MOBILE_SHARED_CONFIG.radarSite) S.radarSite = MOBILE_SHARED_CONFIG.radarSite;
+if (MOBILE_SHARED_CONFIG.radarProduct) S.radarProduct = MOBILE_SHARED_CONFIG.radarProduct;
+if (Number.isFinite(MOBILE_SHARED_CONFIG.radarTilt)) S.radarTilt = MOBILE_SHARED_CONFIG.radarTilt;
+
+let mobileSharedModelPending = MOBILE_SHARED_CONFIG.view === 'models';
+let mobileSharedFramePending = MOBILE_SHARED_CONFIG.frame;
+let mobileSharedMapPending = MOBILE_SHARED_CONFIG.mapView;
+let mobileUrlSyncTimer = null;
+let mobileUrlSyncEnabled = false;
+
+let mobileDataRequestId = 0;
+let mobileLegendRequestId = 0;
+let mobileSurfaceRequestId = 0;
+
+/** Reset the visible frame before loading a different dataset. */
+function beginMobileDataLoad() {
+  const requestId = ++mobileDataRequestId;
+  ++mobileLegendRequestId;
+  ++mobileSurfaceRequestId;
+  pause();
+  clearLoadQueue();
+  clearOverlay();
+  legendBar.classList.add('hidden');
+  topInfo.textContent = 'Loading…';
+  topValue.textContent = '';
+  scrubLabel.textContent = 'Loading frames…';
+  scrubFrameCount.textContent = '';
+  setupScrubber(0, 0);
+  return requestId;
+}
+
+function isCurrentMobileRequest(requestId, tab) {
+  return requestId === mobileDataRequestId && S.tab === tab;
+}
+
+function showMobileDataMessage(message) {
+  topInfo.textContent = message;
+  scrubLabel.textContent = message;
+  scrubFrameCount.textContent = '';
+}
+
 // Featured chasers — shown as pulsing dots
 const FEATURED_CHASERS = ['Steve Blum', 'Chad Alcares', 'Mike Lachendro', 'Daniel Castro'];
 
@@ -123,6 +240,69 @@ const SPEEDS = [
   { label: '5x', ms: 40 },
 ];
 
+function currentMobileFrame() {
+  if (S.tab === 'satellite') return S.satFrames[S.satIdx]?.timestamp || null;
+  if (S.tab === 'radar') return S.radarFrames[S.radarIdx]?.timestamp || null;
+  return null;
+}
+
+function buildMobileShareUrl() {
+  const url = new URL(window.location.href);
+  for (const key of [...MOBILE_SHARE_QUERY_KEYS, 'desktop']) url.searchParams.delete(key);
+  if (url.pathname.endsWith('/mobile.html')) url.pathname = `${BASE}/`;
+  url.searchParams.set('view', S.tab);
+
+  if (S.tab === 'models') {
+    if (S.model) url.searchParams.set('model', S.model);
+    if (S.runId) url.searchParams.set('run', S.runId);
+    if (S.param) url.searchParams.set('param', S.param);
+    if (S.fxx !== null && S.fxx !== undefined) url.searchParams.set('fxx', String(S.fxx));
+  } else if (S.tab === 'satellite') {
+    if (S.sat) url.searchParams.set('satellite', S.sat);
+    if (S.satProduct) url.searchParams.set('sat_product', S.satProduct);
+    if (S.satRegion) url.searchParams.set('sat_region', S.satRegion);
+  } else if (S.tab === 'radar') {
+    if (S.radarSite) url.searchParams.set('site', S.radarSite);
+    if (S.radarProduct) url.searchParams.set('product', S.radarProduct);
+    if (Number.isFinite(S.radarTilt)) url.searchParams.set('tilt', String(S.radarTilt));
+  }
+
+  const frame = currentMobileFrame();
+  if (frame) url.searchParams.set('frame', frame);
+
+  if (leafletMap && ['radar', 'surface'].includes(S.tab)) {
+    const center = leafletMap.getCenter();
+    const zoom = leafletMap.getZoom();
+    if (center && Number.isFinite(zoom)) {
+      url.searchParams.set('lat', center.lat.toFixed(4));
+      url.searchParams.set('lon', center.lng.toFixed(4));
+      url.searchParams.set('z', Number(zoom.toFixed(2)).toString());
+    }
+  }
+  url.hash = '';
+  return url;
+}
+
+function syncMobileUrl() {
+  if (!mobileUrlSyncEnabled) return;
+  if (mobileUrlSyncTimer) clearTimeout(mobileUrlSyncTimer);
+  mobileUrlSyncTimer = setTimeout(() => {
+    mobileUrlSyncTimer = null;
+    const url = buildMobileShareUrl();
+    const target = `${url.pathname}${url.search}`;
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (target !== current) history.replaceState(null, '', target);
+  }, 120);
+}
+
+function restoreMobileSharedMap() {
+  if (!leafletMap || !mobileSharedMapPending || MOBILE_SHARED_CONFIG.view !== S.tab) return false;
+  const { lat, lon, zoom } = mobileSharedMapPending;
+  mobileSharedMapPending = null;
+  leafletMap.setView([lat, lon], zoom, { animate: false });
+  return true;
+}
+
 function setMobileBasemapMode(mode = 'default') {
   const baseEl = baseTile?.getContainer?.();
   const labelsEl = labelsTile?.getContainer?.();
@@ -142,8 +322,15 @@ function _pumpQueue() {
   while (_loadActive < PRELOAD_CONCURRENCY && _loadQueue.length) {
     const url = _loadQueue.shift();
     const s = _imgCache.get(url);
-    if (s === 'ok' || s === 'error') { _pumpQueue(); return; }
+    if (s === 'ok' || s === 'error') continue;
     _loadActive++;
+    if (window.PressureContours?.isUrl(url)) {
+      window.PressureContours.load(url).then(
+        () => { _imgCache.set(url, 'ok'); },
+        () => { _imgCache.set(url, 'error'); },
+      ).finally(() => { _loadActive--; _pumpQueue(); updateCacheStatus(); });
+      continue;
+    }
     const img = new Image();
     img.onload  = () => { _imgCache.set(url, 'ok');    _loadActive--; _pumpQueue(); updateCacheStatus(); };
     img.onerror = () => { _imgCache.set(url, 'error'); _loadActive--; _pumpQueue(); updateCacheStatus(); };
@@ -171,6 +358,7 @@ function isErrored(url) {
 
 // Clear pending queue when switching products (cached images stay in browser)
 function clearLoadQueue() {
+  for (const url of _loadQueue) _imgCache.delete(url);
   _loadQueue.length = 0;
   _productUrls = [];
 }
@@ -179,21 +367,12 @@ function clearLoadQueue() {
 function updateCacheStatus() {
   if (!scrubFrameCount) return;
   if (S.tab === 'surface') {
-    const total = S.surfaceFrames.length;
-    if (!total) return;
-    const loaded = S.surfaceFrames.reduce((n, frame) => n + (S.surfacePayloadCache[frame.generated] ? 1 : 0), 0);
-    const curIdx = parseInt(scrubSlider.value);
-    if (loaded < total) {
-      scrubFrameCount.textContent = `↓ ${loaded}/${total}`;
-      scrubFrameCount.classList.add('loading');
-    } else {
-      scrubFrameCount.textContent = `${curIdx + 1}/${total}`;
-      scrubFrameCount.classList.remove('loading');
-    }
+    scrubFrameCount.textContent = S.surfaceFrames.length ? `${S.surfaceIdx + 1}/${S.surfaceFrames.length}` : '';
+    scrubFrameCount.classList.remove('loading');
     return;
   }
   const total = _productUrls.length;
-  if (!total) return;
+  if (!total) { scrubFrameCount.textContent = ''; scrubFrameCount.classList.remove('loading'); return; }
   const loaded = _productUrls.reduce((n, u) => { const s = _imgCache.get(u); return n + (s === 'ok' || s === 'error' ? 1 : 0); }, 0);
   if (loaded < total) {
     scrubFrameCount.textContent = `↓ ${loaded}/${total}`;
@@ -211,7 +390,7 @@ function frameUrl(idx) {
   if (S.tab === 'models') {
     const f = S.fxxList[idx];
     if (f == null) return null;
-    return `${BASE}/rendered/${S.model}/${S.runId}/${S.param}/f${String(f).padStart(2,'0')}.png`;
+    return mobileModelFrameUrl(f);
   }
   if (S.tab === 'satellite') {
     const f = S.satFrames[idx];
@@ -219,7 +398,7 @@ function frameUrl(idx) {
   }
   if (S.tab === 'radar') {
     const f = S.radarFrames[idx];
-    return f ? `${BASE}/rendered/${String(f.png_path||'').replace(/^\//,'')}` : null;
+    return f ? `${BASE}/rendered/${String(f.png_path||'').replace(/^\//,'')}?palette=${f.palette_version || 1}` : null;
   }
   if (S.tab === 'home') {
     const f = S.homeRadarFrames[idx];
@@ -254,6 +433,7 @@ function preloadAllFrames() {
 const MODELS = {
   hrrr:   { label: 'HRRR', maxFxx: 48 },
   nam3km: { label: 'NAM 3km', maxFxx: 60 },
+  nam12km: { label: 'NAM 12km', maxFxx: 84 },
   rap:    { label: 'RAP', maxFxx: 21 },
   rrfs:   { label: 'RRFS', maxFxx: 60 },
   href:   { label: 'HREF', maxFxx: 48 },
@@ -264,100 +444,123 @@ const MODELS = {
   rtma:   { label: 'RTMA', maxFxx: 0 },
 };
 
-const MODEL_PARAM_ALIASES = {
-  nam3km: ['nam'],
-  nam12km: ['nam'],
-  rap: ['hrrr', 'gfs', 'nam'],
-  rrfs: ['hrrr', 'gfs'],
-  href: ['hrrr', 'gfs'],
-  gefs: ['gfs'],
-  gdps: ['ecmwf', 'gfs'],
-};
-
 const PARAMS = [
   { id: 'surface', group: 'Surface', items: [
-    { id: 'temp_2m', label: 'Temp 2m', models: ['ecmwf', 'gfs', 'hrrr', 'nam', 'rtma'] },
-    { id: 'dewpoint_2m', label: 'Dewpoint', models: ['ecmwf', 'gfs', 'hrrr', 'nam', 'rtma'] },
-    { id: 'wind_speed', label: 'Wind', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'wind_gusts', label: 'Wind Gusts', models: ['ecmwf', 'gfs', 'hrrr', 'nam', 'rtma'] },
-    { id: 'max_wind', label: 'Max 10m Wind', models: ['hrrr'] },
-    { id: 'mslp', label: 'MSLP', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'psfc', label: 'Surface Pressure', models: ['rtma'] },
-    { id: 'pwat', label: 'PWAT', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'cloud_cover', label: 'Cloud Cover', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'pbl_height', label: 'PBL Height', models: ['hrrr', 'nam'] },
+    {"id": "temp_2m", "label": "Temp 2m", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs", "rtma"]},
+    {"id": "dewpoint_2m", "label": "Dewpoint", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs", "rtma"]},
+    {"id": "wind_speed", "label": "Wind", "models": ["ecmwf", "gdps", "gefs", "gfs", "hrrr", "nam12km", "nam3km", "rap", "rrfs", "rtma"]},
+    {"id": "wind_gusts", "label": "Wind Gusts", "models": ["ecmwf", "gdps", "gfs", "hrrr", "nam12km", "nam3km", "rap", "rrfs", "rtma"]},
+    {"id": "max_wind", "label": "Max 10m Wind", "models": ["hrrr", "rrfs"]},
+    {"id": "mslp", "label": "MSLP", "models": ["ecmwf", "gdps", "gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "psfc", "label": "Surface Pressure", "models": ["rtma"]},
+    {"id": "pwat", "label": "PWAT", "models": ["ecmwf", "gefs", "gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "cloud_cover", "label": "Cloud Cover", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs", "rtma"]},
+    {"id": "pbl_height", "label": "PBL Height", "models": ["gfs", "hrrr", "nam3km", "rap", "rrfs"]},
+    {"id": "rh_2m", "label": "2m RH", "models": ["rtma"]},
+    {"id": "max_temp_1h", "label": "1hr Max Temp", "models": ["rrfs"]},
+    {"id": "min_temp_1h", "label": "1hr Min Temp", "models": ["rrfs"]},
+    {"id": "refl_1km", "label": "1km Reflectivity", "models": ["rrfs"]},
+    {"id": "cape_ml", "label": "MLCAPE", "models": ["rrfs"]},
+    {"id": "cin_ml", "label": "MLCIN", "models": ["rrfs"]},
+    {"id": "cape_surface", "label": "Surface CAPE", "models": ["gdps"]},
+    {"id": "cin_surface", "label": "Surface CIN", "models": ["gdps"]},
+    {"id": "llmt", "label": "Low-Level Moisture Transport", "models": ["hrrr", "nam3km"]},
+    {"id": "ascent", "label": "Forcing for Ascent", "models": ["hrrr", "nam3km"]},
+    {"id": "hp_risk", "label": "Storm Obscuration / HP Risk", "models": ["hrrr", "nam3km"]},
+    {"id": "weasd", "label": "Snow Water Eq.", "models": ["gfs", "hrrr", "rap", "rrfs"]},
+    {"id": "cloud_cover_low", "label": "Low Cloud Cover", "models": ["gefs"]},
+    {"id": "cloud_cover_mid", "label": "Mid Cloud Cover", "models": ["gefs"]},
+    {"id": "cloud_cover_high", "label": "High Cloud Cover", "models": ["gefs"]},
   ]},
   { id: 'precip', group: 'Precipitation', items: [
-    { id: 'reflectivity', label: 'Reflectivity', models: ['gfs', 'hrrr', 'nam', 'rrfs'] },
-    { id: 'precip', label: 'Precip', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'lightning', label: 'Lightning', models: ['hrrr', 'nam'] },
-    { id: 'echo_tops', label: 'Echo Tops', models: ['hrrr', 'nam'] },
+    {"id": "reflectivity", "label": "Reflectivity", "models": ["gfs", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "precip", "label": "Precip", "models": ["ecmwf", "gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "lightning", "label": "Lightning", "models": ["hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "echo_tops", "label": "Echo Tops", "models": ["hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "precip_6h", "label": "6hr Precip", "models": ["gefs"]},
   ]},
   { id: 'instability', group: 'Instability', items: [
-    { id: 'mlcape', label: 'MLCAPE', models: ['gfs', 'hrrr', 'nam'] },
-    { id: 'mlcin', label: 'MLCIN', models: ['gfs', 'hrrr', 'nam'] },
-    { id: 'mucape', label: 'MUCAPE', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'mucin', label: 'MUCIN', models: ['gfs', 'hrrr', 'nam'] },
-    { id: 'cape', label: 'SBCAPE', models: ['gfs', 'hrrr', 'nam'] },
-    { id: 'cin', label: 'SBCIN', models: ['gfs', 'hrrr', 'nam'] },
-    { id: 'cape_03km', label: '0-3km CAPE', models: ['hrrr', 'nam'] },
-    { id: 'lifted_index', label: 'Lifted Index', models: ['gfs', 'hrrr', 'nam'] },
-    { id: 'lcl', label: 'LCL Height', models: ['hrrr', 'nam'] },
+    {"id": "mlcape", "label": "MLCAPE", "models": ["gfs", "hrrr", "nam12km", "nam3km", "rap"]},
+    {"id": "mlcin", "label": "MLCIN", "models": ["gfs", "hrrr", "nam12km", "nam3km", "rap"]},
+    {"id": "mucape", "label": "MUCAPE", "models": ["ecmwf", "gfs", "hrrr", "nam12km", "nam3km", "rap"]},
+    {"id": "mucin", "label": "MUCIN", "models": ["gfs", "hrrr", "nam12km", "nam3km", "rap"]},
+    {"id": "cape", "label": "SBCAPE", "models": ["gefs", "gfs", "href", "hrrr", "nam12km", "rap", "rrfs"]},
+    {"id": "cin", "label": "SBCIN", "models": ["gfs", "href", "hrrr", "nam12km", "rap", "rrfs"]},
+    {"id": "cape_03km", "label": "0-3km CAPE", "models": ["hrrr", "nam12km", "rap"]},
+    {"id": "lifted_index", "label": "Lifted Index", "models": ["gfs", "hrrr", "nam12km", "nam3km", "rap"]},
+    {"id": "lcl", "label": "LCL Height", "models": ["hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
   ]},
   { id: 'composites', group: 'Composites', items: [
-    { id: 'stp', label: 'STP', models: ['hrrr', 'nam'] },
-    { id: 'scp', label: 'Supercell Comp', models: ['hrrr', 'nam'] },
-    { id: 'vil', label: 'VIL', models: ['hrrr', 'nam'] },
-    { id: 'uh_25km', label: '2-5km UH', models: ['hrrr', 'nam'] },
-    { id: 'uh_02km', label: '0-2km UH', models: ['hrrr'] },
-    { id: 'uh_03km', label: '0-3km UH', models: ['hrrr', 'nam'] },
-    { id: 'uh_25km_swath', label: '2-5km UH Swath', models: ['hrrr', 'nam'] },
-    { id: 'uh_03km_swath', label: '0-3km UH Swath', models: ['hrrr', 'nam'] },
-    { id: 'hail', label: 'Max Hail Size', models: ['hrrr'] },
-    { id: 'cti', label: 'Chase Target', models: ['hrrr', 'nam'] },
-    { id: 'msi', label: 'Meso Strength', models: ['hrrr'] },
-    { id: 'smi', label: 'Storm Mode', models: ['hrrr', 'nam'] },
-    { id: 'ship', label: 'Sig Hail', models: ['hrrr', 'nam'] },
-    { id: 'dcp', label: 'Derecho Comp', models: ['hrrr', 'nam'] },
-    { id: 'citi', label: 'CI Timing', models: ['hrrr', 'nam'] },
-    { id: 'cvi', label: 'Chase Visibility', models: ['hrrr', 'nam'] },
+    {"id": "stp", "label": "STP", "models": ["hrrr", "nam3km"]},
+    {"id": "scp", "label": "Supercell Comp", "models": ["hrrr", "nam3km"]},
+    {"id": "vil", "label": "VIL", "models": ["hrrr", "nam12km", "nam3km", "rrfs"]},
+    {"id": "uh_25km", "label": "2-5km UH", "models": ["hrrr", "nam3km", "rrfs"]},
+    {"id": "uh_02km", "label": "0-2km UH", "models": ["hrrr", "rrfs"]},
+    {"id": "uh_03km", "label": "0-3km UH", "models": ["hrrr", "nam3km"]},
+    {"id": "uh_25km_swath", "label": "2-5km UH Swath", "models": ["hrrr", "nam3km", "rrfs"]},
+    {"id": "uh_03km_swath", "label": "0-3km UH Swath", "models": ["hrrr", "nam3km"]},
+    {"id": "hail", "label": "Max Hail Size", "models": ["hrrr"]},
+    {"id": "cti", "label": "Chase Target", "models": ["hrrr", "nam3km"]},
+    {"id": "msi", "label": "Meso Strength", "models": ["hrrr"]},
+    {"id": "smi", "label": "Storm Mode", "models": ["hrrr", "nam3km"]},
+    {"id": "ship", "label": "Sig Hail", "models": ["hrrr", "nam3km"]},
+    {"id": "dcp", "label": "Derecho Comp", "models": ["hrrr", "nam3km"]},
+    {"id": "citi", "label": "CI Timing", "models": ["hrrr", "nam3km"]},
+    {"id": "cvi", "label": "Chase Visibility", "models": ["hrrr", "nam3km"]},
   ]},
   { id: 'kinematics', group: 'Kinematics', items: [
-    { id: 'srh_01km', label: '0-1km SRH', models: ['hrrr', 'nam'] },
-    { id: 'srh_03km', label: '0-3km SRH', models: ['gfs', 'hrrr', 'nam'] },
-    { id: 'efhl', label: 'Eff. Helicity', models: ['hrrr'] },
-    { id: 'shear_06km', label: '0-6km Shear', models: ['hrrr', 'nam'] },
-    { id: 'shear_01km', label: '0-1km Shear', models: ['hrrr', 'nam'] },
+    {"id": "srh_01km", "label": "0-1km SRH", "models": ["hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "srh_03km", "label": "0-3km SRH", "models": ["hrrr", "nam3km", "rap", "nam12km", "gfs", "href", "rrfs"]},
+    {"id": "efhl", "label": "Eff. Helicity", "models": ["hrrr"]},
+    {"id": "shear_06km", "label": "0-6km Shear", "models": ["hrrr", "nam3km", "rap", "nam12km", "rrfs"]},
+    {"id": "shear_01km", "label": "0-1km Shear", "models": ["hrrr", "nam12km", "rrfs"]},
   ]},
   { id: 'winter', group: 'Winter', items: [
-    { id: 'visibility', label: 'Visibility', models: ['gfs', 'hrrr', 'nam', 'rtma'] },
-    { id: 'ceil', label: 'Ceiling Height', models: ['rrfs'] },
-    { id: 'snow_depth', label: 'Snow Depth', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'snowfall', label: 'Snowfall', models: ['ecmwf'] },
-    { id: 'frozen_pct', label: 'Frozen Precip %', models: ['hrrr', 'rrfs'] },
-    { id: 'frzlvl', label: 'Freezing Level', models: ['gfs', 'hrrr', 'nam'] },
-    { id: 'kuchera_6hr', label: '6hr Kuchera Snow', models: ['hrrr'] },
-    { id: 'kuchera_12hr', label: '12hr Kuchera Snow', models: ['hrrr'] },
-    { id: 'snow10_12hr', label: '12hr 10:1 Snow', models: ['hrrr'] },
+    {"id": "visibility", "label": "Visibility", "models": ["gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs", "rtma"]},
+    {"id": "ceil", "label": "Ceiling Height", "models": ["rrfs"]},
+    {"id": "snow_depth", "label": "Snow Depth", "models": ["ecmwf", "gdps", "gfs", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "snowfall", "label": "Snowfall", "models": ["ecmwf"]},
+    {"id": "frozen_pct", "label": "Frozen Precip %", "models": ["hrrr", "rrfs"]},
+    {"id": "frzlvl", "label": "Freezing Level", "models": ["gfs", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "kuchera_6hr", "label": "6hr Kuchera Snow", "models": ["hrrr"]},
+    {"id": "kuchera_12hr", "label": "12hr Kuchera Snow", "models": ["hrrr"]},
+    {"id": "snow10_12hr", "label": "12hr 10:1 Snow", "models": ["hrrr"]},
+    {"id": "snowfall_6h", "label": "6hr Snowfall", "models": ["gefs"]},
   ]},
   { id: 'pressure', group: 'Pressure Levels', items: [
-    { id: 'temp_925mb', label: '925mb Temp', models: ['gfs', 'hrrr', 'nam'] },
-    { id: 'temp_850mb', label: '850mb Heights / Temp', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'dewpoint_850mb', label: '850mb Heights / Dewpoint', models: ['hrrr', 'nam'] },
-    { id: 'rh_850mb', label: '850mb Heights / RH', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'wind_850mb', label: '850mb Heights / Wind', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'temp_700mb', label: '700mb Heights / Temp', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'rh_700mb', label: '700mb Heights / RH', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'omega_700mb', label: '700mb Heights / Vert Vel', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'wind_700mb', label: '700mb Heights / Wind', models: ['hrrr', 'nam'] },
-    { id: 'temp_500mb', label: '500mb Heights / Temp', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'vort_500mb', label: '500mb Heights / Vorticity', models: ['hrrr', 'nam'] },
-    { id: 'wind_500mb', label: '500mb Heights / Wind', models: ['ecmwf', 'gfs', 'hrrr', 'nam'] },
-    { id: 'wind_300mb', label: '300mb Wind (Jet)', models: ['ecmwf', 'gfs', 'hrrr'] },
-    { id: 'wind_250mb', label: '250mb Heights / Wind', models: ['gfs', 'hrrr', 'nam'] },
+    {"id": "temp_925mb", "label": "925mb Temp", "models": ["gefs", "gfs", "hrrr", "nam12km", "rap", "rrfs"]},
+    {"id": "temp_850mb", "label": "850mb Heights / Temp", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "hrrr", "nam3km", "nam12km", "rap", "rrfs"]},
+    {"id": "dewpoint_850mb", "label": "850mb Heights / Dewpoint", "models": ["hrrr", "nam3km"]},
+    {"id": "rh_850mb", "label": "850mb Heights / RH", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "nam3km", "nam12km", "rap", "rrfs"]},
+    {"id": "wind_850mb", "label": "850mb Heights / Wind", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "temp_700mb", "label": "700mb Heights / Temp", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "hrrr", "nam3km", "nam12km", "rap", "rrfs"]},
+    {"id": "rh_700mb", "label": "700mb Heights / RH", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "nam3km", "nam12km", "rap", "rrfs"]},
+    {"id": "omega_700mb", "label": "700mb Heights / Vert Vel", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "wind_700mb", "label": "700mb Heights / Wind", "models": ["gdps", "gefs", "href", "hrrr", "nam3km", "rrfs"]},
+    {"id": "temp_500mb", "label": "500mb Heights / Temp", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "hrrr", "nam3km", "nam12km", "rap", "rrfs"]},
+    {"id": "vort_500mb", "label": "500mb Heights / Vorticity", "models": ["gdps", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "wind_500mb", "label": "500mb Heights / Wind", "models": ["ecmwf", "gdps", "gefs", "gfs", "href", "hrrr", "nam3km", "rap", "rrfs"]},
+    {"id": "wind_300mb", "label": "300mb Heights / Wind", "models": ["ecmwf", "gdps", "gefs", "gfs", "hrrr", "rap", "rrfs"]},
+    {"id": "wind_250mb", "label": "250mb Heights / Wind", "models": ["gefs", "gfs", "hrrr", "nam3km", "rap", "rrfs"]},
+    {"id": "wind_925mb", "label": "925mb Wind", "models": ["gefs", "rrfs"]},
+    {"id": "rh_500mb", "label": "500mb Heights / RH", "models": ["gefs", "rrfs"]},
+    {"id": "temp_300mb", "label": "300mb Heights / Temp", "models": ["gefs", "rrfs"]},
+    {"id": "temp_250mb", "label": "250mb Heights / Temp", "models": ["gefs", "rrfs"]},
+    {"id": "temp_200mb", "label": "200mb Heights / Temp", "models": ["gefs"]},
+    {"id": "wind_200mb", "label": "200mb Heights / Wind", "models": ["gefs"]},
+    {"id": "gh_500mb_anomaly", "label": "500mb Hgt Anomaly", "models": ["gefs"]},
   ]},
   { id: 'ensemble', group: 'Ensemble', items: [
-    { id: 'gh_500mb_spread', label: '500mb Hgt Spread', models: ['gefs'] },
+    {"id": "gh_500mb_spread", "label": "500mb Hgt Spread", "models": ["gefs"]},
+    {"id": "refl_probability_40dbz", "label": "40dBZ Probability", "models": ["href"]},
+    {"id": "precip_probability", "label": "Precip Probability", "models": ["href"]},
+    {"id": "precip_probability_6h_05in", "label": "6hr &gt;0.5&quot; Prob", "models": ["gefs"]},
+    {"id": "precip_probability_6h_1in", "label": "6hr &gt;1&quot; Prob", "models": ["gefs"]},
+    {"id": "cape_probability", "label": "CAPE Probability", "models": ["href"]},
+    {"id": "cape_probability_1000", "label": "CAPE &gt;1000 Prob", "models": ["gefs"]},
+    {"id": "uh_25km_probability", "label": "2-5km UH Probability", "models": ["href"]},
+    {"id": "snowfall_probability_6h_1in", "label": "6hr Snow &gt;1&quot; Prob", "models": ["gefs"]},
+    {"id": "pwat_probability_1in", "label": "PWAT &gt;1&quot; Prob", "models": ["gefs"]},
   ]},
 ];
 
@@ -531,20 +734,23 @@ const RADAR_CITIES = {
 // Init
 // ═══════════════════════════════════════════════════════════════
 
-function init() {
+async function init() {
   initMap();
   initEvents();
   initServiceWorker();
 
-  switchTab('radar');
+  const initialTabLoad = switchTab(S.tab, { syncUrl: false });
 
   // Load alerts on startup (on by default)
   $('spcToggle').classList.add('on');
   S.spcOn = true;
   S.alertsOn = true;
-  loadAlerts();
-  loadSPC();
-  loadMCDs();
+  void loadAlerts();
+  void loadSPC();
+  void loadMCDs();
+  await initialTabLoad;
+  mobileUrlSyncEnabled = true;
+  syncMobileUrl();
 }
 
 function initMap() {
@@ -559,7 +765,7 @@ function initMap() {
   });
 
   baseTile = L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png',
+    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png?key=cb1_2l3n_1_eb188b07acba78da03ca3c9c',
     { subdomains: 'abcd', maxZoom: 19, crossOrigin: true,
       attribution: '&copy; CARTO &copy; OSM' }
   ).addTo(leafletMap);
@@ -587,7 +793,7 @@ function initMap() {
 
   // Labels tile on top of data + boundaries
   labelsTile = L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png',
+    'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png?key=cb1_2l3n_1_eb188b07acba78da03ca3c9c',
     { subdomains: 'abcd', maxZoom: 19, crossOrigin: true, pane: 'labelsPane' }
   ).addTo(leafletMap);
 
@@ -600,6 +806,7 @@ function initMap() {
 
   leafletMap.on('click', onMapTap);
   leafletMap.on('zoomend', _updateCountyVisibility);
+  leafletMap.on('moveend', syncMobileUrl);
 
   // Long-press on map → open sounding (models tab only)
   {
@@ -667,9 +874,8 @@ function updateMobileReferenceLayers() {
     }
   });
   if (S.satelliteCityLayer) {
-    if (satelliteMode) {
-      if (!leafletMap.hasLayer(S.satelliteCityLayer)) leafletMap.addLayer(S.satelliteCityLayer);
-    } else if (leafletMap.hasLayer(S.satelliteCityLayer)) {
+    // The tile label pane already supplies city names at the correct zoom.
+    if (leafletMap.hasLayer(S.satelliteCityLayer)) {
       leafletMap.removeLayer(S.satelliteCityLayer);
     }
   }
@@ -753,7 +959,12 @@ function initEvents() {
     flash.className = 'screen-flash';
     document.body.appendChild(flash);
 
+    let cleanupPressureCapture = null;
     try {
+      if (S.overlayLayer?.isPressureContours) {
+        await S.overlayLayer._loading;
+        cleanupPressureCapture = S.overlayLayer.prepareCapture();
+      }
       // Build a composite canvas manually from the map
       const mapEl = document.getElementById('map');
       const w = mapEl.offsetWidth * 2;  // 2x for retina
@@ -763,6 +974,10 @@ function initEvents() {
       canvas.height = h;
       const ctx = canvas.getContext('2d');
       ctx.scale(2, 2);
+      const captureMetadata = S.tab === 'models'
+        ? window.MapCaptureMetadata.model({ model: S.model, product: paramLabel(S.param), runId: S.runId, fxx: S.fxx })
+        : [topInfo.textContent, scrubLabel.textContent].filter(Boolean).join('\n');
+      const captionHeight = window.MapCaptureMetadata.height(ctx, captureMetadata, mapEl.offsetWidth);
 
       // Draw background
       ctx.fillStyle = '#08090e';
@@ -816,7 +1031,7 @@ function initEvents() {
       if (legEl && !legEl.classList.contains('hidden')) {
         const lw = 200, lh = 14, lpad = 10, ltickH = 14;
         const lx = mapEl.offsetWidth - lw - lpad - 16;
-        const ly = mapEl.offsetHeight - 28 - ltickH - lh - 20;
+        const ly = mapEl.offsetHeight - captionHeight - 16 - ltickH - lh - 20;
         // Background pill
         ctx.fillStyle = 'rgba(8,9,14,0.82)';
         ctx.beginPath();
@@ -837,17 +1052,7 @@ function initEvents() {
         }
       }
 
-      // Bottom info bar
-      const info = topInfo.textContent;
-      const label = scrubLabel.textContent;
-      if (info || label) {
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.fillRect(0, mapEl.offsetHeight - 28, mapEl.offsetWidth, 28);
-        ctx.fillStyle = '#c8cdd6';
-        ctx.font = '12px -apple-system, sans-serif';
-        ctx.textAlign = 'left';
-        ctx.fillText(`${info}  ${label}`, 10, mapEl.offsetHeight - 10);
-      }
+      window.MapCaptureMetadata.stamp(canvas, captureMetadata, { scale: 2 });
 
       // Try clipboard first, fall back to share, then download
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
@@ -887,6 +1092,8 @@ function initEvents() {
 
     } catch (err) {
       console.error('Screenshot failed:', err);
+    } finally {
+      cleanupPressureCapture?.();
     }
 
     // Remove flash
@@ -894,20 +1101,34 @@ function initEvents() {
   });
 
   // Share button
+  document.querySelectorAll('[data-desktop-link]').forEach((link) => {
+    link.addEventListener('click', () => {
+      const url = buildMobileShareUrl();
+      url.searchParams.set('source', S.tab);
+      url.searchParams.set('view', 'desktop');
+      url.searchParams.set('desktop', '1');
+      link.href = url.href;
+    });
+  });
+  $('shareNative').hidden = !navigator.share;
   shareBtn.addEventListener('click', () => shareSheet.classList.remove('hidden'));
   $('shareCancel').addEventListener('click', () => shareSheet.classList.add('hidden'));
   shareSheet.addEventListener('click', (e) => { if (e.target === shareSheet) shareSheet.classList.add('hidden'); });
   $('shareCopyLink').addEventListener('click', () => {
-    navigator.clipboard.writeText(window.location.href).then(() => {
+    navigator.clipboard.writeText(buildMobileShareUrl().href).then(() => {
       $('shareCopyLink').textContent = 'Copied!';
       setTimeout(() => { $('shareCopyLink').textContent = 'Copy Link'; shareSheet.classList.add('hidden'); }, 1000);
     }).catch(() => {});
   });
   $('shareNative').addEventListener('click', () => {
     if (navigator.share) {
-      navigator.share({ title: 'WxViewer', url: window.location.href }).catch(() => {});
+      navigator.share({ title: 'WxViewer', url: buildMobileShareUrl().href }).catch(() => {});
     }
     shareSheet.classList.add('hidden');
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { closeSheet(); shareSheet.classList.add('hidden'); closeSounding(); }
   });
 
   // Sounding close
@@ -915,8 +1136,8 @@ function initEvents() {
 
   // Swipe-to-dismiss sheet
   let startY = 0;
-  bottomSheet.addEventListener('touchstart', (e) => { startY = e.touches[0].clientY; });
-  bottomSheet.addEventListener('touchend', (e) => {
+  bottomSheet.querySelector('.sheet-handle').addEventListener('touchstart', (e) => { startY = e.touches[0].clientY; });
+  bottomSheet.querySelector('.sheet-handle').addEventListener('touchend', (e) => {
     const dy = e.changedTouches[0].clientY - startY;
     if (dy > 80) closeSheet();
   });
@@ -932,10 +1153,16 @@ function initServiceWorker() {
 // API helper
 // ═══════════════════════════════════════════════════════════════
 
-async function api(path) {
-  const r = await fetch(`${BASE}${path}`);
-  if (!r.ok) throw new Error(r.status);
-  return r.json();
+async function api(path, { timeoutMs = 15_000, ...options } = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(`${BASE}${path}`, { ...options, signal: controller.signal });
+    if (!r.ok) throw new Error(r.status);
+    return await r.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -995,9 +1222,14 @@ function _updateLocMarker(lat, lng, accuracy) {
 // Tab switching
 // ═══════════════════════════════════════════════════════════════
 
-function switchTab(tab) {
+async function switchTab(tab, { syncUrl = true } = {}) {
+  ++mobileDataRequestId;
+  ++mobileLegendRequestId;
+  ++mobileSurfaceRequestId;
+  closeSheet();
   pause();
   stopRadarAutoRefresh();
+  clearLoadQueue();
   clearOverlay();
   if (typeof SurfaceObs !== 'undefined') {
     SurfaceObs.hide();
@@ -1005,21 +1237,23 @@ function switchTab(tab) {
   if (!S.alertsOn) clearAlerts();
   if (tab !== 'radar') stopLocationWatch();
   S.tab = tab;
-  localStorage.setItem('wx_mobile_tab', tab);
+  try { localStorage.setItem('wx_mobile_tab', tab); } catch {}
 
   document.querySelectorAll('.tab').forEach((b) =>
-    b.classList.toggle('active', b.dataset.tab === tab)
+    { b.classList.toggle('active', b.dataset.tab === tab);
+      b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'); }
   );
 
   topValue.textContent = '';
   setMobileBasemapMode(tab === 'satellite' ? 'satellite' : 'default');
   updateMobileReferenceLayers();
 
-  if (tab === 'home')       initHome();
-  else if (tab === 'models')    initModels();
-  else if (tab === 'satellite') initSatellite();
-  else if (tab === 'radar')     initRadar();
-  else if (tab === 'surface')   initSurface();
+  let loadPromise = Promise.resolve();
+  if (tab === 'home') loadPromise = initHome();
+  else if (tab === 'models') loadPromise = initModels();
+  else if (tab === 'satellite') loadPromise = initSatellite();
+  else if (tab === 'radar') loadPromise = initRadar();
+  else if (tab === 'surface') loadPromise = initSurface();
 
   // Show radar site markers only on radar tab
   if (tab === 'radar') {
@@ -1027,6 +1261,10 @@ function switchTab(tab) {
   } else {
     hideRadarSiteMarkers();
   }
+  await loadPromise;
+  if (S.tab !== tab) return;
+  restoreMobileSharedMap();
+  if (syncUrl) syncMobileUrl();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1119,7 +1357,8 @@ const ALERT_COLORS = {
 
 async function loadAlerts() {
   try {
-    const data = await api('/api/alerts');
+    const types = encodeURIComponent(ALERT_TYPES.join(','));
+    const data = await api(`/api/alerts?types=${types}`);
     if (S.alertsLayer) { leafletMap.removeLayer(S.alertsLayer); S.alertsLayer = null; }
     if (!data.features || !data.features.length) return;
 
@@ -1172,11 +1411,7 @@ async function loadSPC() {
 
 async function loadMCDs() {
   try {
-    const data = await api('/api/spc/day1_cat');  // MCDs via SPC endpoint
-    // Try fetching MCDs from NWS mesoscale discussions
-    const resp = await fetch(`${BASE}/api/mcd`).catch(() => null);
-    if (!resp || !resp.ok) return;
-    const mcdData = await resp.json();
+    const mcdData = await api('/api/spc/mcds?limit=25');
     if (S.mcdLayer) { leafletMap.removeLayer(S.mcdLayer); S.mcdLayer = null; }
     if (!mcdData.features || !mcdData.features.length) return;
     S.mcdLayer = L.geoJSON(mcdData, {
@@ -1203,71 +1438,89 @@ async function initModels() {
   clearOverlay();
   showCounties(true);
   leafletMap.setView(DEFAULT_CENTER, DEFAULT_ZOOM, { animate: true });
-  await loadRun();
+  await loadRun(mobileSharedModelPending ? MOBILE_SHARED_CONFIG.runId : undefined);
 }
 
 async function loadRun(explicitRunId) {
-  clearLoadQueue();
+  const requestId = beginMobileDataLoad();
+  const model = S.model;
+  const param = S.param;
+  const previousFxx = S.fxx;
+  const isCurrent = () => isCurrentMobileRequest(requestId, 'models');
+  S.fxxList = [];
+  S.modelAvailability = {};
+  S.vectorAvailability = {};
+  S.overlayBounds = null;
   try {
-    const runs = await api(`/api/runs?model=${S.model}`);
-    if (!runs.length) { topInfo.textContent = 'No runs'; return; }
+    const runs = await api(`/api/runs?model=${model}`);
+    if (!isCurrent()) return;
     S.modelRuns = runs;
+    S.runId = null;
+    if (!runs.length) { showMobileDataMessage('No runs available'); return; }
 
+    let selectedRun = runs.find((run) => run.run_id === explicitRunId);
     let avail = null;
-
-    if (explicitRunId) {
-      // User picked a specific run
-      S.runId = explicitRunId;
-      avail = await api(`/api/available/${S.model}/${S.runId}`);
+    if (selectedRun) {
+      avail = await api(`/api/available/${model}/${selectedRun.run_id}`);
     } else {
-      // Auto-select: prefer newest complete run, fall back to newest with any frames
-      let fallbackRun = null, fallbackAvail = null;
-      for (const r of S.modelRuns) {
-        const a = await api(`/api/available/${S.model}/${r.run_id}`);
-        const frames = (a[S.param] || a.reflectivity || []);
-        if (!frames.length) continue;
-        if (!fallbackRun) { fallbackRun = r; fallbackAvail = a; }
-        if (r.is_complete) {
-          S.runId = r.run_id;
-          avail = a;
-          break;
-        }
-      }
-      if (!avail && fallbackRun) {
-        S.runId = fallbackRun.run_id;
-        avail = fallbackAvail;
+      // Prefer a complete run that actually contains the requested product.
+      const candidates = prioritizeModelRuns(runs, model);
+      for (const run of candidates) {
+        const candidate = await api(`/api/available/${model}/${run.run_id}`);
+        if (!isCurrent()) return;
+        if (candidate[param]?.length) { selectedRun = run; avail = candidate; break; }
       }
     }
-    if (!avail || !Object.keys(avail).length) { topInfo.textContent = 'No frames'; return; }
-
-    S.fxxList = (avail[S.param] || []).sort((a, b) => a - b);
-    if (!S.fxxList.length) {
-      if (S.param !== 'reflectivity' && avail.reflectivity) {
-        S.param = 'reflectivity';
-        S.fxxList = avail.reflectivity.sort((a, b) => a - b);
-      }
-      if (!S.fxxList.length) { topInfo.textContent = 'No frames'; return; }
+    if (!isCurrent()) return;
+    if (!selectedRun || !avail?.[param]?.length) {
+      showMobileDataMessage('No frames for this product');
+      return;
     }
-
-    const bounds = await api(`/api/bounds/${S.model}/${S.runId}`);
+    const [bounds, vectors] = await Promise.all([
+      api(`/api/bounds/${model}/${selectedRun.run_id}`),
+      api(`/api/available/${model}/${selectedRun.run_id}/vectors`).catch(() => ({})),
+    ]);
+    if (!isCurrent()) return;
+    S.runId = selectedRun.run_id;
+    S.paletteVersion = selectedRun.palette_version || 1;
+    S.modelAvailability = avail;
+    S.vectorAvailability = vectors;
+    S.fxxList = [...avail[param]].sort((a, b) => mobileForecastMinutes(a) - mobileForecastMinutes(b));
     S.overlayBounds = [[bounds.south, bounds.west], [bounds.north, bounds.east]];
-
-    S.fxx = S.fxxList[0];
-    setupScrubber(S.fxxList.length, 0);
+    const requestedFxx = mobileSharedModelPending ? MOBILE_SHARED_CONFIG.fxx : previousFxx;
+    S.fxx = S.fxxList.find((value) => String(value) === String(requestedFxx)) ?? S.fxxList[0];
+    const fxxIndex = S.fxxList.indexOf(S.fxx);
+    setupScrubber(S.fxxList.length, fxxIndex);
     showModelFrame();
-    updateLegend(S.param);
+    updateLegend(param);
     preloadAllFrames();
-  } catch (e) { topInfo.textContent = 'Load error'; }
+  } catch (e) {
+    if (isCurrent()) showMobileDataMessage('Unable to load. Select a product to retry.');
+  } finally {
+    if (isCurrent()) mobileSharedModelPending = false;
+  }
+}
+
+/** Forecast offsets may include a subhourly suffix, e.g. 01_15min. */
+function mobileForecastMinutes(fxx) {
+  const match = String(fxx).match(/^(\d+)(?:_(\d+)min)?$/);
+  return match ? Number(match[1]) * 60 + Number(match[2] || 0) : 0;
+}
+
+/** Choose vectors only for pressure frames that have been generated. */
+function mobileModelFrameUrl(fxx) {
+  const vector = window.PressureContours && S.vectorAvailability?.[S.param]?.some((frame) => String(frame) === String(fxx));
+  return `${BASE}/rendered/${S.model}/${S.runId}/${S.param}/f${String(fxx).padStart(2,'0')}.${vector ? 'contours.json' : 'png'}?v=${MODEL_IMAGE_VERSION}`;
 }
 
 function showModelFrame() {
   if (!S.runId || !S.fxxList.length || !S.overlayBounds) return;
-  const url = `${BASE}/rendered/${S.model}/${S.runId}/${S.param}/f${String(S.fxx).padStart(2,'0')}.png`;
+  const url = mobileModelFrameUrl(S.fxx);
   if (isErrored(url)) return;
   setImageOverlay(url, S.overlayBounds);
 
   const runH = S.runId ? S.runId.slice(-2) : '??';
-  topInfo.textContent = `${MODELS[S.model]?.label || S.model} ${S.runId?.slice(0,8)||''} ${runH}Z`;
+  topInfo.textContent = `${MODELS[S.model]?.label || S.model} ${S.runId?.slice(0,8)||''} ${runH}Z${modelRunIsOld(S.runId, S.model) ? ' · Older run' : ''}`;
 
   // Compute valid time string matching desktop format
   let labelText = `F${String(S.fxx).padStart(2,'0')}`;
@@ -1277,15 +1530,16 @@ function showModelFrame() {
     const dd   = parseInt(S.runId.substring(6, 8), 10);
     const hh   = parseInt(S.runId.substring(8, 10), 10);
     const init  = new Date(Date.UTC(yyyy, mm, dd, hh));
-    const valid = new Date(init.getTime() + S.fxx * 3600000);
+    const valid = new Date(init.getTime() + mobileForecastMinutes(S.fxx) * 60000);
     const days  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    const utcH  = String(valid.getUTCHours()).padStart(2, '0');
+    const utcH  = `${String(valid.getUTCHours()).padStart(2, '0')}:${String(valid.getUTCMinutes()).padStart(2, '0')}`;
     labelText += `  Valid: ${days[valid.getUTCDay()]} ${utcH}z ${valid.getUTCMonth()+1}/${valid.getUTCDate()}`;
   }
   scrubLabel.textContent = labelText;
 
   updateCacheStatus();
   updatePill(`${MODELS[S.model]?.label || S.model} / ${paramLabel(S.param)}`);
+  syncMobileUrl();
 }
 
 
@@ -1310,18 +1564,27 @@ async function initSatellite() {
 }
 
 async function loadSatFrames() {
-  clearLoadQueue();
+  const requestId = beginMobileDataLoad();
+  S.satFrames = [];
   try {
     // API returns a bare array of frame objects
     const regionQuery = S.satRegion ? `?region=${encodeURIComponent(S.satRegion)}` : '';
     const frames = await api(`/api/satellite/frames/${S.sat}/${S.satProduct}${regionQuery}`);
+    if (!isCurrentMobileRequest(requestId, 'satellite')) return;
     S.satFrames = Array.isArray(frames) ? frames : (frames.frames || []);
-    if (!S.satFrames.length) { topInfo.textContent = 'No frames'; return; }
+    if (!S.satFrames.length) { showMobileDataMessage('No satellite frames available'); return; }
     S.satIdx = S.satFrames.length - 1;
+    if (mobileSharedFramePending && MOBILE_SHARED_CONFIG.view === 'satellite') {
+      const sharedIdx = S.satFrames.findIndex((frame) => String(frame.timestamp) === mobileSharedFramePending);
+      if (sharedIdx >= 0) S.satIdx = sharedIdx;
+      mobileSharedFramePending = null;
+    }
     setupScrubber(S.satFrames.length, S.satIdx);
     showSatFrame();
     preloadAllFrames();
-  } catch { topInfo.textContent = 'Load error'; }
+  } catch {
+    if (isCurrentMobileRequest(requestId, 'satellite')) showMobileDataMessage('Unable to load satellite imagery');
+  }
 }
 
 function showSatFrame() {
@@ -1329,7 +1592,12 @@ function showSatFrame() {
   if (!f) return;
   // png_path is relative like "satellite/png/goes19_natural_color_2026076_0041.png"
   const pngPath = String(f.png_path || '').replace(/^\//, '');
-  const url = `${BASE}/rendered/${pngPath}`;
+  const url = `${BASE}/rendered/${pngPath}?palette=${f.palette_version || 1}`;
+  if (radarLegendPaletteVersion !== (f.palette_version || 1)) {
+    radarLegendPaletteVersion = f.palette_version || 1;
+    const product = RADAR_PRODUCTS.find(p => p.id === S.radarProduct);
+    if (product) updateLegend(product.legend);
+  }
   const b = f.bounds;
   const bounds = b ? [[b.south, b.west], [b.north, b.east]] : [[15, -145], [58, -50]];
   setImageOverlay(url, bounds);
@@ -1345,6 +1613,7 @@ function showSatFrame() {
       maxZoom: 6.5,
     });
   }
+  syncMobileUrl();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1358,12 +1627,13 @@ async function initRadar() {
   clearOverlay();
   showCounties(true);
   startLocationWatch();
-  // Fetch available tilts for this site (non-blocking)
-  fetchRadarTilts(S.radarSite);
+  const requestId = beginMobileDataLoad();
+  const site = S.radarSite;
+  await fetchRadarTilts(site);
+  if (!isCurrentMobileRequest(requestId, 'radar') || site !== S.radarSite) return;
   await loadRadarFrames();
-  const rp = RADAR_PRODUCTS.find((p) => p.id === S.radarProduct);
-  if (rp && rp.legend) updateLegend(rp.legend);
-  else legendBar.classList.add('hidden');
+  if (S.tab !== 'radar') return;
+
 }
 
 function initSurface() {
@@ -1375,12 +1645,15 @@ function initSurface() {
   showCounties(true);
   leafletMap.setView(DEFAULT_RADAR_CENTER, DEFAULT_RADAR_ZOOM, { animate: true });
   topInfo.textContent = 'Surface observations';
-  loadSurfaceHistory();
+  return loadSurfaceHistory();
 }
 
 async function loadSurfaceHistory() {
+  const requestId = beginMobileDataLoad();
+  S.surfaceFrames = [];
   try {
     const data = await api('/api/surface/history?hours=3');
+    if (!isCurrentMobileRequest(requestId, 'surface')) return;
     S.surfaceFrames = Array.isArray(data.frames) ? data.frames : [];
     if (!S.surfaceFrames.length) {
       topInfo.textContent = 'No surface history';
@@ -1391,35 +1664,43 @@ async function loadSurfaceHistory() {
     S.surfaceIdx = S.surfaceFrames.length - 1;
     setupScrubber(S.surfaceFrames.length, S.surfaceIdx);
     if (typeof SurfaceObs !== 'undefined') {
-      SurfaceObs.show();
+      SurfaceObs.show({ autoRefresh: false });
     }
     await showSurfaceFrame(S.surfaceIdx);
   } catch {
-    topInfo.textContent = 'Load error';
+    if (isCurrentMobileRequest(requestId, 'surface')) showMobileDataMessage('Unable to load surface observations');
   }
 }
 
 async function showSurfaceFrame(idx) {
   const frame = S.surfaceFrames[idx];
   if (!frame?.generated) return;
-  let payload = S.surfacePayloadCache[frame.generated];
-  if (!payload) {
-    payload = await api(`/api/surface/frame/${frame.generated}`);
-    S.surfacePayloadCache[frame.generated] = payload;
+  const requestId = ++mobileSurfaceRequestId;
+  try {
+    let payload = S.surfacePayloadCache[frame.generated];
+    if (!payload) {
+      payload = await api(`/api/surface/frame/${frame.generated}`);
+      S.surfacePayloadCache[frame.generated] = payload;
+    }
+    if (S.tab !== 'surface' || requestId !== mobileSurfaceRequestId) return;
+    S.surfaceIdx = idx;
+    if (typeof SurfaceObs !== 'undefined') SurfaceObs.setPayload(payload);
+    topInfo.textContent = 'Surface observations';
+    scrubLabel.textContent = formatTs(new Date(frame.generated * 1000).toISOString());
+    updateCacheStatus();
+    syncMobileUrl();
+  } catch {
+    if (S.tab === 'surface' && requestId === mobileSurfaceRequestId) {
+      pause();
+      showMobileDataMessage('Unable to load this observation frame');
+    }
   }
-  S.surfaceIdx = idx;
-  if (typeof SurfaceObs !== 'undefined') {
-    SurfaceObs.setPayload(payload);
-  }
-  const label = formatTs(new Date(frame.generated * 1000).toISOString());
-  topInfo.textContent = 'Surface observations';
-  scrubLabel.textContent = label;
-  updateCacheStatus();
 }
 
 async function fetchRadarTilts(site) {
   try {
     const data = await api(`/api/radar/tilts/${site}`);
+    if (S.tab !== 'radar' || site !== S.radarSite) return;
     const rawTilts = Array.isArray(data) ? data : data?.tilts;
     if (Array.isArray(rawTilts) && rawTilts.length) {
       const available = rawTilts
@@ -1456,25 +1737,51 @@ async function fetchRadarTilts(site) {
         buildRadarSheet();
       }
     }
-  } catch { S.radarTilts = [0.5]; }
+  } catch { if (S.tab === 'radar' && site === S.radarSite) S.radarTilts = [0.5]; }
 }
 
 let _radarAutoRefreshTimer = null;
 
+function useRenderedRadarTilt(frame) {
+  if (!frame?.png_path || !Number.isFinite(frame.tilt)) return;
+  S.radarTilt = frame.tilt;
+  if (!S.radarTilts.includes(frame.tilt)) S.radarTilts.push(frame.tilt);
+  S.radarTilts.sort((a, b) => a - b);
+  if (!bottomSheet.classList.contains('hidden')) buildRadarSheet();
+}
+
 async function loadRadarFrames() {
-  clearLoadQueue();
+  const requestId = beginMobileDataLoad();
+  const { radarSite: site, radarProduct: product, radarTilt: tilt } = S;
+  const isCurrent = () => isCurrentMobileRequest(requestId, 'radar');
+  S.radarFrames = [];
   try {
-    // API returns a bare array of frame objects
-    const frames = await api(`/api/radar/frames/${S.radarSite}/${S.radarProduct}?tilt=${S.radarTilt}`);
-    if (S.tab !== 'radar') return; // tab changed during fetch
-    S.radarFrames = Array.isArray(frames) ? frames : (frames.frames || []);
-    if (!S.radarFrames.length) { topInfo.textContent = 'No frames'; return; }
-    S.radarIdx = S.radarFrames.length - 1;
-    setupScrubber(S.radarFrames.length, S.radarIdx);
-    showRadarFrame(true);
+    let frames = await api(`/api/radar/frames/${site}/${product}?tilt=${tilt}`);
+    if (!isCurrent()) return;
+    frames = Array.isArray(frames) ? frames : (frames.frames || []);
+    if (!frames.length || tilt > 0.65) {
+      const frame = await api(`/api/radar/render/${site}/${product}/${tilt}`, { timeoutMs: 60_000 });
+      if (!isCurrent()) return;
+      useRenderedRadarTilt(frame);
+      frames = frame?.png_path ? [frame] : [];
+    }
+    S.radarFrames = frames;
+    if (!frames.length) { showMobileDataMessage('No radar frames available'); return; }
+    S.radarIdx = frames.length - 1;
+    if (mobileSharedFramePending && MOBILE_SHARED_CONFIG.view === 'radar') {
+      const sharedIdx = frames.findIndex((frame) => String(frame.timestamp) === mobileSharedFramePending);
+      if (sharedIdx >= 0) S.radarIdx = sharedIdx;
+      mobileSharedFramePending = null;
+    }
+    setupScrubber(frames.length, S.radarIdx);
+    showRadarFrame(!mobileSharedMapPending);
     preloadAllFrames();
     startRadarAutoRefresh();
-  } catch { topInfo.textContent = 'Load error'; }
+    const legend = RADAR_PRODUCTS.find((p) => p.id === product)?.legend;
+    if (legend) updateLegend(legend);
+  } catch {
+    if (isCurrent()) showMobileDataMessage('No radar data available. Select a product to retry.');
+  }
 }
 
 function startRadarAutoRefresh() {
@@ -1488,10 +1795,17 @@ function stopRadarAutoRefresh() {
 
 async function refreshRadarFrames() {
   if (S.tab !== 'radar') { stopRadarAutoRefresh(); return; }
+  const requestId = mobileDataRequestId;
   try {
     const frames = await api(`/api/radar/frames/${S.radarSite}/${S.radarProduct}?tilt=${S.radarTilt}`);
-    if (S.tab !== 'radar') return;
-    const newFrames = Array.isArray(frames) ? frames : (frames.frames || []);
+    if (!isCurrentMobileRequest(requestId, 'radar')) return;
+    let newFrames = Array.isArray(frames) ? frames : (frames.frames || []);
+    if (S.radarTilt > 0.65) {
+      const frame = await api(`/api/radar/render/${S.radarSite}/${S.radarProduct}/${S.radarTilt}`, { timeoutMs: 60_000 });
+      if (!isCurrentMobileRequest(requestId, 'radar')) return;
+      useRenderedRadarTilt(frame);
+      newFrames = frame?.png_path ? [frame] : [];
+    }
     if (!newFrames.length) return;
 
     const wasAtEnd = S.radarIdx >= S.radarFrames.length - 1;
@@ -1500,22 +1814,28 @@ async function refreshRadarFrames() {
 
     if (newLatest === oldLatest && newFrames.length === S.radarFrames.length) return;
 
+    const selectedTimestamp = S.radarFrames[S.radarIdx]?.timestamp;
     S.radarFrames = newFrames;
-    if (wasAtEnd) {
-      S.radarIdx = newFrames.length - 1;
-      showRadarFrame(false);
-    }
+    S.radarIdx = wasAtEnd ? newFrames.length - 1 : Math.max(0, newFrames.findIndex((frame) => frame.timestamp === selectedTimestamp));
+    showRadarFrame(false);
     setupScrubber(newFrames.length, S.radarIdx);
     preloadAllFrames();
   } catch {}
 }
+
+let radarLegendPaletteVersion = null;
 
 function showRadarFrame(fitBounds) {
   const f = S.radarFrames[S.radarIdx];
   if (!f) return;
   // png_path is relative like "radar/png/KOAX_REF_0.5_20260317_003400.png"
   const pngPath = String(f.png_path || '').replace(/^\//, '');
-  const url = `${BASE}/rendered/${pngPath}`;
+  const url = `${BASE}/rendered/${pngPath}?palette=${f.palette_version || 1}`;
+  if (radarLegendPaletteVersion !== (f.palette_version || 1)) {
+    radarLegendPaletteVersion = f.palette_version || 1;
+    const product = RADAR_PRODUCTS.find(p => p.id === S.radarProduct);
+    if (product) updateLegend(product.legend);
+  }
   const b = f.bounds;
   const bounds = b ? [[b.south, b.west], [b.north, b.east]] : [[20, -130], [55, -65]];
   setImageOverlay(url, bounds);
@@ -1527,6 +1847,7 @@ function showRadarFrame(fitBounds) {
   if (fitBounds && b) {
     leafletMap.flyTo([b.center_lat, b.center_lon], 7, { duration: 1 });
   }
+  syncMobileUrl();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1535,9 +1856,16 @@ function showRadarFrame(fitBounds) {
 
 function setImageOverlay(url, bounds) {
   if (!bounds) return;
+  const vector = !!window.PressureContours?.isUrl(url);
+  if (S.overlayLayer && !!S.overlayLayer.isPressureContours !== vector) {
+    leafletMap.removeLayer(S.overlayLayer);
+    S.overlayLayer = null;
+  }
   if (S.overlayLayer) {
     S.overlayLayer.setUrl(url);
     S.overlayLayer.setBounds(bounds);
+  } else if (vector) {
+    S.overlayLayer = window.PressureContours.layer(url).addTo(leafletMap);
   } else {
     S.overlayLayer = L.imageOverlay(url, bounds, {
       opacity: 1, pane: 'wxOverlay', crossOrigin: true,
@@ -1545,7 +1873,8 @@ function setImageOverlay(url, bounds) {
   }
   // Hide broken-image icon if the file doesn't exist; show again on success
   const el = S.overlayLayer.getElement?.();
-  if (el) {
+  if (el && !vector) {
+    el.classList.toggle('radar-overlay', S.tab === 'radar');
     el.onerror = () => { el.style.visibility = 'hidden'; };
     el.onload  = () => { el.style.visibility = ''; };
   }
@@ -1699,6 +2028,8 @@ function clearChasers() {
 function setupScrubber(count, idx) {
   scrubSlider.max = Math.max(0, count - 1);
   scrubSlider.value = idx;
+  scrubSlider.disabled = count < 2;
+  playBtn.disabled = count < 2;
 }
 
 function onScrub() {
@@ -1708,6 +2039,7 @@ function onScrub() {
   else if (S.tab === 'satellite') { S.satIdx = idx; showSatFrame(); }
   else if (S.tab === 'radar')     { S.radarIdx = idx; showRadarFrame(false); }
   else if (S.tab === 'surface')   { showSurfaceFrame(idx); }
+  syncMobileUrl();
 }
 
 function togglePlay() {
@@ -1715,6 +2047,8 @@ function togglePlay() {
 }
 
 function play() {
+  if (playBtn.disabled || S.isPlaying) return;
+  playBtn.setAttribute('aria-label', 'Pause animation');
   S.isPlaying = true;
   playIcon.classList.add('hidden');
   pauseIcon.classList.remove('hidden');
@@ -1722,6 +2056,7 @@ function play() {
 }
 
 function pause() {
+  playBtn.setAttribute('aria-label', 'Play animation');
   S.isPlaying = false;
   playIcon.classList.remove('hidden');
   pauseIcon.classList.add('hidden');
@@ -1733,11 +2068,13 @@ function advance() {
   let idx = parseInt(scrubSlider.value) + 1;
   const max = parseInt(scrubSlider.max);
   if (idx > max) idx = 0;
+  const frameDelay = SPEEDS[S.speedIdx].ms * (S.tab === 'surface' ? 3 : 1);
+  const delay = idx === max ? Math.max(1000, frameDelay * 1.75) : frameDelay;
 
   if (S.tab === 'surface') {
     scrubSlider.value = idx;
     onScrub();
-    S.playTimer = setTimeout(advance, SPEEDS[S.speedIdx].ms * 3);
+    S.playTimer = setTimeout(advance, delay);
     return;
   }
 
@@ -1750,13 +2087,13 @@ function advance() {
   // If the frame errored (missing file), silently skip it
   if (url && isErrored(url)) {
     scrubSlider.value = idx;
-    S.playTimer = setTimeout(advance, SPEEDS[S.speedIdx].ms);
+    S.playTimer = setTimeout(advance, frameDelay);
     return;
   }
 
   scrubSlider.value = idx;
   onScrub();
-  S.playTimer = setTimeout(advance, SPEEDS[S.speedIdx].ms);
+  S.playTimer = setTimeout(advance, delay);
 }
 
 function cycleSpeed() {
@@ -1771,27 +2108,49 @@ function cycleSpeed() {
 // ═══════════════════════════════════════════════════════════════
 
 async function updateLegend(param) {
+  const requestId = ++mobileLegendRequestId;
+  const paletteQuery = S.tab === 'radar' ? `?radar_palette_version=${S.radarFrames[S.radarIdx]?.palette_version || 1}`
+    : S.tab === 'home' ? '?radar_palette_version=1'
+    : S.tab === 'models' && S.paletteVersion ? `?palette_version=${S.paletteVersion}` : '';
   try {
-    const data = await api(`/api/legend/${param}`);
-    if (!data.stops || !data.stops.length) { legendBar.classList.add('hidden'); return; }
+    const data = await api(`/api/legend/${param}${paletteQuery}`);
+    if (requestId !== mobileLegendRequestId) return;
+    const title = data.label || paramLabel(param);
+    $('legendLabel').textContent = `${title}${data.unit && !title.includes(data.unit) ? ` · ${data.unit}` : ''}`;
+    $('legendNote').textContent = data.annotation || '';
+    legendCanvas.hidden = Boolean(data.contour_only);
+    legendTicks.hidden = Boolean(data.contour_only);
+    if ((!data.stops || !data.stops.length) && !data.contour_only) { legendBar.classList.add('hidden'); return; }
     legendBar.classList.remove('hidden');
 
     const ctx = legendCanvas.getContext('2d');
     ctx.clearRect(0, 0, legendCanvas.width, legendCanvas.height);
-    const grad = ctx.createLinearGradient(0, 0, legendCanvas.width, 0);
-    for (const s of data.stops) grad.addColorStop(s.pos, s.color);
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, legendCanvas.width, legendCanvas.height);
+    if (data.discrete && data.bounds?.length > 1 && data.colors?.length) {
+      const min = data.bounds[0];
+      const range = data.bounds[data.bounds.length - 1] - min;
+      data.colors.forEach((color, i) => {
+        const x = (data.bounds[i] - min) / range * legendCanvas.width;
+        const end = (data.bounds[i + 1] - min) / range * legendCanvas.width;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, 0, end - x, legendCanvas.height);
+      });
+    } else {
+      const grad = ctx.createLinearGradient(0, 0, legendCanvas.width, 0);
+      for (const stop of data.stops) grad.addColorStop(stop.pos, stop.color);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, legendCanvas.width, legendCanvas.height);
+    }
 
     legendTicks.innerHTML = '';
-    const steps = 4;
-    for (let i = 0; i <= steps; i++) {
-      const v = data.vmin + (data.vmax - data.vmin) * (i / steps);
+    const ticks = data.tick_vals?.length ? data.tick_vals
+      : Array.from({length: 5}, (_, i) => data.vmin + (data.vmax - data.vmin) * i / 4);
+    for (const v of ticks) {
       const sp = document.createElement('span');
-      sp.textContent = Math.round(v);
+      sp.style.left = `${(v - data.vmin) / (data.vmax - data.vmin) * 100}%`;
+      sp.textContent = Number(v.toFixed(Math.abs(data.vmax - data.vmin) < 5 ? 2 : 0));
       legendTicks.appendChild(sp);
     }
-  } catch { legendBar.classList.add('hidden'); }
+  } catch { if (requestId === mobileLegendRequestId) legendBar.classList.add('hidden'); }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1820,7 +2179,11 @@ async function onMapTap(e) {
 // Bottom sheet
 // ═══════════════════════════════════════════════════════════════
 
+let sheetCloseTimer = null;
+
 function openSheet() {
+  clearTimeout(sheetCloseTimer);
+  selectorPill.setAttribute('aria-expanded', 'true');
   if (S.tab === 'models')         buildModelSheet();
   else if (S.tab === 'satellite') buildSatSheet();
   else if (S.tab === 'radar')     buildRadarSheet();
@@ -1835,9 +2198,11 @@ function openSheet() {
 }
 
 function closeSheet() {
+  clearTimeout(sheetCloseTimer);
+  selectorPill.setAttribute('aria-expanded', 'false');
   bottomSheet.classList.remove('visible');
   sheetBackdrop.classList.remove('visible');
-  setTimeout(() => {
+  sheetCloseTimer = setTimeout(() => {
     bottomSheet.classList.add('hidden');
     sheetBackdrop.classList.add('hidden');
   }, 300);
@@ -1852,11 +2217,7 @@ function formatMobileRunId(runId) {
 }
 
 function modelSupportsParam(model, param) {
-  if (!param?.models?.length) return true;
-  if (param.models.includes(model)) return true;
-  const aliases = MODEL_PARAM_ALIASES[model] || [];
-  if (aliases.some((alias) => param.models.includes(alias))) return true;
-  return false;
+  return !param?.models?.length || param.models.includes(model);
 }
 
 function paramGroupFor(id) {
@@ -1891,22 +2252,29 @@ function firstSupportedModelParam(model, preferred) {
 function buildModelSheet() {
   let html = '<div class="sheet-section"><div class="sheet-section-title">Model</div><div class="sheet-chips">';
   for (const [id, m] of Object.entries(MODELS)) {
-    html += `<div class="chip${S.model===id?' active':''}" data-model="${id}">${m.label}</div>`;
+    html += `<button type="button" class="chip${S.model===id?' active':''}" data-model="${id}">${m.label}</button>`;
   }
   html += '</div></div>';
 
   // Run selector
   if (S.modelRuns.length > 0) {
-    html += '<div class="sheet-section"><div class="sheet-section-title">Run</div><div class="sheet-chips">';
+    html += '<div class="sheet-section"><label class="sheet-section-title" for="mobileRunSelect">Run (UTC)</label><select id="mobileRunSelect" class="sheet-run-select">';
     for (const r of S.modelRuns) {
       const rid = r.run_id || r;
       const isActive = rid === S.runId;
-      const indicator = r.is_complete ? ' \u2713' : (r.completed_fxx && r.completed_fxx.length > 0 ? ' \u25cf' : ' \u25cb');
-      html += `<div class="chip${isActive?' active':''}" data-run="${rid}">${formatMobileRunId(rid)}${indicator}</div>`;
+      const status = window.ViewerUI.runStatus(r, modelRunIsOld(rid, S.model));
+      html += `<option value="${rid}"${isActive ? ' selected' : ''}>${formatMobileRunId(rid)} · ${status}</option>`;
     }
-    html += '</div></div>';
+    html += '</select></div>';
   }
 
+  const favoriteItems = PARAMS.flatMap((group) => group.items).filter((item) => modelSupportsParam(S.model, item) && window.ViewerUI.favorites.has(item.id));
+  html += '<div class="sheet-section sheet-favorites"><div class="sheet-section-title">Favorites</div><div class="sheet-list">';
+  for (const item of favoriteItems) html += mobileProductRow(item);
+  if (!favoriteItems.length) html += '<p class="sheet-favorites-note">Tap ☆ beside a product to save it here.</p>';
+  html += '</div></div>';
+
+  html += '<label class="sheet-search-label" for="modelProductSearch">Find a product</label><input id="modelProductSearch" class="sheet-search" type="search" placeholder="Temperature, snow, helicity…" autocomplete="off">';
   for (const g of PARAMS) {
     const items = g.items.filter((p) => modelSupportsParam(S.model, p));
     if (!items.length) continue;
@@ -1919,7 +2287,7 @@ function buildModelSheet() {
       <div class="sheet-accordion-body">
         <div class="sheet-list">`;
     for (const p of items) {
-      html += `<div class="sheet-item${S.param===p.id?' active':''}" data-param="${p.id}">${p.label}</div>`;
+      html += mobileProductRow(p);
     }
     html += `</div>
       </div>
@@ -1927,20 +2295,25 @@ function buildModelSheet() {
   }
   sheetContent.innerHTML = html;
 
+  $('modelProductSearch').addEventListener('input', filterMobileProducts);
+  sheetContent.querySelectorAll('[data-favorite-toggle]').forEach((button) => {
+    button.addEventListener('click', toggleMobileFavorite);
+  });
   sheetContent.querySelectorAll('.chip[data-model]').forEach((el) => {
     el.addEventListener('click', () => {
       S.model = el.dataset.model;
+      S.runId = null;
+      S.modelRuns = [];
+      S.modelAvailability = {};
       S.param = firstSupportedModelParam(S.model, S.param);
       ensureActiveModelGroupOpen();
       closeSheet();
       initModels();
     });
   });
-  sheetContent.querySelectorAll('.chip[data-run]').forEach((el) => {
-    el.addEventListener('click', () => {
+  $('mobileRunSelect')?.addEventListener('change', function changeMobileRun(event) {
       closeSheet();
-      loadRun(el.dataset.run);
-    });
+      loadRun(event.target.value);
   });
   sheetContent.querySelectorAll('[data-model-group-toggle]').forEach((el) => {
     el.addEventListener('click', () => {
@@ -1954,9 +2327,52 @@ function buildModelSheet() {
       S.param = el.dataset.param;
       ensureActiveModelGroupOpen();
       closeSheet();
-      initModels();
+      updatePill(`${MODELS[S.model]?.label || S.model} / ${paramLabel(S.param)}`);
+      loadRun(S.runId);
     });
   });
+}
+
+/** Separate the product action and favorite action into two touch targets. */
+function mobileProductRow(product) {
+  const saved = window.ViewerUI.favorites.has(product.id);
+  return `<div class="sheet-product-row"><button type="button" class="sheet-item${S.param===product.id?' active':''}" data-param="${product.id}">${product.label}</button><button type="button" class="favorite-star" data-favorite-toggle="${product.id}" aria-pressed="${saved}" aria-label="${saved ? 'Remove' : 'Save'} ${product.label} ${saved ? 'from' : 'to'} favorites">${saved ? '★' : '☆'}</button></div>`;
+}
+
+function toggleMobileFavorite(event) {
+  const scroll = sheetContent.scrollTop;
+  const query = $('modelProductSearch').value;
+  window.ViewerUI.favorites.toggle(event.currentTarget.dataset.favoriteToggle);
+  buildModelSheet();
+  $('modelProductSearch').value = query;
+  filterMobileProducts();
+  sheetContent.scrollTop = scroll;
+}
+
+/** Filter product groups while preserving their original expanded state. */
+function filterMobileProducts() {
+  const query = $('modelProductSearch').value.trim().toLowerCase();
+  sheetContent.querySelectorAll('[data-model-group]').forEach((group) => {
+    let matches = 0;
+    group.querySelectorAll('[data-param]').forEach((button) => {
+      const visible = !query || button.textContent.toLowerCase().includes(query) || button.dataset.param.includes(query);
+      button.hidden = !visible;
+      const row = button.closest('.sheet-product-row');
+      if (row) row.hidden = !visible;
+      if (visible) matches++;
+    });
+    group.hidden = matches === 0;
+    const open = query ? matches > 0 : modelGroupIsOpen(group.dataset.modelGroup);
+    group.classList.toggle('open', open);
+    group.querySelector('[aria-expanded]').setAttribute('aria-expanded', String(open));
+  });
+  const favorites = sheetContent.querySelector('.sheet-favorites');
+  if (favorites) {
+    favorites.querySelectorAll('.sheet-product-row').forEach((row) => {
+      const button = row.querySelector('[data-param]');
+      row.hidden = !!query && !button.textContent.toLowerCase().includes(query) && !button.dataset.param.includes(query);
+    });
+  }
 }
 
 function buildSatSheet() {
@@ -1970,14 +2386,14 @@ function buildSatSheet() {
   </div>`;
 
   html += '<div class="sheet-section"><div class="sheet-section-title">Coverage</div><div class="sheet-chips">';
-  html += `<div class="chip${regional ? '' : ' active'}" data-sat-scope="national">National</div>`;
-  html += `<div class="chip${regional ? ' active' : ''}" data-sat-scope="regional">Regional</div>`;
+  html += `<button type="button" class="chip${regional ? '' : ' active'}" data-sat-scope="national">National</button>`;
+  html += `<button type="button" class="chip${regional ? ' active' : ''}" data-sat-scope="regional">Regional</button>`;
   html += '</div></div>';
 
   if (regional) {
     html += '<div class="sheet-section"><div class="sheet-section-title">Region</div><div class="sheet-chip-grid">';
     for (const [id, label] of Object.entries(SATELLITE_REGION_NAMES)) {
-      html += `<div class="chip chip--grid${S.satRegion===id?' active':''}" data-sat-region="${id}">${label}</div>`;
+      html += `<button type="button" class="chip chip--grid${S.satRegion===id?' active':''}" data-sat-region="${id}">${label}</button>`;
     }
     html += '</div></div>';
 
@@ -2038,7 +2454,7 @@ function buildRadarSheet() {
   // Product chips first — always visible at top
   let html = '<div class="sheet-section"><div class="sheet-section-title">Product</div><div class="sheet-chips">';
   for (const p of RADAR_PRODUCTS) {
-    html += `<div class="chip${S.radarProduct===p.id?' active':''}" data-rprod="${p.id}">${p.label}</div>`;
+    html += `<button type="button" class="chip${S.radarProduct===p.id?' active':''}" data-rprod="${p.id}">${p.label}</button>`;
   }
   html += '</div></div>';
 
@@ -2046,7 +2462,7 @@ function buildRadarSheet() {
   const tilts = S.radarTilts || [0.5];
   html += '<div class="sheet-section"><div class="sheet-section-title">Elevation Tilt</div><div class="sheet-chips">';
   for (const t of tilts) {
-    html += `<div class="chip${S.radarTilt===t?' active':''}" data-tilt="${t}">${t.toFixed(1)}\u00B0</div>`;
+    html += `<button type="button" class="chip${S.radarTilt===t?' active':''}" data-tilt="${t}">${t.toFixed(1)}\u00B0</button>`;
   }
   html += '</div></div>';
 
@@ -2225,7 +2641,7 @@ function updatePill(text) { pillLabel.textContent = text; }
 
 function satSheetItem(product, active, attrName) {
   const detail = product.detail ? `<span class="item-sub">${product.detail}</span>` : '';
-  return `<div class="sheet-item${active ? ' active' : ''}" ${attrName}="${product.id}"><span>${product.label}</span>${detail}</div>`;
+  return `<button type="button" class="sheet-item${active ? ' active' : ''}" ${attrName}="${product.id}"><span>${product.label}</span>${detail}</button>`;
 }
 
 function paramLabel(id) {
@@ -2278,6 +2694,9 @@ function radarLabel(id) {
 function formatTs(ts) {
   if (!ts) return '';
   try {
+    ts = ts.replace(/^(\d{4})-(\d{3})T/, (_, year, day) => {
+      return new Date(Date.UTC(Number(year), 0, Number(day))).toISOString().slice(0, 10) + 'T';
+    });
     // Handle formats: "2026-03-17T00-36-18.2Z" or "20260317_003400"
     let d;
     if (ts.includes('T')) {

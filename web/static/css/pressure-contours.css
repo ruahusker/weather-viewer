@@ -1,0 +1,35 @@
+/* Pressure annotations keep their size when the map zooms. */
+.pressure-label {
+  background: none;
+  border: 0;
+  pointer-events: none;
+  color: #ffffff;
+  font-family: Arial, sans-serif;
+  font-weight: 400;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+}
+.pressure-number {
+  color: #7dd3e8;
+  position: absolute;
+  padding: 0 2px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.65);
+  font-size: 9px;
+  line-height: 11px;
+  white-space: nowrap;
+}
+.pressure-center {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: 12px;
+  line-height: 13px;
+  text-align: center;
+}
+.pressure-center small {
+  display: block;
+  color: #ffffff;
+  font-size: 8px;
+  line-height: 10px;
+}
+.pressure-center-h { color: #66ff66; }
+.pressure-center-l { color: #ff6666; }

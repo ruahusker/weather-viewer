@@ -5,8 +5,8 @@ Runs: 00Z, 12Z
 Forecast: 0-240 hours (10 days)
 Grid: Regular lat/lon, 2400x1201 points
 
-Data source: https://dd.weather.gc.ca/model_gem_global/15km/
-Alternative: https://dd.meteo.gc.ca/today/model_gem_global/15km/
+Data source: https://dd.weather.gc.ca/today/model_gdps/15km/
+Alternative: https://dd.meteo.gc.ca/today/model_gdps/15km/
 """
 
 from datetime import datetime, timezone
@@ -41,13 +41,7 @@ SCHEDULER_PRIORITY = 5
 
 def get_run_fxx(run_hour: int) -> range:
     """Return forecast hour range for a given run hour."""
-    if run_hour == 0:
-        # 00Z GDPS publishes the full 10-day 3-hourly range.
-        return range(0, 241, 3)
-    if run_hour == 12:
-        # 12Z GDPS on the current Environment Canada lat/lon feed ends at f114.
-        return range(0, 115, 3)
-    return range(0)
+    return range(0, 241, 3) if run_hour in RUN_TIMES else range(0)
 
 
 def get_model_url(run_date: datetime, run_hour: int, fxx: int) -> str:
@@ -55,10 +49,8 @@ def get_model_url(run_date: datetime, run_hour: int, fxx: int) -> str:
     Return the URL pattern for GDPS data.
     Used for direct download if Herbie fails.
     """
-    # Format: CMC_glb_PARAM_LEVEL_YYYYMMDDHH_Phhh.grib2
-    base_url = "https://dd.weather.gc.ca/model_gem_global/15km/grib2/lat_lon"
-    url = f"{base_url}/{run_hour:02d}/{fxx:03d}"
-    return url
+    return (f"https://dd.weather.gc.ca/{run_date:%Y%m%d}/WXO-DD/model_gdps/15km/"
+            f"{run_hour:02d}/{fxx:03d}/")
 
 
 # Parameter search strings for GDPS GRIB2 files

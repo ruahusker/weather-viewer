@@ -1,6 +1,6 @@
 """Professional color tables for Level II radar products.
 
-256-level smooth gradient LUTs matching RadarScope/GR2 conventions.
+Versioned 256-level gradients for radar imagery, legends, and value queries.
 Each function returns (lut, vmin, vmax) where lut is (256, 4) uint8 RGBA.
 """
 
@@ -29,11 +29,11 @@ def _lerp_colors(breakpoints: list[tuple[float, tuple]],
     return lut
 
 
-# NWS WSR-88D reflectivity — sourced from the shared versioned palette
-# registry so radar and model reflectivity stay identical.
+# Preserve the original palette for archived radar frames.
 from pipeline.palettes import reflectivity_table as _reflectivity_table
 
-REFLECTIVITY_BOUNDS, REFLECTIVITY_HEX = _reflectivity_table()
+RADAR_PALETTE_VERSION = 4
+REFLECTIVITY_BOUNDS, REFLECTIVITY_HEX = _reflectivity_table(version=3)
 
 
 def _hex_to_rgba(hex_color: str) -> tuple[int, int, int, int]:
@@ -48,14 +48,14 @@ def _hex_to_rgba(hex_color: str) -> tuple[int, int, int, int]:
 REFLECTIVITY_COLORS = [_hex_to_rgba(c) for c in REFLECTIVITY_HEX]
 
 
-def reflectivity_lut() -> tuple[np.ndarray, float, float]:
+def _legacy_reflectivity_lut() -> tuple[np.ndarray, float, float]:
     """NWS reflectivity palette with smooth interpolation, -20 to 80 dBZ."""
     vmin, vmax = -20.0, 80.0
     bp = [(float(b), c) for b, c in zip(REFLECTIVITY_BOUNDS[:-1], REFLECTIVITY_COLORS)]
     return _lerp_colors(bp, vmin, vmax), vmin, vmax
 
 
-def velocity_lut() -> tuple[np.ndarray, float, float]:
+def _legacy_velocity_lut() -> tuple[np.ndarray, float, float]:
     """RadarScope velocity: inbound (negative)=green, outbound (positive)=red."""
     # All values in MPH (converted from m/s: * 2.237)
     vmin, vmax = -89.5, 89.5  # -40 to 40 m/s converted to MPH
@@ -77,6 +77,45 @@ def velocity_lut() -> tuple[np.ndarray, float, float]:
         ( 89.5, (100,   0,  50, 255)),   # dark maroon (strong outbound)
     ]
     return _lerp_colors(bp, vmin, vmax), vmin, vmax
+
+
+def _v2_reflectivity_lut() -> tuple[np.ndarray, float, float]:
+    """Quiet weak echoes, distinct precipitation bands, and bright intense cores."""
+    bp = [
+        (5, (53, 88, 118, 120)), (10, (55, 123, 170, 180)),
+        (15, (60, 173, 195, 215)), (20, (25, 156, 92, 240)),
+        (25, (25, 190, 85, 255)), (30, (95, 215, 68, 255)),
+        (35, (191, 232, 51, 255)), (40, (255, 216, 51, 255)),
+        (45, (255, 155, 35, 255)), (50, (255, 90, 30, 255)),
+        (55, (230, 37, 49, 255)), (60, (191, 13, 52, 255)),
+        (65, (227, 44, 156, 255)), (70, (177, 79, 232, 255)),
+        (75, (236, 190, 255, 255)), (80, (255, 242, 255, 255)),
+    ]
+    return _lerp_colors(bp, 5.0, 80.0), 5.0, 80.0
+
+
+def _v2_velocity_lut() -> tuple[np.ndarray, float, float]:
+    """Green inbound / red outbound; stronger velocities receive brighter colors."""
+    bp = [
+        (-89.5, (181, 244, 255, 255)), (-67.1, (55, 216, 211, 255)),
+        (-44.7, (54, 228, 139, 255)), (-22.4, (23, 169, 102, 255)),
+        (-11.2, (36, 124, 91, 240)), (-2.2, (55, 77, 72, 180)),
+        (0, (126, 135, 147, 96)), (2.2, (90, 65, 72, 180)),
+        (11.2, (170, 68, 78, 240)), (22.4, (229, 77, 85, 255)),
+        (44.7, (255, 128, 85, 255)), (67.1, (255, 194, 119, 255)),
+        (89.5, (255, 233, 179, 255)),
+    ]
+    return _lerp_colors(bp, -89.5, 89.5), -89.5, 89.5
+
+
+def reflectivity_lut() -> tuple[np.ndarray, float, float]:
+    """Use partial transparency for weak echoes while retaining bright storm cores."""
+    return _v2_reflectivity_lut()
+
+
+def velocity_lut() -> tuple[np.ndarray, float, float]:
+    """Use partial transparency near zero velocity without changing the scale."""
+    return _v2_velocity_lut()
 
 
 def spectrum_width_lut() -> tuple[np.ndarray, float, float]:
@@ -338,9 +377,7 @@ FIELD_CONFIG = {
         "unit": "dBZ",
         "mask_below": 5.0,
         "prefer_long_range": True,
-        "bounds": REFLECTIVITY_BOUNDS,
-        "colors": REFLECTIVITY_HEX,
-        "legend_ticks": [5, 15, 25, 35, 45, 55, 65, 75],
+        "legend_ticks": [5, 20, 35, 50, 65, 80],
     },
     "velocity": {
         "lut_fn": velocity_lut,
@@ -350,6 +387,7 @@ FIELD_CONFIG = {
         "mask_below": None,
         "prefer_long_range": False,
         "unit_scale": 2.23694,
+        "legend_ticks": [-80, -40, 0, 40, 80],
     },
     "spectrum_width": {
         "lut_fn": spectrum_width_lut,
@@ -399,6 +437,7 @@ FIELD_CONFIG = {
         "mask_below": None,
         "prefer_long_range": False,
         "unit_scale": 2.23694,
+        "legend_ticks": [-80, -40, 0, 40, 80],
     },
     "azimuthal_shear": {
         "lut_fn": shear_lut,
@@ -447,9 +486,7 @@ FIELD_CONFIG = {
         "unit": "dBZ",
         "mask_below": 5.0,
         "prefer_long_range": True,
-        "bounds": REFLECTIVITY_BOUNDS,
-        "colors": REFLECTIVITY_HEX,
-        "legend_ticks": [5, 15, 25, 35, 45, 55, 65, 75],
+        "legend_ticks": [5, 20, 35, 50, 65, 80],
     },
     "echo_tops": {
         "lut_fn": echo_tops_lut,
@@ -492,3 +529,25 @@ FIELD_CONFIG = {
         "prefer_long_range": False,
     },
 }
+
+
+def get_radar_lut(field: str, palette_version: int = RADAR_PALETTE_VERSION) -> tuple[np.ndarray, float, float]:
+    """Return the palette that produced a radar frame (unversioned frames use v1)."""
+    if palette_version == 1:
+        if field in ("reflectivity", "composite_reflectivity"):
+            return _legacy_reflectivity_lut()
+        if field in ("velocity", "storm_relative_velocity"):
+            return _legacy_velocity_lut()
+    if palette_version == 2:
+        if field in ("reflectivity", "composite_reflectivity"):
+            return _v2_reflectivity_lut()
+        if field in ("velocity", "storm_relative_velocity"):
+            return _v2_velocity_lut()
+    if palette_version == 3 and field in (
+        "reflectivity", "composite_reflectivity", "velocity", "storm_relative_velocity",
+    ):
+        # Preserve the solid-color palette used for these archived frames.
+        lut, vmin, vmax = FIELD_CONFIG[field]["lut_fn"]()
+        lut[:, 3] = 255
+        return lut, vmin, vmax
+    return FIELD_CONFIG[field]["lut_fn"]()

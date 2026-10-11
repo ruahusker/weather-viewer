@@ -13,8 +13,7 @@ run_site() {
 
 mkdir -p "$OUT"
 
-run_site vibeprojects "vibeprojects.us (weather, taostats, bitcoin, otc)"
-run_site taoflow "taoflow.us"
+run_site vibeprojects "vibeprojects.us (weather, bitcoin, otc)"
 run_site nebraskastormchasers "nebraskastormchasers.com"
 
 cat > "${OUT}/index.html" <<HTML
@@ -35,7 +34,6 @@ small{color:#666;display:block;margin-top:.2rem;font-weight:normal}
 <p class="sub">Self-identified bots filtered. Last 30 days, hourly refresh.</p>
 <ul>
   <li><a href="vibeprojects.html"><b>vibeprojects.us</b><small>weather, taostats, bitcoin, otc</small></a></li>
-  <li><a href="taoflow.html"><b>taoflow.us</b><small>tao flows</small></a></li>
   <li><a href="nebraskastormchasers.html"><b>nebraskastormchasers.com</b><small>storm chasing</small></a></li>
 </ul>
 <p class="foot">Generated $(date '+%Y-%m-%d %H:%M %Z')</p>

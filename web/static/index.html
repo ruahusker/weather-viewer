@@ -35,39 +35,20 @@
   
   <link rel="icon" type="image/svg+xml" href="/static/brand/wx-mark.svg" />
   <link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
-  <link rel="stylesheet" href="/static/css/fonts.css?v=20260413" />
+  <link rel="stylesheet" href="/static/css/fonts.css?v=20260809a" />
   <script type="importmap">
     {
       "imports": {
-        "three": "https://unpkg.com/three@0.161.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.161.0/examples/jsm/"
+        "three": "/static/vendor/three/three.module.js?v=0.161.0",
+        "three/addons/": "/static/vendor/three/addons/"
       }
     }
   </script>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/static/css/tokens.css?v=20260610a" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20260610a" />
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css?v=1.9.4" />
+  <link rel="stylesheet" href="/static/css/tokens.css?v=20260930e" />
   <link rel="stylesheet" href="/static/css/surface-obs.css?v=20260329d" />
-  <link rel="stylesheet" href="/static/css/theme-refresh.css?v=20260610b" />
-  <style>
-    .site-footer {
-      display: flex;
-      justify-content: flex-end;
-      padding: 0 18px 18px;
-    }
-
-    .site-footer a {
-      color: rgba(225, 235, 246, 0.7);
-      text-decoration: none;
-      font-size: 12px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-
-    .site-footer a:hover {
-      color: rgba(225, 235, 246, 0.96);
-    }
-  </style>
+  <link rel="stylesheet" href="/static/css/style.css?v=20261008g" />
+  <link rel="stylesheet" href="/static/css/pressure-contours.css?v=20261008d" />
 </head>
 <body>
 
@@ -84,14 +65,14 @@
       
       <!-- Data Source Tabs -->
       <div class="source-tabs" role="tablist" aria-label="Data source">
-        <button class="source-tab active" data-source="home" id="tabHome" role="tab" aria-selected="true">
+        <button class="source-tab active" data-source="home" id="tabHome" role="tab" aria-selected="true" aria-controls="homeDashboard">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 11.5 12 4l9 7.5"/>
             <path d="M5 10.5V20h14v-9.5"/>
           </svg>
           Home
         </button>
-        <button class="source-tab" data-source="radar" id="tabRadar" role="tab" aria-selected="false">
+        <button class="source-tab" data-source="radar" id="tabRadar" role="tab" aria-selected="false" aria-controls="radarSidebar">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"/>
             <path d="M12 12l-7-7"/>
@@ -100,162 +81,35 @@
           </svg>
           Radar
         </button>
-        <button class="source-tab" data-source="surface" id="tabSurface" role="tab" aria-selected="false">
+        <button class="source-tab" data-source="surface" id="tabSurface" role="tab" aria-selected="false" aria-controls="surfaceSidebar">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="4"/>
           </svg>
           Surface
         </button>
-        <button class="source-tab" data-source="models" id="tabModels" role="tab" aria-selected="false">
+        <button class="source-tab" data-source="models" id="tabModels" role="tab" aria-selected="false" aria-controls="modelSidebar">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M2 12h20M2 12l5-5m-5 5l5 5M22 12l-5-5m5 5l-5 5"/>
           </svg>
           Models
         </button>
-        <button class="source-tab" data-source="satellite" id="tabSatellite" role="tab" aria-selected="false">
+        <button class="source-tab" data-source="satellite" id="tabSatellite" role="tab" aria-selected="false" aria-controls="satelliteSidebar">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
           </svg>
           Satellite
         </button>
-        <button class="source-tab" data-source="chase" id="tabChase" role="tab" aria-selected="false">
+        <button class="source-tab" data-source="chase" id="tabChase" role="tab" aria-selected="false" aria-controls="chaseSidebar">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M19 16.9A5 5 0 0 0 18 7h-1.26a8 8 0 1 0-11.62 9"/>
             <polyline points="13 11 9 17 15 17 11 23"/>
           </svg>
           Chase
         </button>
-        <div id="radarSiteInline" class="radar-site-inline hidden">
-          <select id="radarSiteSelect" class="select">
-            <optgroup label="Central Plains">
-              <option value="KABR">Aberdeen, SD (KABR)</option>
-              <option value="KDVN">Davenport, IA (KDVN)</option>
-              <option value="KFTG">Denver, CO (KFTG)</option>
-              <option value="KDMX">Des Moines, IA (KDMX)</option>
-              <option value="KDDC">Dodge City, KS (KDDC)</option>
-              <option value="KGLD">Goodland, KS (KGLD)</option>
-              <option value="KGJX">Grand Junction, CO (KGJX)</option>
-              <option value="KUEX">Hastings, NE (KUEX)</option>
-              <option value="KEAX">Kansas City, MO (KEAX)</option>
-              <option value="KARX">La Crosse, WI (KARX)</option>
-              <option value="KLNX">North Platte, NE (KLNX)</option>
-              <option value="KOAX" selected>Omaha, NE (KOAX)</option>
-              <option value="KPUX">Pueblo, CO (KPUX)</option>
-              <option value="KUDX">Rapid City, SD (KUDX)</option>
-              <option value="KFSD">Sioux Falls, SD (KFSD)</option>
-              <option value="KSGF">Springfield, MO (KSGF)</option>
-              <option value="KLSX">St. Louis, MO (KLSX)</option>
-              <option value="KICT">Wichita, KS (KICT)</option>
-            </optgroup>
-            <optgroup label="Northern Plains">
-              <option value="KBLX">Billings, MT (KBLX)</option>
-              <option value="KBIS">Bismarck, ND (KBIS)</option>
-              <option value="KCBX">Boise, ID (KCBX)</option>
-              <option value="KMVX">Fargo, ND (KMVX)</option>
-              <option value="KGGW">Glasgow, MT (KGGW)</option>
-              <option value="KTFX">Great Falls, MT (KTFX)</option>
-              <option value="KMBX">Minot, ND (KMBX)</option>
-              <option value="KMSX">Missoula, MT (KMSX)</option>
-            </optgroup>
-            <optgroup label="Southern Plains / Tornado Alley">
-              <option value="KAMA">Amarillo, TX (KAMA)</option>
-              <option value="KGRK">Central Texas, TX (KGRK)</option>
-              <option value="KFWS">Dallas/FW, TX (KFWS)</option>
-              <option value="KDYX">Dyess AFB, TX (KDYX)</option>
-              <option value="KPOE">Fort Polk, LA (KPOE)</option>
-              <option value="KSRX">Fort Smith, AR (KSRX)</option>
-              <option value="KFDR">Frederick, OK (KFDR)</option>
-              <option value="KHGX">Houston, TX (KHGX)</option>
-              <option value="KMRX">Knoxville, TN (KMRX)</option>
-              <option value="KLCH">Lake Charles, LA (KLCH)</option>
-              <option value="KLZK">Little Rock, AR (KLZK)</option>
-              <option value="KLBB">Lubbock, TX (KLBB)</option>
-              <option value="KMAF">Midland/Odessa, TX (KMAF)</option>
-              <option value="KTLX">Oklahoma City, OK (KTLX)</option>
-              <option value="KSJT">San Angelo, TX (KSJT)</option>
-              <option value="KSHV">Shreveport, LA (KSHV)</option>
-              <option value="KINX">Tulsa, OK (KINX)</option>
-            </optgroup>
-            <optgroup label="Midwest">
-              <option value="KLOT">Chicago, IL (KLOT)</option>
-              <option value="KILN">Cincinnati, OH (KILN)</option>
-              <option value="KCLE">Cleveland, OH (KCLE)</option>
-              <option value="KDTX">Detroit, MI (KDTX)</option>
-              <option value="KAPX">Gaylord, MI (KAPX)</option>
-              <option value="KGRR">Grand Rapids, MI (KGRR)</option>
-              <option value="KIND">Indianapolis, IN (KIND)</option>
-              <option value="KILX">Lincoln, IL (KILX)</option>
-              <option value="KMKX">Milwaukee, WI (KMKX)</option>
-              <option value="KIWX">North Webster, IN (KIWX)</option>
-            </optgroup>
-            <optgroup label="Southeast">
-              <option value="KFFC">Atlanta, GA (KFFC)</option>
-              <option value="KBMX">Birmingham, AL (KBMX)</option>
-              <option value="KCLX">Charleston, SC (KCLX)</option>
-              <option value="KCAE">Columbia, SC (KCAE)</option>
-              <option value="KGWX">Columbus AFB, MS (KGWX)</option>
-              <option value="KEVX">Eglin AFB, FL (KEVX)</option>
-              <option value="KEOX">Fort Rucker, AL (KEOX)</option>
-              <option value="KGSP">Greer, SC (KGSP)</option>
-              <option value="KHTX">Huntsville, AL (KHTX)</option>
-              <option value="KDGX">Jackson, MS (KDGX)</option>
-              <option value="KJAX">Jacksonville, FL (KJAX)</option>
-              <option value="KMXX">Maxwell AFB, AL (KMXX)</option>
-              <option value="KMLB">Melbourne, FL (KMLB)</option>
-              <option value="KAMX">Miami, FL (KAMX)</option>
-              <option value="KVAX">Moody AFB, GA (KVAX)</option>
-              <option value="KMHX">Morehead City, NC (KMHX)</option>
-              <option value="KHDC">New Orleans, LA (KHDC)</option>
-              <option value="KAKQ">Norfolk, VA (KAKQ)</option>
-              <option value="KRAX">Raleigh, NC (KRAX)</option>
-              <option value="KJGX">Robins AFB, GA (KJGX)</option>
-              <option value="KFCX">Roanoke, VA (KFCX)</option>
-              <option value="KLWX">Sterling, VA (KLWX)</option>
-              <option value="KTLH">Tallahassee, FL (KTLH)</option>
-              <option value="KTBW">Tampa, FL (KTBW)</option>
-            </optgroup>
-            <optgroup label="Northeast">
-              <option value="KENX">Albany, NY (KENX)</option>
-              <option value="KBGM">Binghamton, NY (KBGM)</option>
-              <option value="KBOX">Boston, MA (KBOX)</option>
-              <option value="KDOX">Dover AFB, DE (KDOX)</option>
-              <option value="KTYX">Montague, NY (KTYX)</option>
-              <option value="KOKX">New York City, NY (KOKX)</option>
-              <option value="KDIX">Philadelphia, NJ (KDIX)</option>
-              <option value="KPBZ">Pittsburgh, PA (KPBZ)</option>
-              <option value="KCCX">State College, PA (KCCX)</option>
-            </optgroup>
-            <optgroup label="Southwest">
-              <option value="KABX">Albuquerque, NM (KABX)</option>
-              <option value="KFDX">Cannon AFB, NM (KFDX)</option>
-              <option value="KFSX">Flagstaff, AZ (KFSX)</option>
-              <option value="KHDX">Holloman AFB, NM (KHDX)</option>
-              <option value="KIWA">Phoenix, AZ (KIWA)</option>
-              <option value="KEMX">Tucson, AZ (KEMX)</option>
-              <option value="KYUX">Yuma, AZ (KYUX)</option>
-            </optgroup>
-            <optgroup label="West Coast">
-              <option value="KBBX">Beale AFB, CA (KBBX)</option>
-              <option value="KBHX">Eureka, CA (KBHX)</option>
-              <option value="KLGX">Langley Hill, WA (KLGX)</option>
-              <option value="KESX">Las Vegas, NV (KESX)</option>
-              <option value="KMAX">Medford, OR (KMAX)</option>
-              <option value="KRTX">Portland, OR (KRTX)</option>
-              <option value="KRGX">Reno, NV (KRGX)</option>
-              <option value="KNKX">San Diego, CA (KNKX)</option>
-              <option value="KMUX">San Francisco, CA (KMUX)</option>
-              <option value="KATX">Seattle, WA (KATX)</option>
-              <option value="KOTX">Spokane, WA (KOTX)</option>
-              <option value="KVBX">Vandenberg AFB, CA (KVBX)</option>
-            </optgroup>
-          </select>
-        </div>
+
       </div>
       
       <div class="topbar-divider"></div>
-      
-      <!-- Model Controls placeholder (controls moved to sidebar) -->
-      <div id="modelControls" class="controls-group hidden"></div>
       
       <!-- Satellite Controls (shown when Satellite tab active) -->
       <div id="satelliteControls" class="controls-group hidden">
@@ -269,37 +123,7 @@
         <!-- Product dropdown removed - use left sidebar buttons instead -->
       </div>
       
-      <!-- Radar Controls (shown when Radar tab active) -->
-      <div id="radarControls" class="controls-group hidden">
-        <div class="control-group">
-          <label class="toggle-label">
-            <input type="checkbox" id="watchWarningToggle" />
-            <span class="toggle-slider"></span>
-            <span class="toggle-text">Warnings</span>
-          </label>
-        </div>
-        <div class="control-group">
-          <label class="toggle-label">
-            <input type="checkbox" id="mcdToggle" />
-            <span class="toggle-slider"></span>
-            <span class="toggle-text">MCDs</span>
-          </label>
-        </div>
-        <div class="control-group">
-          <label class="toggle-label">
-            <input type="checkbox" id="spotterToggle" />
-            <span class="toggle-slider"></span>
-            <span class="toggle-text">Spotters</span>
-          </label>
-        </div>
-        <div class="control-group">
-          <label class="toggle-label">
-            <input type="checkbox" id="surfaceRadarToggle" />
-            <span class="toggle-slider"></span>
-            <span class="toggle-text">Surface Obs</span>
-          </label>
-        </div>
-      </div>
+
     </div>
     
     <div class="topbar-right">
@@ -335,7 +159,7 @@
     <!-- Home dashboard panels are inside map-section below -->
 
     <!-- Parameter sidebar -->
-    <nav class="param-sidebar hidden" id="modelSidebar">
+    <nav class="param-sidebar hidden" id="modelSidebar" role="tabpanel" aria-labelledby="tabModels">
       <div class="mobile-sheet-handle"><div class="handle-bar"></div></div>
       <div class="sidebar-section sidebar-section--model-picker">
         <div class="sidebar-model-row">
@@ -356,7 +180,7 @@
             </select>
           </div>
           <div class="sidebar-control-group">
-            <label class="sidebar-label" for="runSelect">Run</label>
+            <label class="sidebar-label" for="runSelect">Run (UTC)</label>
             <select id="runSelect" class="select sidebar-select">
               <option value="">Loading...</option>
             </select>
@@ -367,6 +191,14 @@
             Sounding Probe
           </button>
         </div>
+      </div>
+      <div class="sidebar-section sidebar-favorites">
+        <div class="favorites-heading">
+          <span class="section-label">Favorites</span>
+          <button id="favoriteProductToggle" class="favorite-toggle" type="button" aria-pressed="false">☆ Save selected</button>
+        </div>
+        <div id="favoriteProducts" class="favorite-products"></div>
+        <p id="favoriteProductsNote" class="favorites-note">Select a product, then save it here.</p>
       </div>
       <div class="sidebar-section sidebar-section--ops-picks">
         <div class="section-label">Ops Quick Picks</div>
@@ -393,6 +225,9 @@
       </div>
       <div class="sidebar-section">
         <div class="section-label">Parameters</div>
+        <div class="param-filter">
+          <input type="search" id="paramFilter" class="param-filter-input" placeholder="Filter parameters…" aria-label="Filter parameters" autocomplete="off" />
+        </div>
 
         <!-- Surface -->
         <div class="param-group" data-group="surface">
@@ -410,10 +245,10 @@
             <button class="param-btn" data-param="rh_2m" data-models="rtma">
               <span class="param-icon"></span>2m RH
             </button>
-            <button class="param-btn" data-param="wind_speed" data-models="ecmwf,gefs,gfs,hrrr,nam12km,nam3km,rap,rrfs,rtma">
+            <button class="param-btn" data-param="wind_speed" data-models="ecmwf,gdps,gefs,gfs,hrrr,nam12km,nam3km,rap,rrfs,rtma">
               <span class="param-icon"></span>Wind
             </button>
-            <button class="param-btn" data-param="wind_gusts" data-models="ecmwf,gfs,hrrr,nam12km,nam3km,rap,rrfs,rtma">
+            <button class="param-btn" data-param="wind_gusts" data-models="ecmwf,gdps,gfs,hrrr,nam12km,nam3km,rap,rrfs,rtma">
               <span class="param-icon"></span>Wind Gusts
             </button>
             <button class="param-btn" data-param="max_wind" data-models="hrrr,rrfs">
@@ -710,7 +545,7 @@
             <button class="param-btn" data-param="rh_850mb" data-legend-label="850mb Heights / Relative Humidity" data-models="ecmwf,gdps,gefs,gfs,href,nam3km,nam12km,rap,rrfs">
               <span class="param-icon"></span>850mb Heights / RH
             </button>
-            <button class="param-btn" data-param="wind_850mb" data-legend-label="850mb Heights / Wind Speed" data-models="ecmwf,gefs,gfs,href,hrrr,nam3km,nam12km,rap,rrfs">
+            <button class="param-btn" data-param="wind_850mb" data-legend-label="850mb Heights / Wind Speed" data-models="ecmwf,gdps,gefs,gfs,href,hrrr,nam12km,nam3km,rap,rrfs">
               <span class="param-icon"></span>850mb Heights / Wind
             </button>
             <button class="param-btn" data-param="temp_700mb" data-legend-label="700mb Heights / Temperature" data-models="ecmwf,gdps,gefs,gfs,href,hrrr,nam3km,nam12km,rap,rrfs">
@@ -734,13 +569,13 @@
             <button class="param-btn" data-param="vort_500mb" data-legend-label="500mb Heights / Vorticity" data-models="gdps,hrrr,nam12km,nam3km,rap,rrfs">
               <span class="param-icon"></span>500mb Heights / Vorticity
             </button>
-            <button class="param-btn" data-param="wind_500mb" data-legend-label="500mb Heights / Wind Speed" data-models="ecmwf,gefs,gfs,href,hrrr,nam3km,rap,rrfs">
+            <button class="param-btn" data-param="wind_500mb" data-legend-label="500mb Heights / Wind Speed" data-models="ecmwf,gdps,gefs,gfs,href,hrrr,nam3km,rap,rrfs">
               <span class="param-icon"></span>500mb Heights / Wind
             </button>
             <button class="param-btn" data-param="temp_300mb" data-legend-label="300mb Heights / Temperature" data-models="gefs,rrfs">
               <span class="param-icon"></span>300mb Heights / Temp
             </button>
-            <button class="param-btn" data-param="wind_300mb" data-legend-label="300mb Heights / Wind Speed" data-models="ecmwf,gefs,gfs,hrrr,rap,rrfs">
+            <button class="param-btn" data-param="wind_300mb" data-legend-label="300mb Heights / Wind Speed" data-models="ecmwf,gdps,gefs,gfs,hrrr,rap,rrfs">
               <span class="param-icon"></span>300mb Heights / Wind
             </button>
             <button class="param-btn" data-param="temp_250mb" data-legend-label="250mb Heights / Temperature" data-models="gefs,rrfs">
@@ -796,101 +631,12 @@
 
       <div class="sidebar-section sidebar-section--status">
         <div class="section-label">Server Status</div>
-        <div class="model-status-compact">
-          <div class="model-compact" id="mini-ecmwf">
-            <div class="model-compact-header">
-              <span class="model-compact-name ecmwf">ECMWF</span>
-              <span class="model-compact-badge" id="mini-badge-ecmwf">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill ecmwf" id="mini-fill-ecmwf" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-ecmwf">--</div>
-          </div>
-          <div class="model-compact" id="mini-gdps">
-            <div class="model-compact-header">
-              <span class="model-compact-name gdps">GDPS</span>
-              <span class="model-compact-badge" id="mini-badge-gdps">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill gdps" id="mini-fill-gdps" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-gdps">--</div>
-          </div>
-          <div class="model-compact" id="mini-gfs">
-            <div class="model-compact-header">
-              <span class="model-compact-name gfs">GFS</span>
-              <span class="model-compact-badge" id="mini-badge-gfs">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill gfs" id="mini-fill-gfs" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-gfs">--</div>
-          </div>
-          <div class="model-compact" id="mini-hrrr">
-            <div class="model-compact-header">
-              <span class="model-compact-name hrrr">HRRR</span>
-              <span class="model-compact-badge" id="mini-badge-hrrr">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill hrrr" id="mini-fill-hrrr" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-hrrr">--</div>
-          </div>
-          <div class="model-compact" id="mini-href">
-            <div class="model-compact-header">
-              <span class="model-compact-name href">HREF</span>
-              <span class="model-compact-badge" id="mini-badge-href">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill href" id="mini-fill-href" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-href">--</div>
-          </div>
-          <div class="model-compact" id="mini-nam12km">
-            <div class="model-compact-header">
-              <span class="model-compact-name nam">NAM 12km</span>
-              <span class="model-compact-badge" id="mini-badge-nam12km">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill nam" id="mini-fill-nam12km" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-nam12km">--</div>
-          </div>
-          <div class="model-compact" id="mini-nam3km">
-            <div class="model-compact-header">
-              <span class="model-compact-name nam3km">NAM 3km</span>
-              <span class="model-compact-badge" id="mini-badge-nam3km">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill nam3km" id="mini-fill-nam3km" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-nam3km">--</div>
-          </div>
-          <div class="model-compact" id="mini-rap">
-            <div class="model-compact-header">
-              <span class="model-compact-name rap">RAP</span>
-              <span class="model-compact-badge" id="mini-badge-rap">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill rap" id="mini-fill-rap" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-rap">--</div>
-          </div>
-          <div class="model-compact" id="mini-rrfs">
-            <div class="model-compact-header">
-              <span class="model-compact-name rrfs">RRFS</span>
-              <span class="model-compact-badge" id="mini-badge-rrfs">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill rrfs" id="mini-fill-rrfs" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-rrfs">--</div>
-          </div>
-          <div class="model-compact" id="mini-rtma">
-            <div class="model-compact-header">
-              <span class="model-compact-name rtma">RTMA</span>
-              <span class="model-compact-badge" id="mini-badge-rtma">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill rtma" id="mini-fill-rtma" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-rtma">--</div>
-          </div>
-          <div class="model-compact" id="mini-gefs">
-            <div class="model-compact-header">
-              <span class="model-compact-name gefs">GEFS</span>
-              <span class="model-compact-badge" id="mini-badge-gefs">IDLE</span>
-            </div>
-            <div class="model-compact-bar"><div class="model-compact-fill gefs" id="mini-fill-gefs" style="width:0%"></div></div>
-            <div class="model-compact-text" id="mini-text-gefs">--</div>
-          </div>
-        </div>
+        <div class="model-status-compact" id="modelStatusCompact"></div>
       </div>
     </nav>
     
     <!-- Satellite Sidebar (shown when Satellite tab active) -->
-    <nav class="param-sidebar hidden" id="satelliteSidebar">
+    <nav class="param-sidebar hidden" id="satelliteSidebar" role="tabpanel" aria-labelledby="tabSatellite">
       <div class="mobile-sheet-handle"><div class="handle-bar"></div></div>
       <div class="sidebar-section">
         <div class="section-label">Satellite Products</div>
@@ -917,190 +663,20 @@
             Regional
           </button>
           <div class="param-group-items">
-            <div class="param-group expanded" data-group="sat-region-central">
-              <button class="param-group-toggle" aria-expanded="true">
-                <svg class="chevron" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Central
-              </button>
-              <div class="param-group-items">
-                <button class="param-btn" data-sat-product="vis_1km" data-sat-region="central_plains">
-                  <span class="param-icon"></span>Visible 1km Band 2 (0.64µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_native" data-sat-region="central_plains">
-                  <span class="param-icon"></span>Clean IR Native Band 13 CMIP (10.3µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_14" data-sat-region="central_plains">
-                  <span class="param-icon"></span>IR Band 14 — Longwave (11.2µm)
-                </button>
-                <button class="param-btn" data-sat-product="veggie" data-sat-region="central_plains">
-                  <span class="param-icon"></span>Veggie Band 3 — (0.86µm)
-                </button>
-                <button class="param-btn" data-sat-product="cloud_particle" data-sat-region="central_plains">
-                  <span class="param-icon"></span>Cloud Particle Band 6 — (2.2µm)
-                </button>
-              </div>
+            <div class="sat-region-picker">
+              <label class="radar-control-label" for="satRegionSelect">Region</label>
+              <select id="satRegionSelect" class="select radar-control-select">
+                <option value="central_plains">Central Plains</option>
+                <option value="northern_plains">Northern Plains</option>
+                <option value="upper_midwest">Upper Midwest</option>
+                <option value="southern_plains">Southern Plains</option>
+                <option value="southeast">Southeast</option>
+                <option value="northeast">Northeast</option>
+                <option value="southwest">Southwest</option>
+                <option value="west_coast">West Coast</option>
+              </select>
             </div>
-            <div class="param-group expanded" data-group="sat-region-northern-plains">
-              <button class="param-group-toggle" aria-expanded="true">
-                <svg class="chevron" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Northern Plains
-              </button>
-              <div class="param-group-items">
-                <button class="param-btn" data-sat-product="vis_1km" data-sat-region="northern_plains">
-                  <span class="param-icon"></span>Visible 1km Band 2 (0.64µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_native" data-sat-region="northern_plains">
-                  <span class="param-icon"></span>Clean IR Native Band 13 CMIP (10.3µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_14" data-sat-region="northern_plains">
-                  <span class="param-icon"></span>IR Band 14 — Longwave (11.2µm)
-                </button>
-                <button class="param-btn" data-sat-product="veggie" data-sat-region="northern_plains">
-                  <span class="param-icon"></span>Veggie Band 3 — (0.86µm)
-                </button>
-                <button class="param-btn" data-sat-product="cloud_particle" data-sat-region="northern_plains">
-                  <span class="param-icon"></span>Cloud Particle Band 6 — (2.2µm)
-                </button>
-              </div>
-            </div>
-            <div class="param-group expanded" data-group="sat-region-upper-midwest">
-              <button class="param-group-toggle" aria-expanded="true">
-                <svg class="chevron" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Upper Midwest
-              </button>
-              <div class="param-group-items">
-                <button class="param-btn" data-sat-product="vis_1km" data-sat-region="upper_midwest">
-                  <span class="param-icon"></span>Visible 1km Band 2 (0.64µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_native" data-sat-region="upper_midwest">
-                  <span class="param-icon"></span>Clean IR Native Band 13 CMIP (10.3µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_14" data-sat-region="upper_midwest">
-                  <span class="param-icon"></span>IR Band 14 — Longwave (11.2µm)
-                </button>
-                <button class="param-btn" data-sat-product="veggie" data-sat-region="upper_midwest">
-                  <span class="param-icon"></span>Veggie Band 3 — (0.86µm)
-                </button>
-                <button class="param-btn" data-sat-product="cloud_particle" data-sat-region="upper_midwest">
-                  <span class="param-icon"></span>Cloud Particle Band 6 — (2.2µm)
-                </button>
-              </div>
-            </div>
-            <div class="param-group expanded" data-group="sat-region-southern-plains">
-              <button class="param-group-toggle" aria-expanded="true">
-                <svg class="chevron" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Southern Plains
-              </button>
-              <div class="param-group-items">
-                <button class="param-btn" data-sat-product="vis_1km" data-sat-region="southern_plains">
-                  <span class="param-icon"></span>Visible 1km Band 2 (0.64µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_native" data-sat-region="southern_plains">
-                  <span class="param-icon"></span>Clean IR Native Band 13 CMIP (10.3µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_14" data-sat-region="southern_plains">
-                  <span class="param-icon"></span>IR Band 14 — Longwave (11.2µm)
-                </button>
-                <button class="param-btn" data-sat-product="veggie" data-sat-region="southern_plains">
-                  <span class="param-icon"></span>Veggie Band 3 — (0.86µm)
-                </button>
-                <button class="param-btn" data-sat-product="cloud_particle" data-sat-region="southern_plains">
-                  <span class="param-icon"></span>Cloud Particle Band 6 — (2.2µm)
-                </button>
-              </div>
-            </div>
-            <div class="param-group expanded" data-group="sat-region-southeast">
-              <button class="param-group-toggle" aria-expanded="true">
-                <svg class="chevron" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Southeast
-              </button>
-              <div class="param-group-items">
-                <button class="param-btn" data-sat-product="vis_1km" data-sat-region="southeast">
-                  <span class="param-icon"></span>Visible 1km Band 2 (0.64µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_native" data-sat-region="southeast">
-                  <span class="param-icon"></span>Clean IR Native Band 13 CMIP (10.3µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_14" data-sat-region="southeast">
-                  <span class="param-icon"></span>IR Band 14 — Longwave (11.2µm)
-                </button>
-                <button class="param-btn" data-sat-product="veggie" data-sat-region="southeast">
-                  <span class="param-icon"></span>Veggie Band 3 — (0.86µm)
-                </button>
-                <button class="param-btn" data-sat-product="cloud_particle" data-sat-region="southeast">
-                  <span class="param-icon"></span>Cloud Particle Band 6 — (2.2µm)
-                </button>
-              </div>
-            </div>
-            <div class="param-group expanded" data-group="sat-region-northeast">
-              <button class="param-group-toggle" aria-expanded="true">
-                <svg class="chevron" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Northeast
-              </button>
-              <div class="param-group-items">
-                <button class="param-btn" data-sat-product="vis_1km" data-sat-region="northeast">
-                  <span class="param-icon"></span>Visible 1km Band 2 (0.64µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_native" data-sat-region="northeast">
-                  <span class="param-icon"></span>Clean IR Native Band 13 CMIP (10.3µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_14" data-sat-region="northeast">
-                  <span class="param-icon"></span>IR Band 14 — Longwave (11.2µm)
-                </button>
-                <button class="param-btn" data-sat-product="veggie" data-sat-region="northeast">
-                  <span class="param-icon"></span>Veggie Band 3 — (0.86µm)
-                </button>
-                <button class="param-btn" data-sat-product="cloud_particle" data-sat-region="northeast">
-                  <span class="param-icon"></span>Cloud Particle Band 6 — (2.2µm)
-                </button>
-              </div>
-            </div>
-            <div class="param-group expanded" data-group="sat-region-southwest">
-              <button class="param-group-toggle" aria-expanded="true">
-                <svg class="chevron" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Southwest
-              </button>
-              <div class="param-group-items">
-                <button class="param-btn" data-sat-product="vis_1km" data-sat-region="southwest">
-                  <span class="param-icon"></span>Visible 1km Band 2 (0.64µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_native" data-sat-region="southwest">
-                  <span class="param-icon"></span>Clean IR Native Band 13 CMIP (10.3µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_14" data-sat-region="southwest">
-                  <span class="param-icon"></span>IR Band 14 — Longwave (11.2µm)
-                </button>
-                <button class="param-btn" data-sat-product="veggie" data-sat-region="southwest">
-                  <span class="param-icon"></span>Veggie Band 3 — (0.86µm)
-                </button>
-                <button class="param-btn" data-sat-product="cloud_particle" data-sat-region="southwest">
-                  <span class="param-icon"></span>Cloud Particle Band 6 — (2.2µm)
-                </button>
-              </div>
-            </div>
-            <div class="param-group expanded" data-group="sat-region-west-coast">
-              <button class="param-group-toggle" aria-expanded="true">
-                <svg class="chevron" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                West Coast
-              </button>
-              <div class="param-group-items">
-                <button class="param-btn" data-sat-product="vis_1km" data-sat-region="west_coast">
-                  <span class="param-icon"></span>Visible 1km Band 2 (0.64µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_native" data-sat-region="west_coast">
-                  <span class="param-icon"></span>Clean IR Native Band 13 CMIP (10.3µm)
-                </button>
-                <button class="param-btn" data-sat-product="ir_14" data-sat-region="west_coast">
-                  <span class="param-icon"></span>IR Band 14 — Longwave (11.2µm)
-                </button>
-                <button class="param-btn" data-sat-product="veggie" data-sat-region="west_coast">
-                  <span class="param-icon"></span>Veggie Band 3 — (0.86µm)
-                </button>
-                <button class="param-btn" data-sat-product="cloud_particle" data-sat-region="west_coast">
-                  <span class="param-icon"></span>Cloud Particle Band 6 — (2.2µm)
-                </button>
-              </div>
-            </div>
+            <div id="satRegionalProducts"></div>
           </div>
         </div>
 
@@ -1121,13 +697,13 @@
               <span class="param-icon"></span>Day Cloud Phase RGB
             </button>
             <button class="param-btn" data-sat-product="vis">
-              <span class="param-icon"></span>Visible Band 2
+              <span class="param-icon"></span>Visible — Band 2 (0.64µm)
             </button>
             <button class="param-btn" data-sat-product="ir">
-              <span class="param-icon"></span>Clean IR Band 13
+              <span class="param-icon"></span>Clean IR — Band 13 (10.3µm)
             </button>
             <button class="param-btn" data-sat-product="wv">
-              <span class="param-icon"></span>Water Vapor Band 9
+              <span class="param-icon"></span>Water Vapor — Band 9 (6.9µm)
             </button>
           </div>
         </div>
@@ -1140,25 +716,25 @@
           </button>
           <div class="param-group-items">
             <button class="param-btn" data-sat-product="vis_1km" data-sat-region="">
-              <span class="param-icon"></span>Visible 1km Band 2 (0.64µm)
+              <span class="param-icon"></span>Visible 1km — Band 2 (0.64µm)
             </button>
             <button class="param-btn active" data-sat-product="vis">
-              <span class="param-icon"></span>Visible Band 2 — Red (0.64µm)
+              <span class="param-icon"></span>Red Visible — Band 2 (0.64µm)
             </button>
             <button class="param-btn" data-sat-product="vis_blue">
-              <span class="param-icon"></span>Visible Band 1 — Blue (0.47µm)
+              <span class="param-icon"></span>Blue Visible — Band 1 (0.47µm)
             </button>
             <button class="param-btn" data-sat-product="veggie" data-sat-region="">
-              <span class="param-icon"></span>Veggie Band 3 — (0.86µm)
+              <span class="param-icon"></span>Veggie — Band 3 (0.86µm)
             </button>
             <button class="param-btn" data-sat-product="cirrus">
-              <span class="param-icon"></span>Cirrus Band 4 — (1.37µm)
+              <span class="param-icon"></span>Cirrus — Band 4 (1.37µm)
             </button>
             <button class="param-btn" data-sat-product="snow_ice">
-              <span class="param-icon"></span>Snow/Ice Band 5 — (1.6µm)
+              <span class="param-icon"></span>Snow/Ice — Band 5 (1.6µm)
             </button>
             <button class="param-btn" data-sat-product="cloud_particle" data-sat-region="">
-              <span class="param-icon"></span>Cloud Particle Band 6 — (2.2µm)
+              <span class="param-icon"></span>Cloud Particle — Band 6 (2.2µm)
             </button>
           </div>
         </div>
@@ -1171,28 +747,28 @@
           </button>
           <div class="param-group-items">
             <button class="param-btn" data-sat-product="ir_native" data-sat-region="">
-              <span class="param-icon"></span>Clean IR Native Band 13 CMIP (10.3µm)
+              <span class="param-icon"></span>Clean IR Native — Band 13 (10.3µm)
             </button>
             <button class="param-btn" data-sat-product="ir">
-              <span class="param-icon"></span>IR Band 13 — Clean Longwave (10.3µm)
+              <span class="param-icon"></span>Clean Longwave IR — Band 13 (10.3µm)
             </button>
             <button class="param-btn" data-sat-product="ir_14" data-sat-region="">
-              <span class="param-icon"></span>IR Band 14 — Longwave (11.2µm)
+              <span class="param-icon"></span>Longwave IR — Band 14 (11.2µm)
             </button>
             <button class="param-btn" data-sat-product="ir_dirty">
-              <span class="param-icon"></span>IR Band 15 — Dirty Longwave (12.3µm)
+              <span class="param-icon"></span>Dirty Longwave IR — Band 15 (12.3µm)
             </button>
             <button class="param-btn" data-sat-product="co2">
-              <span class="param-icon"></span>IR Band 16 — CO2 Absorption (13.3µm)
+              <span class="param-icon"></span>CO2 Absorption — Band 16 (13.3µm)
             </button>
             <button class="param-btn" data-sat-product="cloud_top">
-              <span class="param-icon"></span>IR Band 11 — Cloud Top (8.4µm)
+              <span class="param-icon"></span>Cloud Top — Band 11 (8.4µm)
             </button>
             <button class="param-btn" data-sat-product="ozone">
-              <span class="param-icon"></span>IR Band 12 — Ozone (9.6µm)
+              <span class="param-icon"></span>Ozone — Band 12 (9.6µm)
             </button>
             <button class="param-btn" data-sat-product="sw_ir">
-              <span class="param-icon"></span>SW IR Band 7 — Fire/Fog (3.9µm)
+              <span class="param-icon"></span>Shortwave IR (Fire/Fog) — Band 7 (3.9µm)
             </button>
           </div>
         </div>
@@ -1205,13 +781,13 @@
           </button>
           <div class="param-group-items">
             <button class="param-btn" data-sat-product="upper_wv">
-              <span class="param-icon"></span>Upper WV Band 8 — 6.2µm
+              <span class="param-icon"></span>Upper Water Vapor — Band 8 (6.2µm)
             </button>
             <button class="param-btn" data-sat-product="wv">
-              <span class="param-icon"></span>Mid WV Band 9 — 6.9µm
+              <span class="param-icon"></span>Water Vapor — Band 9 (6.9µm)
             </button>
             <button class="param-btn" data-sat-product="lower_wv">
-              <span class="param-icon"></span>Lower WV Band 10 — 7.3µm
+              <span class="param-icon"></span>Lower Water Vapor — Band 10 (7.3µm)
             </button>
           </div>
         </div>
@@ -1298,7 +874,7 @@
     </nav>
     
     <!-- Radar Sidebar (shown when Radar tab active) -->
-    <nav class="param-sidebar hidden" id="radarSidebar">
+    <nav class="param-sidebar hidden" id="radarSidebar" role="tabpanel" aria-labelledby="tabRadar">
       <div class="mobile-sheet-handle"><div class="handle-bar"></div></div>
       <div class="sidebar-section">
         <div class="section-label">Radar Products</div>
@@ -1306,22 +882,29 @@
         <div class="sat-info-box">
           <div class="sat-info-title">NEXRAD Level II</div>
           <div class="sat-info-text">
-            Full-resolution volume scan data from NOAA's NEXRAD network, including raw moments plus locally derived dual-pol and volumetric products.
+            Explore reflectivity, winds, and storm structure. Select a radar on the map to get started.
           </div>
+        </div>
+
+        <div id="radarSiteInline" class="radar-site-inline hidden">
+          <label class="radar-control-label" for="radarSiteSelect">Radar station</label>
+          <select id="radarSiteSelect" class="select">
+            <option value="" disabled>Loading radar sites…</option>
+          </select>
         </div>
 
         <!-- Tilt Selector -->
         <div style="padding: 4px 8px 8px;">
           <div style="display:flex; gap:8px;">
             <div style="flex:1;">
-              <div style="color:#888; font-size:11px; margin-bottom:4px;">Elevation Tilt</div>
-              <select id="radarTiltSelect" class="radar-tilt-select" style="width:100%; background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:6px 8px; font-size:13px;">
+              <label class="radar-control-label" for="radarTiltSelect">Elevation</label>
+              <select id="radarTiltSelect" class="radar-tilt-select radar-control-select">
                 <option value="0.5" selected>0.5° (lowest)</option>
               </select>
             </div>
             <div style="flex:1;">
-              <div style="color:#888; font-size:11px; margin-bottom:4px;">Loop Length</div>
-              <select id="radarLoopLength" style="width:100%; background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:6px 8px; font-size:13px;">
+              <label class="radar-control-label" for="radarLoopLength">Loop length</label>
+              <select id="radarLoopLength" class="radar-control-select">
                 <option value="15">15 min</option>
                 <option value="30">30 min</option>
                 <option value="60">1 hour</option>
@@ -1340,6 +923,38 @@
             </button>
           </div>
         </div>
+
+      <!-- Radar Controls (shown when Radar tab active) -->
+      <div id="radarControls" class="controls-group hidden">
+        <div class="control-group">
+          <label class="toggle-label">
+            <input type="checkbox" id="watchWarningToggle" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-text">Warnings</span>
+          </label>
+        </div>
+        <div class="control-group">
+          <label class="toggle-label">
+            <input type="checkbox" id="mcdToggle" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-text">MCDs</span>
+          </label>
+        </div>
+        <div class="control-group">
+          <label class="toggle-label">
+            <input type="checkbox" id="spotterToggle" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-text">Spotters</span>
+          </label>
+        </div>
+        <div class="control-group">
+          <label class="toggle-label">
+            <input type="checkbox" id="surfaceRadarToggle" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-text">Surface Obs</span>
+          </label>
+        </div>
+      </div>
 
         <!-- Base Moments -->
         <div class="param-group expanded" data-group="radar-base">
@@ -1448,7 +1063,7 @@
     </nav>
 
     <!-- Surface Sidebar (shown when Surface tab active) -->
-    <nav class="param-sidebar hidden" id="surfaceSidebar">
+    <nav class="param-sidebar hidden" id="surfaceSidebar" role="tabpanel" aria-labelledby="tabSurface">
       <div class="mobile-sheet-handle"><div class="handle-bar"></div></div>
       <div class="sidebar-section">
         <div class="section-label">Surface Observations</div>
@@ -1478,7 +1093,7 @@
     </nav>
 
     <!-- Storm Chasing sidebar -->
-    <nav class="param-sidebar hidden" id="chaseSidebar">
+    <nav class="param-sidebar hidden" id="chaseSidebar" role="tabpanel" aria-labelledby="tabChase">
       <div class="mobile-sheet-handle"><div class="handle-bar"></div></div>
       <div class="sidebar-section sidebar-section--model-picker">
         <div class="sidebar-model-row">
@@ -1695,7 +1310,7 @@
       </div>
 
       <!-- Home Dashboard — floating panels over the map -->
-      <div class="home-dashboard" id="homeDashboard">
+      <div class="home-dashboard" id="homeDashboard" role="tabpanel" aria-labelledby="tabHome">
         <!-- Layer Controls — left floating panel -->
         <div class="home-layer-panel" id="homeLayerPanel">
           <button class="home-layer-collapse" id="homeLayerPanelToggle" type="button" aria-label="Collapse layer controls" aria-expanded="true">
@@ -1884,6 +1499,7 @@
         <div id="legendLabel" class="legend-label"></div>
         <canvas id="legendCanvas" class="legend-canvas" width="220" height="14"></canvas>
         <div id="legendTicks" class="legend-ticks"></div>
+    <div id="legendNote" class="legend-note"></div>
       </div>
 
 
@@ -1893,7 +1509,7 @@
       <!-- Scrubber bar overlay -->
       <div class="scrubber-bar" id="scrubberBar">
         <div class="scrubber-controls">
-          <button id="playBtn" class="play-btn" title="Play/Pause (Space)">&#9654;</button>
+          <button id="playBtn" class="play-btn" title="Play/Pause (Space)" aria-label="Play"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button>
           <div class="scrubber-speed-group">
             <button class="speed-btn active" data-speed="2">1×</button>
             <button class="speed-btn" data-speed="5">3×</button>
@@ -1916,6 +1532,7 @@
   </main>
 
   <footer class="site-footer">
+    <a href="?view=mobile" data-mobile-link>Mobile view</a>
     <a href="/privacy.html">Privacy</a>
   </footer>
 
@@ -2001,13 +1618,17 @@
     Click a storm cell to generate 3D profile &mdash; ESC to cancel
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="/static/vendor/leaflet/leaflet.js?v=1.9.4"></script>
+  <script defer src="/static/js/pressure-contours.js?v=20261008f"></script>
+  <script defer src="/static/js/map-capture.js?v=20261008e"></script>
+  <script defer src="/static/js/viewer-ui.js?v=20261008g"></script>
   <!-- main.js (module) must execute before the deferred legacy scripts:
        module scripts and deferred scripts run in document order. -->
-  <script type="module" src="/static/js/main.js?v=20260610a"></script>
-  <script defer src="/static/js/surface-obs.js?v=20260330c"></script>
-  <script defer src="/static/js/app.js?v=20260611a"></script>
-  <script defer src="/static/js/storm3d-modal.js?v=20260327b"></script>
+  <script type="module" src="/static/js/main.js?v=20260709a"></script>
+  <script defer src="/static/js/surface-obs.js?v=20260930e"></script>
+  <script defer src="/static/js/app.js?v=20261008g"></script>
+  <script defer src="/static/js/storm3d-modal.js?v=20260809a"></script>
 </body>
 </html>

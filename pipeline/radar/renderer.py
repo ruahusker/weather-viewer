@@ -11,7 +11,7 @@ from typing import Optional
 import numpy as np
 from PIL import Image
 
-from .color_tables import FIELD_CONFIG
+from .color_tables import FIELD_CONFIG, RADAR_PALETTE_VERSION
 from .config import RADAR_RENDERED_DIR, OUTPUT_SIZE, CC_CLUTTER_THRESHOLD, PNG_OPTIMIZE, FAST_RENDER_PRODUCTS
 
 logger = logging.getLogger(__name__)
@@ -326,7 +326,8 @@ class Level2Renderer:
 
     def render_product(self, sweep, site: str, field: str,
                        timestamp: str, site_lat: float, site_lon: float,
-                       is_cc_product: bool = False) -> Optional[RenderedRadar]:
+                       is_cc_product: bool = False,
+                       update_latest: bool = True) -> Optional[RenderedRadar]:
         """Render one product/tilt to PNG + metadata JSON.
 
         Args:
@@ -390,6 +391,7 @@ class Level2Renderer:
             "unit": cfg["unit"],
             "tilt": sweep.tilt_angle,
             "timestamp": timestamp,
+            "palette_version": RADAR_PALETTE_VERSION,
             "bounds": bounds,
             "png_path": f"radar/png/{fname}",
             "rays": int(sweep.data.shape[0]),
@@ -398,16 +400,17 @@ class Level2Renderer:
         }
         meta_path.write_text(json.dumps(meta, indent=2, cls=_NumpyEncoder))
 
-        # Update "latest" symlinks
+        # On-demand upper elevations must not replace the public lowest-tilt image.
         latest_png = self.png_dir / f"{site}_{cfg['short']}_latest.png"
         latest_meta = self.meta_dir / f"{site}_{cfg['short']}_latest.json"
-        latest_png.unlink(missing_ok=True)
-        latest_meta.unlink(missing_ok=True)
-        try:
-            latest_png.symlink_to(fname)
-            latest_meta.symlink_to(fname.replace(".png", ".json"))
-        except OSError:
-            pass
+        if update_latest:
+            latest_png.unlink(missing_ok=True)
+            latest_meta.unlink(missing_ok=True)
+            try:
+                latest_png.symlink_to(fname)
+                latest_meta.symlink_to(fname.replace(".png", ".json"))
+            except OSError:
+                pass
 
         return RenderedRadar(
             png_path=png_path,
@@ -500,4 +503,5 @@ class Level2Renderer:
             site_lat=volume.site_lat,
             site_lon=volume.site_lon,
             is_cc_product=is_cc,
+            update_latest=False,
         )

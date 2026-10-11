@@ -748,7 +748,10 @@
     if (modal.classList.contains('hidden')) {
       throw new Error('3D panel is not open');
     }
-    if (typeof html2canvas === 'undefined') {
+    try {
+      await loadHtml2Canvas();
+    } catch (err) {
+      console.error('html2canvas failed to load:', err);
       throw new Error('Screenshot capture is unavailable');
     }
     needsRender = true;

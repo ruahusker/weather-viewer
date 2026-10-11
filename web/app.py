@@ -29,7 +29,7 @@ from pipeline.config import (
 import pipeline.config
 
 from pipeline.radar.config import RADAR_RENDERED_DIR, RADAR_CACHE_DIR, RADAR_CONFIG, NEXRAD_SITES, LEVEL2_PRODUCTS
-from pipeline.radar.color_tables import FIELD_CONFIG as RADAR_FIELD_CONFIG
+from pipeline.radar.color_tables import FIELD_CONFIG as RADAR_FIELD_CONFIG, RADAR_PALETTE_VERSION, get_radar_lut
 from pipeline.radar.grid_api import get_radar_grid_binary
 from pipeline.models.grid_api import get_model_grid_binary
 
@@ -58,6 +58,9 @@ class CacheHeaderMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         p = request.url.path
+        if response.status_code >= 400:
+            response.headers["Cache-Control"] = "no-store"
+            return response
         # Versioned static assets (JS/CSS with ?v= query string) — cache long
         if p.startswith("/static/") and request.url.query:
             ext = p.rsplit(".", 1)[-1] if "." in p else ""
@@ -68,7 +71,8 @@ class CacheHeaderMiddleware(BaseHTTPMiddleware):
             response.headers["Cache-Control"] = "public, max-age=86400"
         # Rendered model/radar/satellite images — immutable once created
         elif p.startswith(("/rendered/", "/satellite/", "/radar/")):
-            response.headers["Cache-Control"] = "public, max-age=86400"
+            mutable = (p.endswith(".json") and not p.endswith(".contours.json")) or "latest" in Path(p).name
+            response.headers["Cache-Control"] = "no-cache" if mutable else "public, max-age=86400"
         # API responses — short cache
         elif p.startswith("/api/"):
             if "/colorscales" in p or "/config" in p:
@@ -330,6 +334,25 @@ async def get_available(model: str, run_id: str):
     ttl = _AVAILABLE_TTL_COMPLETE if is_complete else _AVAILABLE_TTL_ACTIVE
     _available_cache[cache_key] = (time.time() + ttl, result)
     _prune_cache(_available_cache, _AVAILABLE_CACHE_MAX)
+    return JSONResponse(result)
+
+
+@app.get("/api/available/{model}/{run_id}/vectors")
+async def get_available_vectors(model: str, run_id: str):
+    """List pressure frames with vector geometry, including active runs."""
+    if not re.fullmatch(r"[a-z0-9_]+", model) or not re.fullmatch(r"\d{10}", run_id):
+        raise HTTPException(status_code=400, detail="Invalid model or run")
+    root = RENDERED_DIR.resolve()
+    run_dir = (root / model / run_id).resolve()
+    if not run_dir.is_relative_to(root):
+        raise HTTPException(status_code=400, detail="Invalid run path")
+    result = {}
+    for parameter in ("mslp", "psfc"):
+        frames = [int(path.name.split(".")[0][1:])
+                  for path in (run_dir / parameter).glob("f*.contours.json")
+                  if path.name.split(".")[0][1:].isdigit()]
+        if frames:
+            result[parameter] = sorted(frames)
     return JSONResponse(result)
 
 
@@ -1620,8 +1643,11 @@ _NWS_REFL_BOUNDS, _NWS_REFL_COLORS = _reflectivity_table()
 
 
 @app.get("/api/legend/{parameter}")
-async def get_legend(parameter: str, palette_version: int | None = Query(default=None)):
-    import matplotlib.cm as cm
+async def get_legend(
+    parameter: str, palette_version: int | None = Query(default=None),
+    radar_palette_version: int = Query(default=RADAR_PALETTE_VERSION, ge=1, le=RADAR_PALETTE_VERSION),
+):
+    from matplotlib import colormaps
     scale = COLOR_SCALES.get(parameter)
     if not scale:
         raise HTTPException(status_code=404, detail="Unknown parameter")
@@ -1694,43 +1720,28 @@ async def get_legend(parameter: str, palette_version: int | None = Query(default
             "radar_hail": "hail_probability",
             "radar_rain": "rainfall_rate",
         }
-        field_cfg = RADAR_FIELD_CONFIG.get(_radar_param_field.get(parameter, ""))
-        lut_fn = field_cfg.get("lut_fn") if field_cfg else None
-        if lut_fn:
-            lut, lut_vmin, lut_vmax = lut_fn()
-            vmin = lut_vmin
-            vmax = lut_vmax
+        field = _radar_param_field.get(parameter, "")
+        field_cfg = RADAR_FIELD_CONFIG.get(field)
+        if field_cfg:
+            lut, vmin, vmax = get_radar_lut(field, radar_palette_version)
             label = field_cfg.get("label", label)
             unit = field_cfg.get("unit", unit)
-            if field_cfg.get("bounds") and field_cfg.get("colors"):
-                bounds = list(field_cfg["bounds"])
-                colors = list(field_cfg["colors"])
-                stops = [
-                    {"pos": i / max(len(colors) - 1, 1), "color": color}
-                    for i, color in enumerate(colors)
-                ]
-                discrete = True
-                tick_vals = field_cfg.get("legend_ticks", bounds)
-                color_lookup = None
-            else:
-                stops = []
-                n_stops = 32
-                for i in range(n_stops):
-                    idx = int(i / (n_stops - 1) * 255)
-                    r, g, b, a = lut[idx]
-                    pos = i / (n_stops - 1)
-                    stops.append({"pos": pos, "color": f"rgba({r},{g},{b},{a/255:.2f})"})
-                discrete = False
-                tick_vals = None
+            stops = [
+                {"pos": i / 255, "color": f"rgba({r},{g},{b},{a/255:.3f})"}
+                for i, (r, g, b, a) in enumerate(lut)
+            ]
+            discrete = False
+            tick_vals = field_cfg.get("legend_ticks")
         else:
             stops = []
             discrete = False
             tick_vals = None
+
     elif cmap_name:
         try:
-            cmap_obj = cm.get_cmap(cmap_name)
+            cmap_obj = colormaps[cmap_name]
         except Exception:
-            cmap_obj = cm.get_cmap("viridis")
+            cmap_obj = colormaps["viridis"]
         stops = []
         for t in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
             r, g, b, _ = cmap_obj(t)
@@ -1775,6 +1786,15 @@ async def get_legend(parameter: str, palette_version: int | None = Query(default
 
     return JSONResponse({
         "label": label, "unit": unit,
+        "annotation": (
+            "− Toward radar · + Away from radar" if parameter in ("radar_velocity", "radar_srm") else
+            "Weak echoes → Strong echoes" if parameter in ("radar_reflectivity", "radar_cref") else
+            "Pressure contours (mb)" if parameter in ("mslp", "psfc") else
+            "Height contours (m) · Wind barbs (kt)" if re.fullmatch(r"wind_\d+mb", parameter) else
+            "Height contours (m)" if re.fullmatch(r"(?:temp|dewpoint|rh|omega|vort)_\d+mb", parameter) else
+            "Wind barbs (kt)" if parameter == "wind_speed" else ""
+        ),
+        "contour_only": parameter in ("mslp", "psfc") or scale.get("render") == "contour",
         "vmin": vmin, "vmax": vmax,
         "stops": stops, "discrete": discrete,
         "tick_vals": tick_vals,
@@ -1796,6 +1816,8 @@ _spc_text_cache: dict = {}
 _SPC_TTL = 300
 _mcd_cache: dict = {"data": None, "ts": 0}
 _MCD_TTL = 300
+_mcd_text_cache: dict = {}
+_MCD_TEXT_CACHE_MAX = 64
 _home_cache: dict = {"data": None, "ts": 0}
 _HOME_TTL = 60
 _weather_wire_cache: dict = {"data": None, "ts": 0}
@@ -2299,6 +2321,56 @@ async def _fetch_spc_discussion(day: str | None) -> dict:
     return payload
 
 
+def _parse_mcd_html(html_text: str) -> str:
+    """Extract the plain-text discussion from an SPC md####.html product page.
+
+    The product text lives in a single <pre> block; collapse intra-line
+    whitespace and keep at most one blank line between paragraphs.
+    """
+    match = re.search(r"<pre[^>]*>(.*?)</pre>", html_text, re.DOTALL | re.IGNORECASE)
+    if not match:
+        return ""
+    text = unescape(re.sub(r"<[^>]+>", "", match.group(1)))
+    cleaned: list[str] = []
+    blank_run = 0
+    for line in text.splitlines():
+        compact = re.sub(r"\s+", " ", line).strip()
+        if not compact:
+            blank_run += 1
+            if cleaned and blank_run <= 1:
+                cleaned.append("")
+            continue
+        blank_run = 0
+        cleaned.append(compact)
+    return "\n".join(cleaned).strip()
+
+
+async def _fetch_mcd_text(client: httpx.AsyncClient, url: str) -> str:
+    """Fetch and cache the full discussion text for a single MCD product page."""
+    if not url:
+        return ""
+    now = time.time()
+    cached = _mcd_text_cache.get(url)
+    if cached and (now - cached["ts"]) < _MCD_TTL:
+        return cached["text"]
+    # SPC product pages sit behind CloudFront, whose edge POPs intermittently
+    # cache an empty (content-length: 0) body. A rotating cache-busting param
+    # forces an origin fetch past the poisoned edge entry.
+    sep = "&" if "?" in url else "?"
+    fetch_url = f"{url}{sep}cb={int(now // 60)}"
+    try:
+        resp = await client.get(fetch_url, headers={"User-Agent": NWS_HEADERS["User-Agent"]})
+        resp.raise_for_status()
+        text = _parse_mcd_html(resp.text)
+    except Exception:
+        return cached["text"] if cached else ""
+    # Don't cache empty results so a transient blank retries on the next refresh.
+    if text:
+        _mcd_text_cache[url] = {"text": text, "ts": now}
+        _prune_cache(_mcd_text_cache, _MCD_TEXT_CACHE_MAX)
+    return text
+
+
 def _parse_rss_items(xml_text: str, source_name: str, limit: int = 6) -> list[dict]:
     items: list[dict] = []
     try:
@@ -2710,16 +2782,38 @@ async def _fetch_mcd_data(limit: int = 12) -> dict:
     for feature in geojson.get("features", []):
         props = feature.get("properties", {})
         centroid = _geometry_centroid(feature.get("geometry"))
+        # The MapServer exposes the MCD number only inside the "name" field
+        # (e.g. "MD 1170"); objectid is just a sequential row id, so parse the
+        # name first and fall back to objectid only if no number is present.
         num = (
             _as_int(props.get("mdNumber"))
             or _as_int(props.get("mdnum"))
             or _as_int(props.get("number"))
-            or _as_int(props.get("objectid"))
         )
+        if num is None:
+            name_match = re.search(r"\d+", str(props.get("name") or ""))
+            if name_match:
+                num = _as_int(name_match.group())
+        if num is None:
+            num = _as_int(props.get("objectid"))
         discussion = props.get("discussion") or props.get("name") or props.get("title") or "Mesoscale Discussion"
         summary = props.get("summary") or props.get("desc") or props.get("description") or ""
         issued = props.get("issue") or props.get("issuance") or props.get("issued")
+        if not issued and props.get("idp_filedate"):
+            try:
+                issued = datetime.fromtimestamp(
+                    int(props["idp_filedate"]) / 1000, tz=timezone.utc
+                ).strftime("%Y-%m-%d %H:%M UTC")
+            except Exception:
+                issued = None
         expires = props.get("expire") or props.get("expires")
+        if not expires:
+            # folderpath looks like "MD 1170 Active Till 0030 UTC"
+            exp_match = re.search(
+                r"Active Till\s+(.+)$", str(props.get("folderpath") or ""), re.IGNORECASE
+            )
+            if exp_match:
+                expires = exp_match.group(1).strip()
         probs = []
         for key, label in (
             ("ww_prob", "Watch Prob"),
@@ -2729,6 +2823,10 @@ async def _fetch_mcd_data(limit: int = 12) -> dict:
         ):
             if props.get(key) not in (None, ""):
                 probs.append(f"{label} {props.get(key)}")
+        # popupinfo links to the full md####.html product page; prefer https.
+        source_url = props.get("popupinfo") or props.get("url") or ""
+        if source_url.startswith("http://"):
+            source_url = "https://" + source_url[len("http://"):]
         items.append({
             "number": num,
             "title": discussion,
@@ -2737,6 +2835,8 @@ async def _fetch_mcd_data(limit: int = 12) -> dict:
             "expires": expires,
             "probabilities": probs,
             "centroid": centroid,
+            "discussion_text": "",
+            "discussion_source_url": source_url,
         })
         features.append({
             "type": "Feature",
@@ -2749,6 +2849,8 @@ async def _fetch_mcd_data(limit: int = 12) -> dict:
                 "expires": expires,
                 "probabilities": probs,
                 "centroid": centroid,
+                "discussion_text": "",
+                "discussion_source_url": source_url,
                 "style": {
                     "color": "#ffb347",
                     "fillColor": "#ff9f1c",
@@ -2758,6 +2860,30 @@ async def _fetch_mcd_data(limit: int = 12) -> dict:
                 },
             },
         })
+
+    # Fetch each MCD's full discussion text concurrently (cached per URL).
+    unique_urls = {it["discussion_source_url"] for it in items if it["discussion_source_url"]}
+    texts: dict[str, str] = {}
+    if unique_urls:
+        url_list = list(unique_urls)
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                fetched = await asyncio.gather(
+                    *(_fetch_mcd_text(client, url) for url in url_list),
+                    return_exceptions=True,
+                )
+            texts = {
+                url: (txt if isinstance(txt, str) else "")
+                for url, txt in zip(url_list, fetched)
+            }
+        except Exception:
+            texts = {}
+    for it in items:
+        it["discussion_text"] = texts.get(it["discussion_source_url"], "")
+    for ft in features:
+        ft["properties"]["discussion_text"] = texts.get(
+            ft["properties"]["discussion_source_url"], ""
+        )
 
     items.sort(key=lambda item: (
         item["number"] is None,
@@ -2856,14 +2982,15 @@ async def get_severe_alerts(limit: int = Query(default=20, ge=1, le=100)):
     })
 
 
-@app.get("/api/spc/{product_id}")
-async def get_spc_product(product_id: str):
-    return JSONResponse(await _fetch_spc_geojson(product_id))
-
-
 @app.get("/api/spc/mcds")
 async def get_spc_mcds(limit: int = Query(default=12, ge=1, le=50)):
     return JSONResponse(await _fetch_mcd_data(limit=limit))
+
+
+# Keep the catch-all product route last so specific paths (e.g. /mcds) win.
+@app.get("/api/spc/{product_id}")
+async def get_spc_product(product_id: str):
+    return JSONResponse(await _fetch_spc_geojson(product_id))
 
 
 @app.get("/api/spotters")
@@ -3662,6 +3789,15 @@ def _get_model_status() -> list[dict]:
                 info["max_fxx"] = max(total_fxx - 1, 0)
             info["max_completed_fxx"] = max(completed_fxx) if completed_fxx else 0
             break
+
+    for info in result:
+        try:
+            init = datetime.strptime(info["last_run"], "%Y%m%d%H").replace(tzinfo=timezone.utc)
+            info["run_age_hours"] = max(0, (now - init.timestamp()) / 3600)
+            limit = 6 if info["name"] in {"hrrr", "rap", "rtma"} else 24
+            info["data_stale"] = info["run_age_hours"] > limit
+        except (ValueError, TypeError):
+            info["data_stale"] = False
 
     _MODEL_STATUS_CACHE["data"] = result
     _MODEL_STATUS_CACHE["ts"] = now
@@ -4464,8 +4600,8 @@ async def get_latest_satellite(
                         "satellite": satellite,
                         "product": product,
                         "bounds": bounds,
-                        "png_path": str(png_files[0].relative_to(DATA_DIR.parent)),
-                        "timestamp": datetime.fromtimestamp(png_files[0].stat().st_mtime).isoformat(),
+                        "png_path": str(png_files[0].relative_to(RENDERED_DIR)),
+                        "timestamp": datetime.fromtimestamp(png_files[0].stat().st_mtime, timezone.utc).isoformat(),
                         "filename": png_files[0].name,
                     }
                     if region:
@@ -4738,8 +4874,9 @@ def _resolve_radar_short(product: str) -> tuple[str, str]:
 @app.get("/api/value/radar/{site}/{product}")
 async def get_radar_value(
     site: str, product: str,
-    lat: float = Query(...), lon: float = Query(...),
-    tilt: float = Query(0.5),
+    lat: float = Query(..., ge=-90, le=90), lon: float = Query(..., ge=-180, le=180),
+    tilt: float = Query(0.5, ge=0, le=90),
+    frame: str | None = Query(default=None, pattern=r"^\d{8}_\d{6}$"),
 ):
     """Sample the data value at a lat/lon from the rendered radar PNG."""
     import math
@@ -4750,16 +4887,19 @@ async def get_radar_value(
     if field_name not in RADAR_FIELD_CONFIG:
         raise HTTPException(status_code=404, detail=f"Unknown radar product: {product}")
 
-    meta_file = RADAR_RENDERED_DIR / "meta" / f"{site}_{short}_latest.json"
-    if not meta_file.exists():
+    frames_response = await get_radar_frames(site, product, tilt)
+    frames = json.loads(frames_response.body)
+    if frame:
+        frames = [item for item in frames if item["timestamp"] == frame]
+    if not frames:
         raise HTTPException(status_code=404, detail=f"No radar data for {site}/{short}")
-    meta = json.loads(meta_file.read_text())
+    meta = frames[-1]
 
     bounds = meta.get("bounds", {})
     site_lat = bounds.get("center_lat")
     site_lon = bounds.get("center_lon")
     max_range_km = bounds.get("max_range_km")
-    if not (site_lat and site_lon and max_range_km):
+    if site_lat is None or site_lon is None or not max_range_km:
         raise HTTPException(status_code=500, detail="Incomplete radar metadata")
 
     # Haversine range check from site to click
@@ -4772,7 +4912,7 @@ async def get_radar_value(
     if range_km > max_range_km:
         return JSONResponse({"value": None, "unit": "", "label": "Outside radar range"})
 
-    png_path = RADAR_RENDERED_DIR / "png" / f"{site}_{short}_latest.png"
+    png_path = RADAR_RENDERED_DIR / "png" / Path(meta["png_path"]).name
     if not png_path.exists():
         raise HTTPException(status_code=404, detail="Radar PNG not found")
 
@@ -4800,7 +4940,7 @@ async def get_radar_value(
 
     # Reverse-map pixel RGB to value via nearest LUT entry
     field_cfg = RADAR_FIELD_CONFIG[field_name]
-    lut, vmin, vmax = field_cfg["lut_fn"]()
+    lut, vmin, vmax = get_radar_lut(field_name, meta.get("palette_version", 1))
     rgb_pixel = pixel[:3].astype(float)
     rgb_lut = lut[:, :3].astype(float)
     dists = np.sum((rgb_lut - rgb_pixel) ** 2, axis=1)
@@ -4866,7 +5006,9 @@ async def get_latest_radar(site: str, product: str):
 
 
 @app.get("/api/radar/frames/{site}/{product}")
-async def get_radar_frames(site: str, product: str):
+async def get_radar_frames(
+    site: str, product: str, tilt: float = Query(default=0.5, ge=0, le=90),
+):
     """Get all available radar frames for a site and product, oldest→newest."""
     _, short = _resolve_radar_short(product)
     frames = []
@@ -4876,6 +5018,10 @@ async def get_radar_frames(site: str, product: str):
             continue
         try:
             meta = json.loads(f.read_text())
+            # Scan elevations vary by a few hundredths of a degree. Do not mix
+            # on-demand upper sweeps into the lowest-elevation animation.
+            if abs(float(meta.get("tilt", 0.5)) - tilt) > 0.15:
+                continue
             frames.append({
                 "timestamp": meta.get("timestamp", ""),
                 "png_path": meta.get("png_path", ""),
@@ -4884,6 +5030,7 @@ async def get_radar_frames(site: str, product: str):
                 "site": site,
                 "product": short,
                 "field": meta.get("field", ""),
+                "palette_version": meta.get("palette_version", 1),
             })
         except Exception:
             pass
@@ -5184,10 +5331,50 @@ async def get_radar_sites():
 # SPA fallback
 # ---------------------------------------------------------------------------
 
+def _is_phone_user_agent(ua: str) -> bool:
+    """True for phone browsers; tablets (iPad, Android tablets) get desktop."""
+    if not ua:
+        return False
+    if "iPad" in ua or "Tablet" in ua:
+        return False
+    if "iPhone" in ua or "iPod" in ua or "Mobile" in ua:
+        return True
+    return False
+
+
 @app.get("/{full_path:path}")
-async def spa_fallback(full_path: str):
-    index = _STATIC_DIR / "index.html"
-    if index.exists():
+async def spa_fallback(request: Request, full_path: str):
+    if full_path == "api" or full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+
+    # Mobile routing: ?view=mobile|desktop wins (and is persisted as a cookie),
+    # then the wx_view cookie, then User-Agent sniffing.
+    view_param = request.query_params.get("view")
+    cookie_view = request.cookies.get("wx_view")
+    explicit_page = {"mobile.html": "mobile", "wx/mobile.html": "mobile", "index.html": "desktop"}.get(full_path)
+    if explicit_page:
+        chosen = explicit_page
+        persist = False
+    elif view_param in ("mobile", "desktop"):
+        chosen = view_param
+        persist = True
+    elif request.query_params.get("desktop") == "1":
+        chosen = "desktop"
+        persist = True
+    elif cookie_view in ("mobile", "desktop"):
+        chosen = cookie_view
+        persist = False
+    else:
+        chosen = "mobile" if _is_phone_user_agent(request.headers.get("user-agent", "")) else "desktop"
+        persist = False
+
+    page = _STATIC_DIR / ("mobile.html" if chosen == "mobile" else "index.html")
+    if not page.exists():
+        page = _STATIC_DIR / "index.html"
+    if page.exists():
         from fastapi.responses import FileResponse
-        return FileResponse(str(index))
+        response = FileResponse(str(page), headers={"Vary": "User-Agent, Cookie", "Cache-Control": "no-cache"})
+        if persist:
+            response.set_cookie("wx_view", chosen, max_age=365 * 24 * 3600, samesite="lax")
+        return response
     raise HTTPException(status_code=404, detail="Not found")

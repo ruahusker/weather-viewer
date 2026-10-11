@@ -1104,17 +1104,13 @@ MODELS = [
         rendered_params=[
             # Surface - only params that exist in GDPS_PARAM_MAP
             "temp_2m", "dewpoint_2m", "mslp",
-            "precip", "visibility", "cloud_cover",
+            "precip", "cloud_cover",
             "cape_surface", "cin_surface",
             # Pressure levels
             "temp_850mb", "temp_700mb", "temp_500mb",
-            "rh_700mb", "rh_850mb",
-            # Wind components (derived to wind products at render time)
-            "wind_u_10m", "wind_v_10m", "wind_gust_10m",
-            "wind_u_850mb", "wind_v_850mb",
-            "wind_700mb",
-            "wind_u_500mb", "wind_v_500mb",
-            "wind_u_300mb", "wind_v_300mb",
+            "rh_700mb", "rh_850mb", "omega_700mb", "vort_500mb",
+            "wind_speed", "wind_gusts", "wind_850mb", "wind_700mb",
+            "wind_500mb", "wind_300mb",
             # Winter
             "snow_depth",
         ],
@@ -1425,42 +1421,15 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
     if model.name == "gdps":
         from .models.gdps_downloader import download_forecast_hour, GDPS_PARAM_MAP
         
-        # GDPS has tiered parameter availability:
-        # - 0-120h: Most parameters available
-        # - 120-240h: Only core atmospheric fields (temp, wind, heights)
-        # Filter parameters based on forecast hour
-        all_params = [p for p in model.rendered_params if p in GDPS_PARAM_MAP]
-        
-        if fxx <= 120:
-            # All configured params should be available
-            gdps_params = all_params
-        elif fxx <= 168:  # 7 days
-            # Limit to core atmospheric params (no precip, visibility, CAPE)
-            core_params = [
-                "temp_2m", "dewpoint_2m", "mslp",
-                "temp_850mb", "temp_700mb", "temp_500mb",
-                "gh_500mb", "gh_850mb", "gh_300mb",
-                "rh_700mb", "rh_850mb",
-                "wind_u_10m", "wind_v_10m",
-                "wind_u_850mb", "wind_v_850mb",
-                "wind_u_500mb", "wind_v_500mb",
-                "wind_u_300mb", "wind_v_300mb",
-            ]
-            gdps_params = [p for p in core_params if p in GDPS_PARAM_MAP]
-        else:  # 168-240h
-            # Very core only
-            core_params = [
-                "temp_2m", "mslp",
-                "temp_850mb", "temp_500mb",
-                "gh_500mb", "gh_850mb",
-                "wind_u_10m", "wind_v_10m",
-                "wind_u_850mb", "wind_v_850mb",
-                "wind_u_500mb", "wind_v_500mb",
-            ]
-            gdps_params = [p for p in core_params if p in GDPS_PARAM_MAP]
-        
-        if not gdps_params:
-            gdps_params = list(GDPS_PARAM_MAP.keys())[:10]  # Default subset
+        # Rendered wind products and upper-air maps need hidden components
+        # and height fields. The current feed supplies them through 240 hours.
+        required_params = set(model.rendered_params)
+        for param in model.rendered_params:
+            height = _HEIGHT_OVERLAY_DEPENDENCIES.get(param)
+            if height:
+                required_params.add(height)
+            required_params.update(comp for comp in model.derived.get(param, ()) if comp)
+        gdps_params = sorted(p for p in required_params if p in GDPS_PARAM_MAP)
         return download_forecast_hour(run_dt, fxx, gdps_params, max_workers=4)
 
     # RRFS requires special handling — Herbie's template is outdated,
@@ -1526,6 +1495,7 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
 
     for attempt in range(1, _max_retries + 1):
         try:
+            failed_sources = set()
             selected_source = None
             selected_priority = model.sources
             local_path = None
@@ -1543,6 +1513,7 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
                     try:
                         herbie_obj = _build_source_herbie(source)
                     except Exception as exc:
+                        failed_sources.add(source)
                         logger.info("[%s] fxx=%02d source init failed for %s: %s",
                                     model.name.upper(), fxx, source, exc)
                         continue
@@ -1562,15 +1533,16 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
                 logger.info("[%s] fxx=%02d source %s returned no data",
                             model.name.upper(), fxx, source)
 
-            if local_path is None and model.sources != fallback_sources:
+            viable_fallback = [source for source in fallback_sources if source not in failed_sources]
+            if local_path is None and model.sources != fallback_sources and viable_fallback:
                 logger.info("[%s] fxx=%02d all single-source probes unavailable, trying grouped fallback %s",
-                            model.name.upper(), fxx, fallback_sources)
+                            model.name.upper(), fxx, viable_fallback)
                 local_path = _download_from_herbie(
-                    _build_herbie(fallback_sources), fallback_sources,
+                    _build_herbie(viable_fallback), viable_fallback,
                 )
                 if local_path is not None:
-                    selected_source = ",".join(fallback_sources)
-                    selected_priority = fallback_sources
+                    selected_source = ",".join(viable_fallback)
+                    selected_priority = viable_fallback
 
             if local_path is None:
                 return None

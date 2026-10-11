@@ -1,25 +1,15 @@
-"""
-GDPS (Global Deterministic Prediction System) downloader.
+"""Download GDPS fields from the current ECCC MSC Datamart feed.
 
-GDPS data is available at:
-https://dd.weather.gc.ca/{YYYYMMDD}/WXO-DD/model_gem_global/15km/grib2/lat_lon/{HH}/{FFF}/
-
-File naming pattern:
-CMC_glb_{VAR}_{LEVEL_TYPE}_{LEVEL}_latlon.15x.15_{YYYYMMDDHH}_P{FFF}.grib2
-
-Where:
-- VAR: GRIB parameter abbreviation (e.g., TMP, UGRD, VGRD, HGT, etc.)
-- LEVEL_TYPE: Level type (TGL=height above ground, ISBL=isobaric, MSL=mean sea level, SFC=surface)
-- LEVEL: Level value (2, 10, 850, 500, 0, etc.)
-- FFF: Forecast hour (000, 003, 006, ..., 240) — 3-hour steps
+Files use dated directories and the MSC_GDPS naming scheme documented at
+https://eccc-msc.github.io/open-data/msc-data/nwp_gdps/readme_gdps-datamart_en/.
 """
 
 import logging
+import shutil
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.error import HTTPError
 
 from ..config import GRIB_CACHE_DIR, MAX_DOWNLOAD_THREADS
 
@@ -30,7 +20,7 @@ BASE_URL = "https://dd.weather.gc.ca"
 
 # Map our internal parameter names to GDPS CMC filename components
 # Format: (VAR, LEVEL_TYPE, LEVEL)
-# Filename: CMC_glb_{VAR}_{LEVEL_TYPE}_{LEVEL}_latlon.15x.15_{YYYYMMDDHH}_P{FFF}.grib2
+# _build_url translates these GRIB abbreviations into current MSC file names.
 GDPS_PARAM_MAP = {
     # Surface / 2m
     "temp_2m":       ("TMP",   "TGL", 2),
@@ -45,7 +35,6 @@ GDPS_PARAM_MAP = {
     "snow_depth":    ("SNOD",  "SFC", 0),
     "cloud_cover":   ("TCDC",  "SFC", 0),
     "pbl_height":    ("HPBL",  "SFC", 0),
-    "visibility":    ("VIS",   "SFC", 0),
     "precip":        ("APCP",  "SFC", 0),  # Accumulated precipitation
 
     # 925mb
@@ -61,9 +50,10 @@ GDPS_PARAM_MAP = {
     "gh_850mb":      ("HGT",  "ISBL", 850),
     "wind_u_850mb":  ("UGRD", "ISBL", 850),
     "wind_v_850mb":  ("VGRD", "ISBL", 850),
-    "vort_850mb":    ("RELV", "ISBL", 850),
+    "vort_850mb":    ("ABSV", "ISBL", 850),
 
     # 700mb
+    "omega_700mb":   ("VVEL", "ISBL", 700),
     "temp_700mb":    ("TMP",  "ISBL", 700),
     "rh_700mb":      ("RH",   "ISBL", 700),
     "gh_700mb":      ("HGT",  "ISBL", 700),
@@ -76,7 +66,7 @@ GDPS_PARAM_MAP = {
     "wind_u_500mb":  ("UGRD", "ISBL", 500),
     "wind_v_500mb":  ("VGRD", "ISBL", 500),
     "rh_500mb":      ("RH",   "ISBL", 500),
-    "vort_500mb":    ("RELV", "ISBL", 500),
+    "vort_500mb":    ("ABSV", "ISBL", 500),
 
     # 300mb
     "temp_300mb":    ("TMP",  "ISBL", 300),
@@ -98,25 +88,47 @@ GDPS_PARAM_MAP = {
 }
 
 
+_VARIABLE_NAMES = {
+    "TMP": "AirTemp", "DPT": "DewPoint", "RH": "RelativeHumidity",
+    "PRMSL": "Pressure", "UGRD": "WindU", "VGRD": "WindV",
+    "GUST": "WindGust", "CAPE": "CAPE", "CIN": "CIN",
+    "SNOD": "SnowDepth", "TCDC": "TotalCloudCover",
+    "HPBL": "PlanetaryBoundaryLayerHeight", "APCP": "Precip-Accum",
+    "HGT": "GeopotentialHeight", "ABSV": "AbsoluteVorticity",
+    "VVEL": "VerticalVelocity",
+}
+
+
 def _build_url(run_dt: datetime, fxx: int, var: str, level_type: str, level: int) -> str:
-    """Build the URL for a GDPS CMC model_gem_global file."""
-    date_str = run_dt.strftime("%Y%m%d")
-    hour_str = run_dt.strftime("%H")
-    run_id = f"{date_str}{hour_str}"
-    filename = f"CMC_glb_{var}_{level_type}_{level}_latlon.15x.15_{run_id}_P{fxx:03d}.grib2"
-    url = (f"{BASE_URL}/{date_str}/WXO-DD/model_gem_global/15km/grib2/lat_lon"
-           f"/{hour_str}/{fxx:03d}/{filename}")
-    return url
+    """Build a dated MSC GDPS URL, including zero-padded pressure levels."""
+    level_name = {
+        "TGL": f"AGL-{level}m", "ISBL": f"IsbL-{level:04d}",
+        "MSL": "MSL", "SFC": "Sfc",
+    }[level_type]
+    filename = (f"{run_dt:%Y%m%dT%H}Z_MSC_GDPS_{_VARIABLE_NAMES[var]}_"
+                f"{level_name}_LatLon0.15_PT{fxx:03d}H.grib2")
+    return (f"{BASE_URL}/{run_dt:%Y%m%d}/WXO-DD/model_gdps/15km/"
+            f"{run_dt:%H}/{fxx:03d}/{filename}")
 
 
 def _download_file(url: str, output_path: Path, timeout: int = 60) -> bool:
-    """Download a file from URL to output_path. Returns True on success."""
+    """Download atomically; never promote an error page or truncated GRIB."""
+    partial = output_path.with_suffix(output_path.suffix + ".part")
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(url, output_path)
-        return output_path.exists() and output_path.stat().st_size > 0
-    except (HTTPError, Exception) as exc:
+        with urllib.request.urlopen(url, timeout=timeout) as response, partial.open("wb") as target:
+            shutil.copyfileobj(response, target)
+        with partial.open("rb") as source:
+            if source.read(4) != b"GRIB" or partial.stat().st_size < 16:
+                raise ValueError("Not a GRIB file")
+            source.seek(-4, 2)
+            if source.read(4) != b"7777":
+                raise ValueError("Truncated GRIB file")
+        partial.replace(output_path)
+        return True
+    except Exception as exc:
         logger.debug("Download failed: %s - %s", url, exc)
+        partial.unlink(missing_ok=True)
         return False
 
 
@@ -147,7 +159,7 @@ def download_single_param(run_dt: datetime, fxx: int, param: str,
     var, level_type, level = GDPS_PARAM_MAP[param]
     url = _build_url(run_dt, fxx, var, level_type, level)
     
-    output_path = output_dir / f"{param}_{fxx:03d}.grib2"
+    output_path = output_dir / f"{run_dt:%Y%m%d%H}_{param}_{fxx:03d}.grib2"
     
     for attempt in range(max_retries):
         if _download_file(url, output_path):
@@ -176,6 +188,10 @@ def download_forecast_hour(run_dt: datetime, fxx: int, params: list[str],
     if output_path.exists() and output_path.stat().st_size > 1000:
         return output_path
     
+    params = list(dict.fromkeys(p for p in params if p in GDPS_PARAM_MAP))
+    if not params:
+        return None
+
     # Download all parameters in parallel
     downloaded_files = []
     
@@ -202,7 +218,8 @@ def download_forecast_hour(run_dt: datetime, fxx: int, params: list[str],
     
     # Combine all downloaded GRIB files into one
     try:
-        with open(output_path, "wb") as outfile:
+        partial = output_path.with_suffix(".grib2.part")
+        with partial.open("wb") as outfile:
             for file_path in downloaded_files:
                 try:
                     with open(file_path, "rb") as infile:
@@ -210,6 +227,8 @@ def download_forecast_hour(run_dt: datetime, fxx: int, params: list[str],
                 except Exception as exc:
                     logger.warning("[GDPS] Error reading %s: %s", file_path, exc)
         
+        partial.replace(output_path)
+
         # Clean up individual files
         for file_path in downloaded_files:
             try:

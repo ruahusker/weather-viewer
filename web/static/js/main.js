@@ -9,7 +9,7 @@
  */
 
 import { state } from './core/state.js';
-import { BASE, apiFetch, assetPath } from './core/api.js';
+import { BASE, apiFetch, assetPath } from './core/api.js?v=20260709a';
 import {
   centralTime, parseIsoDate, formatMinutesAgo, formatMinutesLeft, escapeHtml,
 } from './core/format.js';

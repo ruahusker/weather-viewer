@@ -120,6 +120,12 @@ LEVEL_TYPES.setdefault("omega_700mb", {"typeOfLevel": "isobaricInhPa", "level": 
 logger = logging.getLogger(__name__)
 
 SPECIAL_MATCH_CRITERIA = {
+    # ECCC's accumulated precipitation can have an unknown shortName in
+    # eccodes, but its WMO discipline/category/number still identifies it.
+    "precip": [
+        {"discipline": 0, "parameterCategory": 1, "parameterNumber": 8,
+         "typeOfLevel": "surface", "stepType": "accum"},
+    ],
     "reflectivity": [
         {
             "shortName": "refc",
