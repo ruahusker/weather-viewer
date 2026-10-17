@@ -599,8 +599,14 @@ const MODEL_REFERENCE_CITIES = (() => {
 })();
 
 const MODEL_PRESENTATION_BOUNDS = [[15.0, -145.0], [58.0, -50.0]];
-const MODEL_DEFAULT_VIEW_BOUNDS = [[26.0, -121.5], [50.5, -72.5]];
-const MODEL_DEFAULT_VIEW_REFERENCE = { width: 1440, height: 810, padding: 22 };
+// Largest boxes (by Web Mercator width/height ratio) lying entirely inside the
+// HRRR / NAM 3km / RRFS data, the smallest domains; measured from rendered PNG
+// alpha on 2026-10-17. The default view picks the closest ratio and stays inside.
+const MODEL_DATA_VIEW_BOXES = [
+  { aspect: 1.35, bounds: [[25.49, -119.44], [50.49, -75.88]] },
+  { aspect: 1.55, bounds: [[25.30, -122.61], [49.95, -73.60]] },
+  { aspect: 1.75, bounds: [[26.63, -123.45], [49.68, -71.44]] },
+];
 const MODEL_SPARSE_CANVAS_PARAMS = new Set([
   'cape', 'mlcape', 'mucape', 'cape_03km',
   'cape_ml', 'cape_surface', 'cape_probability', 'cape_probability_1000',
@@ -3799,27 +3805,98 @@ function clearSatellitePaneClip() {
   });
 }
 
-function getFixedZoomForBounds(bounds, reference = MODEL_DEFAULT_VIEW_REFERENCE) {
-  if (!leafletMap) return defaultMinZoom;
+/** Pixels of the map hidden behind floating chrome (top bar, side panel, time dock). */
+function getModelViewInsets() {
+  const insets = { top: 0, left: 0, right: 0, bottom: 0 };
+  const mapRect = leafletMap?.getContainer?.()?.getBoundingClientRect?.();
+  if (!mapRect || !mapRect.width || !mapRect.height) return insets;
+  // getClientRects is empty for display:none; offsetParent would also be null for fixed elements.
+  const visible = (el) => el && !el.classList.contains('hidden') && el.getClientRects().length > 0;
+  const topbar = document.querySelector('.topbar');
+  if (visible(topbar)) insets.top = Math.max(0, topbar.getBoundingClientRect().bottom - mapRect.top);
+  if (visible(modelSidebar)) insets.left = Math.max(0, modelSidebar.getBoundingClientRect().right - mapRect.left);
+  const dock = document.getElementById('scrubberBar');
+  if (visible(dock)) {
+    const dockRect = dock.getBoundingClientRect();
+    // Only a dock spanning most of the map hides a full-width strip.
+    if (dockRect.width > mapRect.width * 0.6) insets.bottom = Math.max(0, mapRect.bottom - dockRect.top);
+  }
+  insets.top = Math.min(insets.top, mapRect.height * 0.3);
+  insets.left = Math.min(insets.left, mapRect.width * 0.5);
+  insets.bottom = Math.min(insets.bottom, mapRect.height * 0.3);
+  return insets;
+}
+
+/**
+ * Default model view: fill the unobstructed part of the map using only
+ * area that has data, so no empty canvas outside the grid shows.
+ */
+function getModelDataView() {
+  const size = leafletMap.getSize();
+  const insets = getModelViewInsets();
+  const viewW = Math.max(1, size.x - insets.left - insets.right);
+  const viewH = Math.max(1, size.y - insets.top - insets.bottom);
+  const aspect = viewW / viewH;
+  const { bounds } = MODEL_DATA_VIEW_BOXES.reduce((best, box) =>
+    (Math.abs(Math.log(box.aspect / aspect)) < Math.abs(Math.log(best.aspect / aspect)) ? box : best));
   const [[south, west], [north, east]] = bounds;
-  const innerWidth = Math.max(1, reference.width - (reference.padding * 2));
-  const innerHeight = Math.max(1, reference.height - (reference.padding * 2));
-  const northWest = leafletMap.options.crs.latLngToPoint(L.latLng(north, west), 0);
-  const southEast = leafletMap.options.crs.latLngToPoint(L.latLng(south, east), 0);
-  const spanX = Math.max(1e-9, Math.abs(southEast.x - northWest.x));
-  const spanY = Math.max(1e-9, Math.abs(southEast.y - northWest.y));
-  const zoom = Math.min(Math.log2(innerWidth / spanX), Math.log2(innerHeight / spanY));
-  const zoomSnap = leafletMap.options.zoomSnap || 1;
-  const snappedZoom = zoomSnap > 0 ? Math.floor(zoom / zoomSnap) * zoomSnap : zoom;
-  return Math.max(defaultMinZoom, Math.min(leafletMap.getMaxZoom(), snappedZoom));
+  const crs = leafletMap.options.crs;
+  const nw = crs.latLngToPoint(L.latLng(north, west), 0);
+  const se = crs.latLngToPoint(L.latLng(south, east), 0);
+  // "Cover" fit: the view stays inside the box on both axes.
+  const zoomExact = Math.max(Math.log2(viewW / Math.abs(se.x - nw.x)), Math.log2(viewH / Math.abs(se.y - nw.y)));
+  // Exact (unsnapped) zoom: snapping up would crop more than needed.
+  const zoom = Math.max(defaultMinZoom, Math.min(leafletMap.getMaxZoom(), zoomExact + 0.01));
+  // Centre in projected pixels: Mercator stretches latitude, so the degree midpoint sits too far south.
+  const boxCenter = crs.latLngToPoint(L.latLng(north, west), zoom)
+    .add(crs.latLngToPoint(L.latLng(south, east), zoom)).divideBy(2);
+  // Shift so the box centre lands in the middle of the unobstructed area.
+  const offset = L.point((insets.left - insets.right) / 2, (insets.top - insets.bottom) / 2);
+  return { center: crs.pointToLatLng(boxCenter.subtract(offset), zoom), zoom };
+}
+
+let _modelViewTouched = false;
+let _modelViewRefitToken = 0;
+let _modelViewWatching = false;
+
+/** Note when the viewer drags, scrolls or keys the map, so refits stop. */
+function watchModelViewInteraction() {
+  if (_modelViewWatching) return;
+  _modelViewWatching = true;
+  const container = leafletMap.getContainer();
+  const markTouched = () => { _modelViewTouched = true; };
+  for (const type of ['pointerdown', 'wheel', 'keydown', 'touchstart']) {
+    container.addEventListener(type, markTouched, { passive: true });
+  }
+}
+
+function applyModelDataView() {
+  const { center, zoom } = getModelDataView();
+  // setView rounds to zoomSnap; allow the exact fit for this one view.
+  const zoomSnap = leafletMap.options.zoomSnap;
+  leafletMap.options.zoomSnap = 0;
+  try {
+    leafletMap.setView(center, zoom, { animate: false });
+  } finally {
+    leafletMap.options.zoomSnap = zoomSnap;
+  }
 }
 
 function updateModelViewport() {
   if (!leafletMap || state.dataSource !== 'models') return;
   const bounds = MODEL_PRESENTATION_BOUNDS;
-  const [[south, west], [north, east]] = MODEL_DEFAULT_VIEW_BOUNDS;
-  const center = L.latLng((south + north) / 2, (west + east) / 2);
-  leafletMap.setView(center, getFixedZoomForBounds(MODEL_DEFAULT_VIEW_BOUNDS), { animate: false });
+  applyModelDataView();
+  // Panels and the map container are still settling during start-up and tab
+  // switches; refit a few times unless the viewer has touched the map.
+  watchModelViewInteraction();
+  _modelViewTouched = false;
+  const refitToken = ++_modelViewRefitToken;
+  for (const delay of [0, 250, 800]) {
+    setTimeout(() => {
+      if (refitToken !== _modelViewRefitToken || _modelViewTouched || state.dataSource !== 'models') return;
+      applyModelDataView();
+    }, delay);
+  }
 
   const [[frameSouth, frameWest], [frameNorth, frameEast]] = bounds;
   const latPad = Math.max((frameNorth - frameSouth) * 0.08, 2.0);
