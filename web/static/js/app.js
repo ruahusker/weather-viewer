@@ -599,14 +599,29 @@ const MODEL_REFERENCE_CITIES = (() => {
 })();
 
 const MODEL_PRESENTATION_BOUNDS = [[15.0, -145.0], [58.0, -50.0]];
-// Largest boxes (by Web Mercator width/height ratio) lying entirely inside the
-// HRRR / NAM 3km / RRFS data, the smallest domains; measured from rendered PNG
-// alpha on 2026-10-17. The default view picks the closest ratio and stays inside.
-const MODEL_DATA_VIEW_BOXES = [
-  { aspect: 1.35, bounds: [[25.49, -119.44], [50.49, -75.88]] },
-  { aspect: 1.55, bounds: [[25.30, -122.61], [49.95, -73.60]] },
-  { aspect: 1.75, bounds: [[26.63, -123.45], [49.68, -71.44]] },
+// Outline (lat, lon) of the area where HRRR, NAM 3km and RRFS all have data
+// (the smallest domains), traced from rendered PNG alpha on 2026-10-17 with a
+// small inward margin. The default model view keeps the whole window inside it.
+const MODEL_DATA_OUTLINE = [
+  [47.5, -132.85], [47.89, -131.26], [48.31, -129.68], [48.66, -128.09], [49.05, -126.51], [49.36, -124.92],
+  [49.67, -123.34], [49.98, -121.75], [50.21, -120.17], [50.48, -118.58], [50.72, -117.0], [50.92, -115.41],
+  [51.12, -113.83], [51.28, -112.24], [51.42, -110.66], [51.58, -109.07], [51.68, -107.49], [51.78, -105.9],
+  [51.88, -104.32], [51.94, -102.73], [51.97, -101.15], [52.01, -99.56], [52.04, -97.98], [52.04, -96.39],
+  [52.01, -94.81], [51.97, -93.22], [51.91, -91.64], [51.84, -90.05], [51.74, -88.46], [51.65, -86.88],
+  [51.51, -85.29], [51.38, -83.71], [51.22, -82.12], [51.02, -80.54], [50.82, -78.95], [50.62, -77.37],
+  [50.38, -75.78], [50.11, -74.2], [49.84, -72.61], [49.57, -71.03], [49.22, -69.44], [48.91, -67.86],
+  [48.52, -66.27], [48.14, -64.69], [47.75, -63.1], [47.46, -62.15], [47.36, -62.15], [45.75, -63.1],
+  [42.88, -64.69], [39.66, -66.27], [36.11, -67.86], [32.22, -69.44], [27.82, -71.03], [23.0, -72.61],
+  [22.61, -74.2], [22.95, -75.78], [23.29, -77.37], [23.58, -78.95], [23.87, -80.54], [24.11, -82.12],
+  [24.35, -83.71], [24.55, -85.29], [24.74, -86.88], [24.88, -88.46], [25.03, -90.05], [25.12, -91.64],
+  [25.17, -93.22], [25.22, -94.81], [25.26, -96.39], [25.26, -97.98], [25.26, -99.56], [25.22, -101.15],
+  [25.17, -102.73], [25.07, -104.32], [24.93, -105.9], [24.79, -107.49], [24.64, -109.07], [24.45, -110.66],
+  [24.21, -112.24], [23.97, -113.83], [23.72, -115.41], [23.43, -117.0], [23.09, -118.58], [22.75, -120.17],
+  [22.36, -121.75], [25.93, -123.34], [30.45, -124.92], [34.56, -126.51], [38.26, -128.09], [41.59, -129.68],
+  [44.6, -131.26], [47.36, -132.85],
 ];
+// Where the clear part of the map is centred on open (central US).
+const MODEL_DEFAULT_FOCUS = [38.8, -96.5];
 const MODEL_SPARSE_CANVAS_PARAMS = new Set([
   'cape', 'mlcape', 'mucape', 'cape_03km',
   'cape_ml', 'cape_surface', 'cape_probability', 'cape_probability_1000',
@@ -3827,32 +3842,51 @@ function getModelViewInsets() {
   return insets;
 }
 
+/** Ray-casting test: is (lat, lon) inside MODEL_DATA_OUTLINE? */
+function isInModelDataOutline(lat, lon) {
+  let inside = false;
+  for (let i = 0, j = MODEL_DATA_OUTLINE.length - 1; i < MODEL_DATA_OUTLINE.length; j = i++) {
+    const [latI, lonI] = MODEL_DATA_OUTLINE[i];
+    const [latJ, lonJ] = MODEL_DATA_OUTLINE[j];
+    if ((latI > lat) !== (latJ > lat) && lon < ((lonJ - lonI) * (lat - latI)) / (latJ - latI) + lonI) inside = !inside;
+  }
+  return inside;
+}
+
 /**
- * Default model view: fill the unobstructed part of the map using only
- * area that has data, so no empty canvas outside the grid shows.
+ * Default model view: centre MODEL_DEFAULT_FOCUS in the part of the map not
+ * covered by panels, zoomed out as far as possible while the whole window
+ * (gutters and see-through chrome included) shows only area with data.
  */
 function getModelDataView() {
   const size = leafletMap.getSize();
   const insets = getModelViewInsets();
-  const viewW = Math.max(1, size.x - insets.left - insets.right);
-  const viewH = Math.max(1, size.y - insets.top - insets.bottom);
-  const aspect = viewW / viewH;
-  const { bounds } = MODEL_DATA_VIEW_BOXES.reduce((best, box) =>
-    (Math.abs(Math.log(box.aspect / aspect)) < Math.abs(Math.log(best.aspect / aspect)) ? box : best));
-  const [[south, west], [north, east]] = bounds;
   const crs = leafletMap.options.crs;
-  const nw = crs.latLngToPoint(L.latLng(north, west), 0);
-  const se = crs.latLngToPoint(L.latLng(south, east), 0);
-  // "Cover" fit: the view stays inside the box on both axes.
-  const zoomExact = Math.max(Math.log2(viewW / Math.abs(se.x - nw.x)), Math.log2(viewH / Math.abs(se.y - nw.y)));
-  // Exact (unsnapped) zoom: snapping up would crop more than needed.
-  const zoom = Math.max(defaultMinZoom, Math.min(leafletMap.getMaxZoom(), zoomExact + 0.01));
-  // Centre in projected pixels: Mercator stretches latitude, so the degree midpoint sits too far south.
-  const boxCenter = crs.latLngToPoint(L.latLng(north, west), zoom)
-    .add(crs.latLngToPoint(L.latLng(south, east), zoom)).divideBy(2);
-  // Shift so the box centre lands in the middle of the unobstructed area.
+  const focus = L.latLng(MODEL_DEFAULT_FOCUS[0], MODEL_DEFAULT_FOCUS[1]);
+  // Screen offset from the window centre to the centre of the clear area.
   const offset = L.point((insets.left - insets.right) / 2, (insets.top - insets.bottom) / 2);
-  return { center: crs.pointToLatLng(boxCenter.subtract(offset), zoom), zoom };
+  const centerAt = (zoom) => crs.pointToLatLng(crs.latLngToPoint(focus, zoom).subtract(offset), zoom);
+  const fits = (zoom) => {
+    const topLeft = crs.latLngToPoint(centerAt(zoom), zoom).subtract(size.divideBy(2));
+    const steps = 24;
+    for (let i = 0; i <= steps; i++) {
+      const fx = (size.x * i) / steps;
+      const fy = (size.y * i) / steps;
+      for (const [x, y] of [[fx, 0], [fx, size.y], [0, fy], [size.x, fy]]) {
+        const ll = crs.pointToLatLng(topLeft.add([x, y]), zoom);
+        if (!isInModelDataOutline(ll.lat, ll.lng)) return false;
+      }
+    }
+    return true;
+  };
+  let lo = defaultMinZoom;
+  let hi = leafletMap.getMaxZoom();
+  if (fits(lo)) hi = lo;
+  for (let i = 0; i < 24 && hi - lo > 0.005; i++) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) hi = mid; else lo = mid;
+  }
+  return { center: centerAt(hi), zoom: hi };
 }
 
 let _modelViewTouched = false;
