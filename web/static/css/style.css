@@ -5654,7 +5654,7 @@ html, body { background: var(--bg-deep); }
 .home-side-panel .side-panel-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
 .home-side-panel .side-panel-pane { position: static; inset: auto; overflow-y: visible; }
 
-/* Point forecast (multi-model meteogram plume) */
+/* Model plume (multi-model meteogram) */
 
 .sidebar-action-row .sidebar-action-btn + .sidebar-action-btn {
   margin-top: 6px;
@@ -5890,3 +5890,23 @@ html, body { background: var(--bg-deep); }
   pointer-events: none;
 }
 #loopCaptureBtn.active { color: var(--accent-bright); border-color: var(--accent-dim); background: var(--accent-bg); }
+
+/* Two-line sidebar action (Model Plume / Select area). */
+.sidebar-action-btn--two-line {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  line-height: 1.2;
+}
+.sidebar-action-sub {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.85em;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-dim);
+}
+.sidebar-action-btn.active .sidebar-action-sub { color: var(--accent-bright); }

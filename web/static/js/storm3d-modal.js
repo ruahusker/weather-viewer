@@ -1095,7 +1095,8 @@
    * Event wiring
    * ==================================================================== */
 
-  document.getElementById('storm3dActivate').addEventListener('click', activateCrosshair);
+  // The sidebar launcher was removed; keep the modal working if one returns.
+  document.getElementById('storm3dActivate')?.addEventListener('click', activateCrosshair);
   if (downloadBtn) {
     downloadBtn.addEventListener('click', async () => {
       try {

@@ -47,7 +47,7 @@
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css?v=1.9.4" />
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260930e" />
   <link rel="stylesheet" href="/static/css/surface-obs.css?v=20260329d" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20261017a" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20261017d" />
   <link rel="stylesheet" href="/static/css/pressure-contours.css?v=20261008d" />
   <!-- v4 interface is the default; ?ui=classic switches back (remembered), ?ui=v4 returns. -->
   <script>
@@ -59,7 +59,7 @@
       } catch (e) { document.documentElement.dataset.ui = 'v4'; }
     })();
   </script>
-  <link rel="stylesheet" href="/static/css/theme-v4.css?v=20261017i" />
+  <link rel="stylesheet" href="/static/css/theme-v4.css?v=20261017k" />
 </head>
 <body>
 
@@ -205,11 +205,19 @@
           </div>
         </div>
         <div class="sidebar-action-row">
-          <button id="soundingProbeBtn" class="sidebar-action-btn" type="button" aria-pressed="false">
-            Sounding Probe
+          <button id="soundingProbeBtn" class="sidebar-action-btn sidebar-action-btn--two-line" type="button" aria-pressed="false">
+            <span class="sidebar-action-title">Sounding Probe</span>
+            <span class="sidebar-action-sub">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="6"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/></svg>
+              <span class="sidebar-action-hint">Select area</span>
+            </span>
           </button>
-          <button id="meteogramProbeBtn" class="sidebar-action-btn" type="button" aria-pressed="false">
-            Point Forecast
+          <button id="meteogramProbeBtn" class="sidebar-action-btn sidebar-action-btn--two-line" type="button" aria-pressed="false">
+            <span class="sidebar-action-title">Model Plume</span>
+            <span class="sidebar-action-sub">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="6"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/></svg>
+              <span class="sidebar-action-hint">Select area</span>
+            </span>
           </button>
         </div>
       </div>
@@ -936,13 +944,7 @@
             </div>
           </div>
           <div style="margin-top:8px;">
-            <a href="/wx/radar-map-3d" class="sidebar-action-btn" style="display:flex;align-items:center;justify-content:center;text-decoration:none;margin-bottom:8px;">Live 3D Radar Map · Omaha / Hastings</a>
-            <button id="storm3dActivate" class="sidebar-action-btn" type="button">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-                <circle cx="8" cy="8" r="6"/><path d="M8 1v4M8 11v4M1 8h4M11 8h4"/>
-              </svg>
-              3D Storm Profile
-            </button>
+            <a href="/wx/radar-map-3d" class="sidebar-action-btn" style="display:flex;align-items:center;justify-content:center;text-decoration:none;margin-bottom:8px;">Live 3D Radar Map</a>
           </div>
         </div>
 
@@ -1417,13 +1419,13 @@
         <div class="map-info-time" id="mapInfoTime">Valid: --</div>
       </div>
 
-      <aside id="meteogramPanel" class="sounding-panel meteogram-panel hidden" aria-label="Point forecast">
+      <aside id="meteogramPanel" class="sounding-panel meteogram-panel hidden" aria-label="Model plume">
         <div class="sounding-panel-header">
           <div>
-            <div class="sounding-panel-kicker">Point Forecast · Model Plume</div>
+            <div class="sounding-panel-kicker">Model Plume</div>
             <div id="meteogramTitle" class="sounding-panel-title">Click the map</div>
           </div>
-          <button id="meteogramClose" class="sounding-panel-close" type="button" aria-label="Close point forecast">×</button>
+          <button id="meteogramClose" class="sounding-panel-close" type="button" aria-label="Close model plume">×</button>
         </div>
         <div id="meteogramMeta" class="sounding-panel-meta">Click any point to compare every model’s forecast there.</div>
         <div class="meteogram-toolbar">
@@ -1668,9 +1670,9 @@
        module scripts and deferred scripts run in document order. -->
   <script type="module" src="/static/js/main.js?v=20260709a"></script>
   <script defer src="/static/js/surface-obs.js?v=20261014a"></script>
-  <script defer src="/static/js/app.js?v=20261017l"></script>
-  <script defer src="/static/js/ui-v4.js?v=20261017d"></script>
-  <script defer src="/static/js/meteogram.js?v=20261017a"></script>
-  <script defer src="/static/js/storm3d-modal.js?v=20260809a"></script>
+  <script defer src="/static/js/app.js?v=20261017m"></script>
+  <script defer src="/static/js/ui-v4.js?v=20261017e"></script>
+  <script defer src="/static/js/meteogram.js?v=20261017d"></script>
+  <script defer src="/static/js/storm3d-modal.js?v=20261017a"></script>
 </body>
 </html>

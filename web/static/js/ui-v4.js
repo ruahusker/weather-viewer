@@ -191,7 +191,7 @@
     if (!mapSection) return;
     const closeBtn = el('button', { type: 'button', class: 'v4-icon-btn', 'aria-label': 'Close point readout' },
       [svgIcon('<path d="M18 6 6 18M6 6l12 12"/>')]);
-    const forecastBtn = el('button', { type: 'button', class: 'v4-btn v4-btn--primary', text: 'Point forecast' });
+    const forecastBtn = el('button', { type: 'button', class: 'v4-btn v4-btn--primary', text: 'Model plume' });
     const soundingBtn = el('button', { type: 'button', class: 'v4-btn', text: 'Sounding' });
     readout = el('section', { class: 'v4-readout', 'aria-label': 'Point readout', 'aria-live': 'polite' }, [
       el('div', { class: 'v4-readout-head' }, [
@@ -295,7 +295,7 @@
     const sameRun = model === appState.model && /^\d{10}$/.test(appState.runId || '');
     const params = new URLSearchParams({ lat: detail.lat.toFixed(4), lon: detail.lng.toFixed(4) });
     if (sameRun) params.set('run_id', appState.runId);
-    stats.append(el('div', { class: 'v4-readout-loading', text: 'Loading point forecast…' }));
+    stats.append(el('div', { class: 'v4-readout-loading', text: 'Loading model plume…' }));
     let data = null;
     try {
       const resp = await fetch(`/api/meteogram/${encodeURIComponent(model)}?${params}`);
@@ -306,7 +306,7 @@
     if (token !== readoutToken) return;
     stats.replaceChildren();
     if (!data?.series) {
-      stats.append(el('div', { class: 'v4-readout-loading', text: 'No point forecast for this location.' }));
+      stats.append(el('div', { class: 'v4-readout-loading', text: 'No model plume for this location.' }));
       return;
     }
 

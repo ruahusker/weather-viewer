@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Point Forecast — multi-model meteogram plume for the desktop viewer.
+ * Model Plume — multi-model meteogram plume for the desktop viewer.
  *
  * Classic deferred script loaded after app.js. It relies on app.js / main.js
  * globals (state, leafletMap, BASE, apiFetch, setSoundingProbeEnabled,
@@ -612,7 +612,7 @@
     try {
       await ensureModels();
     } catch {
-      setStatus('Point forecasts are unavailable right now.');
+      setStatus('Model plumes are unavailable right now.');
       return;
     }
     if (seq !== mg.requestSeq) return;
@@ -644,7 +644,10 @@
   function updateButton() {
     els.button.classList.toggle('active', mg.enabled);
     els.button.setAttribute('aria-pressed', mg.enabled ? 'true' : 'false');
-    els.button.textContent = mg.enabled ? 'Point Forecast On' : 'Point Forecast';
+    // Second line says what to do next; the title stays "Model Plume".
+    const hint = els.button.querySelector('.sidebar-action-hint');
+    if (hint) hint.textContent = mg.enabled ? 'Click the map' : 'Select area';
+    else els.button.textContent = mg.enabled ? 'Model Plume On' : 'Model Plume';
     const mapEl = typeof leafletMap !== 'undefined' ? leafletMap?.getContainer?.() : null;
     if (mapEl) {
       const active = mg.enabled && state.dataSource === 'models';

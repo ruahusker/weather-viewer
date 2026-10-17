@@ -1710,7 +1710,10 @@ function updateSoundingProbeUi() {
   if (soundingProbeBtn) {
     soundingProbeBtn.classList.toggle('active', state.soundingProbeEnabled);
     soundingProbeBtn.setAttribute('aria-pressed', state.soundingProbeEnabled ? 'true' : 'false');
-    soundingProbeBtn.textContent = state.soundingProbeEnabled ? 'Sounding Probe On' : 'Sounding Probe';
+    // Second line says what to do next; the title stays "Sounding Probe".
+    const hint = soundingProbeBtn.querySelector('.sidebar-action-hint');
+    if (hint) hint.textContent = state.soundingProbeEnabled ? 'Click the map' : 'Select area';
+    else soundingProbeBtn.textContent = state.soundingProbeEnabled ? 'Sounding Probe On' : 'Sounding Probe';
   }
   const mapEl = leafletMap?.getContainer?.();
   if (mapEl) {

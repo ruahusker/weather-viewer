@@ -221,6 +221,9 @@ html[data-ui="v4"] .sidebar-action-btn {
   border: 1px solid var(--border);
   color: var(--text);
 }
+html[data-ui="v4"] .sidebar-action-row .sidebar-action-btn { min-height: 48px; }
+html[data-ui="v4"] .sidebar-action-sub { font: 400 11px var(--font-ui); color: var(--text-dim); }
+html[data-ui="v4"] .sidebar-action-btn[aria-pressed="true"] .sidebar-action-sub { color: var(--accent); }
 html[data-ui="v4"] .sidebar-action-btn[aria-pressed="true"] {
   outline: 2px solid var(--accent-dim);
   outline-offset: 1px;
@@ -474,7 +477,7 @@ html[data-ui="v4"] .leaflet-bar a:hover { background: var(--bg3); color: var(--t
     bottom: 120px;
   }
 
-  /* Sounding and point-forecast panels fit between the bar, side panel and dock. */
+  /* Sounding and model-plume panels fit between the bar, side panel and dock. */
   html[data-ui="v4"] .map-section .sounding-panel {
     top: var(--v4-top);
     right: var(--v4-gap);
