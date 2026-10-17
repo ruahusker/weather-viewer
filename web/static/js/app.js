@@ -3193,10 +3193,12 @@ function getUsaViewportPadding() {
   const mapRect = mapEl.getBoundingClientRect();
   const leftOcclusion = getPanelOcclusionWidth(homeLayerPanel, mapRect, 'left');
   const rightOcclusion = getPanelOcclusionWidth(homeSidePanel, mapRect, 'right');
-  const leftPadding = 16 + leftOcclusion + 24;
-  const rightPadding = 16 + rightOcclusion + 24;
-  padding.topLeft = L.point(leftPadding, 16);
-  padding.bottomRight = L.point(rightPadding, 16);
+  // Clear the floating top bar (v4) as well as the side panels.
+  const topbar = document.querySelector('.topbar');
+  const topbarRect = topbar?.getBoundingClientRect?.();
+  const topOcclusion = topbarRect && topbarRect.bottom > mapRect.top ? topbarRect.bottom - mapRect.top : 0;
+  padding.topLeft = L.point(leftOcclusion + 16, topOcclusion + 12);
+  padding.bottomRight = L.point(rightOcclusion + 16, 16);
   return padding;
 }
 
@@ -3204,12 +3206,19 @@ function applyUsaViewport({ animate = false } = {}) {
   if (!leafletMap || !usaBounds) return;
   leafletMap.setMinZoom(defaultMinZoom);
   const padding = getUsaViewportPadding();
-  leafletMap.fitBounds(usaBounds, {
-    animate,
-    duration: animate ? 0.6 : undefined,
-    paddingTopLeft: padding.topLeft,
-    paddingBottomRight: padding.bottomRight,
-  });
+  // Exact fit: fitBounds would round the zoom down to the next quarter step.
+  const zoomSnap = leafletMap.options.zoomSnap;
+  leafletMap.options.zoomSnap = 0;
+  try {
+    leafletMap.fitBounds(usaBounds, {
+      animate,
+      duration: animate ? 0.6 : undefined,
+      paddingTopLeft: padding.topLeft,
+      paddingBottomRight: padding.bottomRight,
+    });
+  } finally {
+    leafletMap.options.zoomSnap = zoomSnap;
+  }
   leafletMap.setMinZoom(leafletMap.getZoom());
 }
 
@@ -4430,7 +4439,8 @@ function initMap() {
     north: 58.5,
   };
 
-  usaBounds = L.latLngBounds([23.0, -129.0], [53.0, -65.0]);
+  // Lower 48 (Home view fits this between its panels).
+  usaBounds = L.latLngBounds([24.4, -124.8], [49.4, -66.9]);
   const usaMaxBounds = L.latLngBounds([18.0, -134.5], [58.5, -59.0]);
 
   leafletMap = L.map('map', {
