@@ -49,6 +49,17 @@
   <link rel="stylesheet" href="/static/css/surface-obs.css?v=20260329d" />
   <link rel="stylesheet" href="/static/css/style.css?v=20261016a" />
   <link rel="stylesheet" href="/static/css/pressure-contours.css?v=20261008d" />
+  <!-- v4 interface preview: ?ui=v4 turns it on (remembered), ?ui=classic turns it off. -->
+  <script>
+    (function () {
+      try {
+        var q = new URLSearchParams(location.search).get('ui');
+        if (q === 'v4' || q === 'classic') localStorage.setItem('wx_ui', q);
+        if ((q || localStorage.getItem('wx_ui')) === 'v4') document.documentElement.dataset.ui = 'v4';
+      } catch (e) { /* storage blocked: classic look */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/css/theme-v4.css?v=20261017e" />
 </head>
 <body>
 
@@ -1650,7 +1661,8 @@
        module scripts and deferred scripts run in document order. -->
   <script type="module" src="/static/js/main.js?v=20260709a"></script>
   <script defer src="/static/js/surface-obs.js?v=20261014a"></script>
-  <script defer src="/static/js/app.js?v=20261016a"></script>
+  <script defer src="/static/js/app.js?v=20261017a"></script>
+  <script defer src="/static/js/ui-v4.js?v=20261017b"></script>
   <script defer src="/static/js/meteogram.js?v=20261016a"></script>
   <script defer src="/static/js/storm3d-modal.js?v=20260809a"></script>
 </body>

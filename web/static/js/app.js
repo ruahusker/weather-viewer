@@ -1665,6 +1665,16 @@ async function handleMapValueClick(evt) {
   // Click just triggers the same query as hover (immediate)
   if (_hoverDebounceTimer) clearTimeout(_hoverDebounceTimer);
   await handleMapValueQuery(evt.latlng.lat, evt.latlng.lng, state.dataSource);
+  // The v4 point readout (ui-v4.js) listens for clicked points.
+  document.dispatchEvent(new CustomEvent('wx:point-query', {
+    detail: {
+      lat: evt.latlng.lat,
+      lng: evt.latlng.lng,
+      source: state.dataSource,
+      value: hoverValue?.querySelector('.value')?.textContent || '',
+      label: hoverValue?.querySelector('.value ~ span')?.textContent || '',
+    },
+  }));
 }
 
 function updateSoundingProbeUi() {
