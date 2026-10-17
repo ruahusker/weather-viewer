@@ -23,6 +23,17 @@
   <link rel="stylesheet" href="/static/css/surface-obs.css?v=20260330b">
   <link rel="stylesheet" href="/static/css/mobile-refresh.css?v=20261008g">
   <link rel="stylesheet" href="/static/css/pressure-contours.css?v=20261008d">
+  <!-- v4 interface is the default; ?ui=classic switches back (remembered), ?ui=v4 returns. -->
+  <script>
+    (function () {
+      try {
+        var q = new URLSearchParams(location.search).get('ui');
+        if (q === 'v4' || q === 'classic') localStorage.setItem('wx_ui', q);
+        if ((q || localStorage.getItem('wx_ui')) !== 'classic') document.documentElement.dataset.ui = 'v4';
+      } catch (e) { document.documentElement.dataset.ui = 'v4'; }
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/css/mobile-v4.css?v=20261017b">
 </head>
 <body>
   <!-- Map (full viewport) -->
@@ -155,5 +166,6 @@
   <script src="/static/js/mobile-sounding.js?v=43"></script>
   <script src="/static/js/surface-obs.js?v=20261014a"></script>
   <script src="/static/js/mobile.js?v=20261014a"></script>
+  <script src="/static/js/mobile-ui-v4.js?v=20261017a"></script>
 </body>
 </html>

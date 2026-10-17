@@ -1,0 +1,167 @@
+/* =========================================================
+   WX Viewer Monitor — v4 interface (html[data-ui="v4"])
+   Same design language as css/theme-v4.css: graphite panels,
+   hairline borders, Geist type, sentence-case labels, one sky
+   accent. Status colors (green/yellow/red) keep their meaning.
+   ========================================================= */
+
+@font-face { font-family: "Geist"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/geist-400.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-style: normal; font-weight: 500; font-display: swap; src: url("../fonts/geist-500.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-style: normal; font-weight: 600; font-display: swap; src: url("../fonts/geist-600.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/geistmono-400.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("../fonts/geistmono-500.woff2") format("woff2"); }
+
+html[data-ui="v4"] {
+  --bg-deep:       #0b0d10;
+  --bg:            #111418;
+  --bg2:           #171b21;
+  --bg3:           #1f242c;
+  --bg-raised:     #2a3039;
+  --card-bg:       #111418;
+  --accent:        #6cb6ff;
+  --accent-dim:    rgba(108, 182, 255, 0.55);
+  --accent-bg:     rgba(108, 182, 255, 0.16);
+  --accent-bright: #cfe6ff;
+  --accent-2:      #6cb6ff;
+  --green:         #5dd39e;
+  --green-dim:     rgba(93, 211, 158, 0.14);
+  --yellow:        #f2c230;
+  --yellow-dim:    rgba(242, 194, 48, 0.14);
+  --red:           #ff6b7f;
+  --red-dim:       rgba(255, 107, 127, 0.14);
+  --text:          #eceff3;
+  --text-mid:      #a3abb6;
+  --text-dim:      #8d96a1;
+  --border:        rgba(255, 255, 255, 0.08);
+  --radius:        10px;
+  --radius-lg:     16px;
+  --font-ui:       'Geist', -apple-system, 'Segoe UI', sans-serif;
+  --font-data:     'Geist Mono', 'SF Mono', 'Consolas', monospace;
+}
+
+html[data-ui="v4"],
+html[data-ui="v4"] body {
+  background: var(--bg-deep);
+}
+html[data-ui="v4"] body {
+  padding: 16px;
+  font-family: var(--font-ui);
+  color: var(--text);
+}
+
+/* Sentence-case labels: no tracked-out caps anywhere. */
+html[data-ui="v4"] body :where(*) {
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+
+/* Header: the same floating bar as the viewer. */
+html[data-ui="v4"] .header {
+  min-height: 56px;
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+html[data-ui="v4"] .dashboard-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  box-shadow: none;
+}
+html[data-ui="v4"] h1 {
+  font: 600 17px var(--font-ui);
+  color: var(--text);
+}
+html[data-ui="v4"] .header-right {
+  font: 400 12px var(--font-ui);
+  color: var(--text-dim);
+}
+html[data-ui="v4"] .header-right a { color: var(--accent); }
+
+/* Cards */
+html[data-ui="v4"] .card,
+html[data-ui="v4"] .svc-card,
+html[data-ui="v4"] .radar-site-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: none;
+}
+html[data-ui="v4"] .card { padding: 14px 16px; }
+html[data-ui="v4"] .card::before,
+html[data-ui="v4"] .card::after { display: none; }
+html[data-ui="v4"] .card-title,
+html[data-ui="v4"] .sat-card-title,
+html[data-ui="v4"] .model-name {
+  font: 500 14px var(--font-ui);
+  color: var(--text);
+}
+html[data-ui="v4"] .card-title { color: var(--text-mid); margin-bottom: 12px; }
+
+/* Section headers read as quiet group titles, not banners. */
+html[data-ui="v4"] .section-header {
+  margin: 24px 0 10px;
+  padding: 0 2px;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  font: 600 15px var(--font-ui);
+  color: var(--text);
+}
+html[data-ui="v4"] .section-header .chevron { color: var(--text-dim); font-size: 10px; margin-right: 6px; }
+
+/* Wrap card grids instead of overflowing the window. */
+html[data-ui="v4"] .grid:not(.grid-full):not([style]) {
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+/* Badges: small rounded status pills. */
+html[data-ui="v4"] .badge,
+html[data-ui="v4"] .queue-badge {
+  border-radius: 6px;
+  padding: 2px 7px;
+  font: 500 11px var(--font-ui);
+  border: 0;
+}
+
+/* Gauges and bars */
+html[data-ui="v4"] .gauge-value { font: 600 18px var(--font-ui); color: var(--text); }
+html[data-ui="v4"] .gauge-label { font: 500 13px var(--font-ui); color: var(--text); }
+html[data-ui="v4"] .gauge-detail { font: 400 12px var(--font-data); color: var(--text-dim); }
+html[data-ui="v4"] :is(.progress-bar, .svc-bar-wrap, .sat-src-bar) {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  border: 0;
+}
+html[data-ui="v4"] :is(.progress-fill, .svc-bar-fill, .sat-src-fill) { border-radius: 4px; box-shadow: none; }
+html[data-ui="v4"] :is(.progress-text, .model-run, .sat-meta-row, .radar-site-age, .gauge-detail) { color: var(--text-dim); }
+
+/* Logs */
+html[data-ui="v4"] .log-box {
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-family: var(--font-data);
+}
+
+html[data-ui="v4"] .status-banner {
+  border-radius: 12px;
+  font-family: var(--font-ui);
+}
+
+/* Storage + log row: long log lines must not widen the page. */
+html[data-ui="v4"] .grid[style] {
+  grid-template-columns: minmax(240px, 1fr) minmax(0, 2.5fr) !important;
+}
+html[data-ui="v4"] .grid[style] > * { min-width: 0; }
+html[data-ui="v4"] .log-box { overflow-x: auto; }
+@media (max-width: 900px) {
+  html[data-ui="v4"] .grid[style] { grid-template-columns: minmax(0, 1fr) !important; }
+}
+/* Wide tables (processes) scroll inside their card on narrow screens. */
+html[data-ui="v4"] .card { min-width: 0; max-width: 100%; box-sizing: border-box; }
+html[data-ui="v4"] .card:has(table) { overflow-x: auto; }

@@ -350,11 +350,154 @@
     if (evt.key === 'Escape' && readout && !readout.hidden && readout.contains(document.activeElement)) hideReadout();
   });
 
+  /* ── Radar alerts panel ──────────────────────────────────── */
+
+  const ALERT_REFRESH_MS = 60 * 1000;
+  let alertsPanel = null;
+  let alertsData = null;
+  let alertsTab = 'warnings';
+  let alertsTimer = null;
+
+  function isWarning(event) {
+    return /warning|emergency/i.test(event || '');
+  }
+
+  function timeLeft(expiresIso) {
+    const ms = Date.parse(expiresIso) - Date.now();
+    if (!Number.isFinite(ms)) return '';
+    if (ms <= 0) return 'expiring';
+    const mins = Math.round(ms / 60000);
+    if (mins < 60) return `${mins} min`;
+    const h = Math.floor(mins / 60);
+    return `${h} h ${String(mins % 60).padStart(2, '0')}`;
+  }
+
+  function relativeAge(iso) {
+    const mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    if (!Number.isFinite(mins) || mins < 1) return 'just now';
+    return mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`;
+  }
+
+  /** Zoom the map to a GeoJSON feature using app.js's Leaflet map. */
+  function zoomToFeature(feature) {
+    // eslint-disable-next-line no-undef
+    const map = typeof leafletMap !== 'undefined' ? leafletMap : null;
+    if (!map || !feature?.geometry || !window.L) return;
+    const bounds = window.L.geoJSON(feature).getBounds();
+    if (bounds.isValid()) map.flyToBounds(bounds, { padding: [80, 80], maxZoom: 9, duration: 0.8 });
+  }
+
+  function buildAlertsPanel() {
+    if (!mapSection) return;
+    const tabs = el('div', { class: 'v4-segmented', role: 'tablist', 'aria-label': 'Alert type' });
+    for (const [key, label] of [['warnings', 'Warnings'], ['other', 'Advisories']]) {
+      const tab = el('button', { type: 'button', role: 'tab', class: 'v4-seg', 'data-tab': key, 'aria-selected': key === alertsTab ? 'true' : 'false' },
+        [el('span', { text: label }), el('span', { class: 'v4-seg-count', text: '' })]);
+      tab.addEventListener('click', function onAlertsTabClick() {
+        alertsTab = key;
+        renderAlerts();
+      });
+      tabs.append(tab);
+    }
+    const collapseBtn = el('button', { type: 'button', class: 'v4-icon-btn', 'aria-label': 'Hide alerts', 'aria-expanded': 'true' },
+      [svgIcon('<path d="m18 15-6-6-6 6"/>')]);
+    alertsPanel = el('section', { class: 'v4-alerts', 'aria-label': 'Active alerts' }, [
+      el('div', { class: 'v4-alerts-head' }, [
+        el('div', {}, [
+          el('div', { class: 'v4-readout-title', text: 'Active alerts' }),
+          el('div', { class: 'v4-alerts-updated', text: 'Loading…' }),
+        ]),
+        collapseBtn,
+      ]),
+      el('div', { class: 'v4-alerts-body' }, [tabs, el('ul', { class: 'v4-alerts-list', role: 'list' })]),
+    ]);
+    collapseBtn.addEventListener('click', function onAlertsCollapse() {
+      const collapsed = alertsPanel.classList.toggle('collapsed');
+      collapseBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      collapseBtn.setAttribute('aria-label', collapsed ? 'Show alerts' : 'Hide alerts');
+    });
+    alertsPanel.hidden = true;
+    mapSection.append(alertsPanel);
+  }
+
+  function renderAlerts() {
+    if (!alertsPanel) return;
+    const features = (alertsData?.features || []).filter((f) => f?.properties);
+    const warnings = features.filter((f) => isWarning(f.properties.event));
+    const other = features.filter((f) => !isWarning(f.properties.event));
+    const counts = { warnings: warnings.length, other: other.length };
+    for (const tab of alertsPanel.querySelectorAll('.v4-seg')) {
+      const on = tab.dataset.tab === alertsTab;
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      tab.querySelector('.v4-seg-count').textContent = String(counts[tab.dataset.tab]);
+    }
+    alertsPanel.querySelector('.v4-alerts-updated').textContent = alertsData?.updated
+      ? `Updated ${relativeAge(alertsData.updated)}` : (alertsData ? '' : 'Loading…');
+
+    const styles = alertsData?.styles || {};
+    const list = alertsPanel.querySelector('.v4-alerts-list');
+    const shown = (alertsTab === 'warnings' ? warnings : other)
+      .slice()
+      .sort((a, b) => (styles[b.properties.event]?.z || 0) - (styles[a.properties.event]?.z || 0));
+    if (!shown.length) {
+      list.replaceChildren(el('li', { class: 'v4-alerts-empty', text: alertsData ? `No active ${alertsTab === 'warnings' ? 'warnings' : 'watches or advisories'}.` : '' }));
+      return;
+    }
+    list.replaceChildren(...shown.slice(0, 60).map((feature) => {
+      const p = feature.properties;
+      const color = styles[p.event]?.color || p.style?.color || '#8d96a1';
+      const swatch = el('span', { class: 'v4-alert-swatch', 'aria-hidden': 'true' });
+      swatch.style.background = color;
+      const item = el('button', { type: 'button', class: 'v4-alert', disabled: !feature.geometry }, [
+        swatch,
+        el('span', { class: 'v4-alert-text' }, [
+          el('span', { class: 'v4-alert-title', text: p.display_event || p.event || 'Alert' }),
+          el('span', { class: 'v4-alert-area', text: p.area_desc || '' }),
+        ]),
+        el('span', { class: 'v4-alert-left', text: timeLeft(p.expires) }),
+      ]);
+      item.title = p.headline || '';
+      item.addEventListener('click', function onAlertClick() { zoomToFeature(feature); });
+      return el('li', {}, [item]);
+    }));
+  }
+
+  async function refreshAlerts() {
+    try {
+      const resp = await fetch('/api/alerts');
+      if (resp.ok) alertsData = await resp.json();
+    } catch (err) {
+      // Keep the last good list; the next refresh retries.
+    }
+    renderAlerts();
+  }
+
+  function syncAlertsVisibility() {
+    if (!alertsPanel) return;
+    const on = mapSection.classList.contains('radar-mode');
+    alertsPanel.hidden = !on;
+    document.documentElement.classList.toggle('v4-alerts-open', on);
+    if (on && !alertsTimer) {
+      refreshAlerts();
+      alertsTimer = setInterval(function refreshAlertsTick() {
+        if (!document.hidden) refreshAlerts();
+      }, ALERT_REFRESH_MS);
+    } else if (!on && alertsTimer) {
+      clearInterval(alertsTimer);
+      alertsTimer = null;
+    }
+  }
+
   /* ── Wire up ─────────────────────────────────────────────── */
 
   buildModelChips();
   buildRunCard();
   buildReadout();
+  buildAlertsPanel();
+  syncAlertsVisibility();
+  if (mapSection) {
+    new MutationObserver(syncAlertsVisibility).observe(mapSection, { attributes: true, attributeFilter: ['class'] });
+  }
   syncModelChips();
   syncRunCard();
 

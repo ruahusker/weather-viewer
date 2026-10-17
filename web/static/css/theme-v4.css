@@ -1,8 +1,9 @@
 /* =========================================================
-   WX Viewer — v4 interface theme (opt-in preview)
-   Enabled when <html data-ui="v4"> (set by ?ui=v4, kept in
-   localStorage "wx_ui"; ?ui=classic turns it off). Everything is
-   scoped to that attribute so the classic look is untouched.
+   WX Viewer — v4 interface theme (the default look)
+   Active when <html data-ui="v4">, which the inline script in
+   index.html sets unless ?ui=classic (kept in localStorage "wx_ui")
+   asks for the classic look. Everything is scoped to that attribute
+   so the classic look stays untouched.
    Map-first layout: floating top bar, floating side panel,
    bottom time dock, sentence-case labels, Geist type.
    ========================================================= */
@@ -702,3 +703,102 @@ html[data-ui="v4"].v4-readout-open .map-section .leaflet-top.leaflet-right { rig
 }
 /* Zoom buttons would cover the sounding / forecast panel's close button. */
 html[data-ui="v4"] .map-section:has(> .sounding-panel:not(.hidden)) .leaflet-top.leaflet-right { display: none; }
+
+/* Radar alerts panel */
+html[data-ui="v4"] .v4-alerts {
+  position: absolute;
+  top: var(--v4-top);
+  right: var(--v4-gap);
+  max-height: calc(100vh - var(--v4-top) - 240px);
+  z-index: 940;
+  width: 316px;
+  box-sizing: border-box;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--v4-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--v4-radius);
+  box-shadow: var(--v4-shadow);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+html[data-ui="v4"] .v4-alerts[hidden] { display: none; }
+html[data-ui="v4"] .v4-alerts.collapsed .v4-alerts-body { display: none; }
+html[data-ui="v4"] .v4-alerts.collapsed .v4-icon { transform: rotate(180deg); }
+html[data-ui="v4"] .v4-alerts-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+html[data-ui="v4"] .v4-alerts-updated { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+html[data-ui="v4"] .v4-alerts-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+html[data-ui="v4"] .v4-segmented {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 9px;
+}
+html[data-ui="v4"] .v4-seg {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-mid);
+  font: 500 12px var(--font-ui);
+  cursor: pointer;
+}
+html[data-ui="v4"] .v4-seg[aria-selected="true"] { background: rgba(255, 255, 255, 0.12); color: var(--text); }
+html[data-ui="v4"] .v4-seg-count { font-family: var(--font-data); color: var(--text-dim); }
+html[data-ui="v4"] .v4-seg:focus-visible,
+html[data-ui="v4"] .v4-alert:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+html[data-ui="v4"] .v4-alerts-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: thin;
+}
+html[data-ui="v4"] .v4-alert {
+  width: 100%;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  color: var(--text);
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+}
+html[data-ui="v4"] .v4-alert:hover:not(:disabled) { background: var(--v4-hover); border-color: var(--border); }
+html[data-ui="v4"] .v4-alert:disabled { cursor: default; }
+html[data-ui="v4"] .v4-alert-swatch { width: 10px; height: 10px; margin-top: 4px; flex-shrink: 0; border-radius: 3px; }
+html[data-ui="v4"] .v4-alert-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+html[data-ui="v4"] .v4-alert-title { font-weight: 500; font-size: 13px; }
+html[data-ui="v4"] .v4-alert-area {
+  font-size: 12px;
+  color: var(--text-mid);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html[data-ui="v4"] .v4-alert-left { font: 400 11px var(--font-data); color: var(--text-dim); white-space: nowrap; }
+html[data-ui="v4"] .v4-alerts-empty { font-size: 13px; color: var(--text-dim); padding: 6px 2px; }
+html[data-ui="v4"].v4-alerts-open .map-section .leaflet-top.leaflet-right { right: calc(316px + var(--v4-gap)); }
+@media (max-width: 900px) {
+  html[data-ui="v4"] .v4-alerts { display: none; }
+}

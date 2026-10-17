@@ -1,0 +1,267 @@
+/* =========================================================
+   WX Viewer phone — v4 interface (html[data-ui="v4"])
+   Same design language as css/theme-v4.css: floating top bar,
+   source pills, and one bottom dock (layer, legend, player)
+   assembled by js/mobile-ui-v4.js.
+   ========================================================= */
+
+@font-face { font-family: "Geist"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/geist-400.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-style: normal; font-weight: 500; font-display: swap; src: url("../fonts/geist-500.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-style: normal; font-weight: 600; font-display: swap; src: url("../fonts/geist-600.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/geistmono-400.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("../fonts/geistmono-500.woff2") format("woff2"); }
+
+html[data-ui="v4"] {
+  --bg-deep: #0b0d10;
+  --bg: #111418;
+  --bg2: #171b21;
+  --bg3: #1f242c;
+  --accent: #6cb6ff;
+  --accent-bright: #cfe6ff;
+  --accent-dim: rgba(108, 182, 255, 0.55);
+  --accent-bg: rgba(108, 182, 255, 0.16);
+  --text: #eceff3;
+  --text-mid: #a3abb6;
+  --text-dim: #8d96a1;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --font-ui: 'Geist', -apple-system, 'SF Pro Text', sans-serif;
+  --font-data: 'Geist Mono', 'SF Mono', 'Menlo', monospace;
+
+  --v4-panel: rgba(15, 18, 22, 0.94);
+  --v4-hover: rgba(255, 255, 255, 0.06);
+  --v4-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --v4-bar-top: calc(var(--safe-t, 0px) + 10px);
+  /* Old overlays position themselves above these; the dock replaces both. */
+  --tab-h: 0px;
+  --scrub-h: 196px;
+}
+
+html[data-ui="v4"] body { font-family: var(--font-ui); background: var(--bg-deep); }
+
+/* ── Floating top bar ───────────────────────────────────── */
+html[data-ui="v4"] .top-bar {
+  top: var(--v4-bar-top);
+  left: 10px;
+  right: 10px;
+  min-height: 52px;
+  height: 52px;
+  padding: 0 6px 0 12px;
+  background: var(--v4-panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--v4-shadow);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+html[data-ui="v4"] .top-logo span { display: none; }
+html[data-ui="v4"] .top-logo img { width: 26px; height: 26px; }
+html[data-ui="v4"] .top-info {
+  font: 500 13px var(--font-ui);
+  letter-spacing: 0;
+  color: var(--text);
+}
+html[data-ui="v4"] .top-value { font: 500 13px var(--font-data); color: var(--accent-bright); }
+html[data-ui="v4"] .top-btn {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-mid);
+  box-shadow: none;
+}
+html[data-ui="v4"] .top-btn svg { width: 18px; height: 18px; }
+html[data-ui="v4"] .top-btn:active,
+html[data-ui="v4"] .top-btn.active { background: var(--accent-bg); color: var(--accent-bright); border: 0; }
+
+/* ── Source pills (the old bottom tab bar) ──────────────── */
+html[data-ui="v4"] .tab-bar {
+  top: calc(var(--v4-bar-top) + 60px);
+  bottom: auto;
+  left: 0;
+  right: 0;
+  height: auto;
+  padding: 0 10px;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  scrollbar-width: none;
+}
+html[data-ui="v4"] .tab-bar::-webkit-scrollbar { display: none; }
+html[data-ui="v4"] .tab-bar .tab,
+html[data-ui="v4"] .tab-bar .radar-map-link {
+  flex: 0 0 auto !important;
+  flex-direction: row !important;
+  gap: 0 !important;
+  height: 36px;
+  min-height: 36px;
+  padding: 0 14px !important;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  background: var(--v4-panel) !important;
+  color: var(--text) !important;
+  font: 500 13px var(--font-ui) !important;
+  box-shadow: none;
+}
+html[data-ui="v4"] .tab-bar .radar-map-link { order: 10; }
+html[data-ui="v4"] .tab-bar .tab svg,
+html[data-ui="v4"] .tab-bar .radar-map-link svg { display: none; }
+html[data-ui="v4"] .tab-bar .tab::before,
+html[data-ui="v4"] .tab-bar .tab::after { display: none; }
+html[data-ui="v4"] .tab-bar .tab.active {
+  background: var(--text) !important;
+  border-color: transparent;
+  color: var(--bg-deep) !important;
+}
+
+/* ── Bottom dock: layer + legend + player ───────────────── */
+html[data-ui="v4"] .v4-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 830;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px calc(var(--safe-b, 0px) + 18px);
+  background: var(--v4-panel);
+  border-top: 1px solid var(--border);
+  border-radius: 22px 22px 0 0;
+  box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+html[data-ui="v4"] .v4-dock > * {
+  position: static !important;
+  inset: auto !important;
+  transform: none !important;
+  margin: 0 !important;
+  max-width: none !important;
+  width: auto !important;
+}
+
+html[data-ui="v4"] .v4-dock .selector-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 12px !important;
+  box-shadow: none !important;
+  color: var(--text) !important;
+  font: 600 15px var(--font-ui) !important;
+  backdrop-filter: none;
+}
+html[data-ui="v4"] .v4-dock .selector-pill #pillLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-ui="v4"] .v4-dock .legend-bar {
+  padding: 0 !important;
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html[data-ui="v4"] .v4-dock .legend-bar.hidden { display: none; }
+html[data-ui="v4"] .v4-dock .legend-label { font: 500 12px var(--font-ui); color: var(--text-mid); letter-spacing: 0; text-transform: none; margin-bottom: 6px; }
+html[data-ui="v4"] .v4-dock #legendCanvas { width: 100% !important; height: 8px !important; border-radius: 4px; }
+html[data-ui="v4"] .v4-dock .legend-ticks span { font: 400 11px var(--font-data); color: var(--text-dim); }
+
+html[data-ui="v4"] .v4-dock .scrubber {
+  height: auto !important;
+  padding: 0 !important;
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "play info speed" "play track track";
+  column-gap: 14px;
+  row-gap: 6px;
+  align-items: center;
+}
+html[data-ui="v4"] .v4-dock .scrub-controls { display: contents; }
+html[data-ui="v4"] .v4-dock .scrub-info { display: contents; }
+html[data-ui="v4"] .v4-dock #playBtn {
+  grid-area: play;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--bg-deep);
+  box-shadow: none;
+}
+html[data-ui="v4"] .v4-dock #playBtn svg { width: 18px; height: 18px; }
+html[data-ui="v4"] .v4-dock .scrub-valid-time {
+  grid-area: info;
+  font: 600 15px var(--font-ui);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html[data-ui="v4"] .v4-dock .scrub-frame-count {
+  grid-area: speed;
+  justify-self: end;
+  font: 400 12px var(--font-data);
+  color: var(--text-dim);
+}
+html[data-ui="v4"] .v4-dock .scrub-slider { grid-area: track; width: 100%; accent-color: var(--accent); }
+html[data-ui="v4"] .v4-dock #speedBtn {
+  position: absolute !important;
+  right: 16px;
+  top: 14px;
+  height: 44px;
+  min-width: 44px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-mid);
+  font: 500 12px var(--font-data);
+}
+/* Speed sits on the layer row's right; the layer button makes room. */
+html[data-ui="v4"] .v4-dock .selector-pill { margin-right: 52px !important; }
+
+/* ── Sheets and panels ──────────────────────────────────── */
+html[data-ui="v4"] .bottom-sheet {
+  background: var(--bg) !important;
+  border-top: 1px solid var(--border-strong);
+  border-radius: 22px 22px 0 0;
+  font-family: var(--font-ui);
+  z-index: 900;
+}
+html[data-ui="v4"] .bottom-sheet :where(*) { letter-spacing: 0; }
+html[data-ui="v4"] .sheet-item.active,
+html[data-ui="v4"] .chip.active {
+  background: var(--accent-bg);
+  border-color: var(--accent-dim);
+  color: var(--accent-bright);
+}
+html[data-ui="v4"] .share-sheet-inner,
+html[data-ui="v4"] .sounding-panel {
+  background: var(--bg);
+  border-color: var(--border-strong);
+  font-family: var(--font-ui);
+}
+html[data-ui="v4"] .bottom-sheet :where(*) { text-transform: none; }
+html[data-ui="v4"] .bottom-sheet :where(.sheet-section-title, .sheet-label, .sheet-group-title, h2, h3, h4) {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  color: var(--text-dim);
+}

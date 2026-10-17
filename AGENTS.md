@@ -407,3 +407,17 @@ The completion bookkeeping bug that mixed split and ordinary memory peaks is
 fixed; v2 histories were reconstructed from actual task metrics. Detailed
 benchmarks, deployed settings, checks, and rollback instructions are in
 `docs/adaptive-four-20261014.md`. Keep the other projects held.
+
+## v4 interface (2026-10-17)
+
+The viewer, phone page and `/wx/monitor` default to the v4 look; `?ui=classic`
+switches back (remembered in localStorage `wx_ui`), `?ui=v4` returns. An inline
+script in each page's `<head>` sets `<html data-ui="v4">`, and every v4 rule is
+scoped to that attribute, so the classic styles stay intact underneath.
+
+- `css/theme-v4.css` + `js/ui-v4.js` (desktop): floating bar/panels/time dock,
+  model chips driving `#modelSelect`, run card over `#runSelect`, point readout
+  (fed by app.js's `wx:point-query` event and `/api/meteogram`), radar alerts panel
+- `css/mobile-v4.css` + `js/mobile-ui-v4.js` (phone): source pills, bottom dock
+- `css/monitor-v4.css` (monitor): `dashboard.html` must stay identical on the Mac host
+- Fonts: self-hosted Geist / Geist Mono in `static/fonts/` (SIL OFL)
