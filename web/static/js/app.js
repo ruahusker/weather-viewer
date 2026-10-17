@@ -2577,7 +2577,7 @@ function loadHtml2Canvas() {
   return html2canvasPromise;
 }
 
-async function captureMapSectionCanvas() {
+async function captureMapSectionCanvas({ scale, hidden = [], transparent = false, stamp = true } = {}) {
   const mapSectionEl = document.querySelector('.map-section');
   if (!mapSectionEl) throw new Error('Map section not found');
   beginMapLoading('Loading screenshot library…');
@@ -2588,23 +2588,47 @@ async function captureMapSectionCanvas() {
   }
   if (state.overlayLayer?.isPressureContours) await state.overlayLayer._loading;
   const cleanupCaptureOverlay = prepareMapCaptureOverlays();
+  // Loop capture renders the map in layers: hide some, or drop backgrounds.
+  const restoreVisibility = hidden.filter(Boolean).map((el) => {
+    const previous = el.style.visibility;
+    el.style.visibility = 'hidden';
+    return () => { el.style.visibility = previous; };
+  });
+  const clearedBackgrounds = transparent
+    ? [mapSectionEl, leafletMap?.getContainer?.()].filter(Boolean).map((el) => {
+      const previous = el.style.background;
+      el.style.background = 'transparent';
+      return () => { el.style.background = previous; };
+    })
+    : [];
   try {
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const metadata = buildCaptureMetadata();
     const canvas = await html2canvas(mapSectionEl, {
       useCORS: true,
       allowTaint: true,
+      logging: false,
+      ...(scale ? { scale } : {}),
+      ...(transparent ? { backgroundColor: null } : {}),
       ignoreElements: (el) =>
         el?.id === 'scrubberBar' ||
+        el?.id === 'mapLoadingOverlay' ||
+        el?.classList?.contains('v4-readout') ||
+        el?.classList?.contains('v4-alerts') ||
         el?.classList?.contains('leaflet-control-container') ||
         el?.classList?.contains('leaflet-control-zoom') ||
         el?.classList?.contains('leaflet-control-attribution'),
     });
-    const bottomOffset = state.dataSource === 'radar' ? 52 : 2;
-    return stampCaptureMetadata(canvas, metadata, bottomOffset);
+    if (!stamp) return canvas;
+    return stampCaptureMetadata(canvas, metadata, captureStampOffset());
   } finally {
+    [...restoreVisibility, ...clearedBackgrounds].forEach((restore) => restore());
     cleanupCaptureOverlay?.();
   }
+}
+
+function captureStampOffset() {
+  return state.dataSource === 'radar' ? 52 : 2;
 }
 
 function forEachLatLngPath(latlngs, visitor) {
@@ -2765,6 +2789,192 @@ async function downloadMapScreenshot() {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ── Loop capture (animated GIF) ──────────────────────────────────────────────
+const LOOP_CAPTURE_MAX_FRAMES = 60;   // satellite archives can hold hundreds
+const LOOP_CAPTURE_MAX_WIDTH = 960;   // keeps GIFs shareable
+const LOOP_CAPTURE_HOLD_MS = 1200;    // pause on the last frame before repeating
+let _loopCapture = null;              // { cancelled } while a capture runs
+
+/** Frame delay for the GIF: model hours step slower than observations. */
+function loopCaptureFrameDelay() {
+  return (state.dataSource === 'models' || state.dataSource === 'chase') ? 450 : 140;
+}
+
+const CANVAS_BLEND_MODES = { multiply: 'multiply', overlay: 'overlay', screen: 'screen' };
+
+/**
+ * Fast loop frames: when only one weather image changes per frame, capture
+ * the map below and above it once, then each frame is just below + image +
+ * above + time stamp. Returns null when the view needs a full capture per
+ * frame (pressure contours, Home, Chase).
+ */
+async function buildLoopCompositor(scale) {
+  if (!['models', 'satellite', 'radar'].includes(state.dataSource)) return null;
+  if (state.overlayLayer?.isPressureContours && state.dataSource === 'models') return null;
+  const frameImg = getActiveOverlayImage();
+  const framePane = frameImg?.closest?.('.leaflet-pane');
+  const mapPane = leafletMap?.getPane?.('mapPane');
+  const mapSectionEl = document.querySelector('.map-section');
+  if (!frameImg || frameImg.tagName !== 'IMG' || !framePane || !mapPane || !mapSectionEl) return null;
+  const zOf = (pane) => Number.parseInt(getComputedStyle(pane).zIndex, 10) || 0;
+  const frameZ = zOf(framePane);
+  const panes = [...mapPane.children].filter((el) => el.classList.contains('leaflet-pane'));
+  const belowHidden = [
+    ...panes.filter((pane) => pane === framePane || zOf(pane) >= frameZ),
+    ...[...mapSectionEl.children].filter((el) => el.id !== 'map'),
+  ];
+  const aboveHidden = panes.filter((pane) => pane === framePane || zOf(pane) <= frameZ);
+  const below = await captureMapSectionCanvas({ scale, hidden: belowHidden, stamp: false });
+  const above = await captureMapSectionCanvas({ scale, hidden: aboveHidden, transparent: true, stamp: false });
+  const sectionRect = mapSectionEl.getBoundingClientRect();
+  const ratio = below.width / sectionRect.width;
+  return function composeFrame() {
+    const img = getActiveOverlayImage();
+    const out = document.createElement('canvas');
+    out.width = below.width;
+    out.height = below.height;
+    const ctx = out.getContext('2d');
+    ctx.drawImage(below, 0, 0);
+    if (img?.complete && img.naturalWidth) {
+      const rect = img.getBoundingClientRect();
+      const style = getComputedStyle(img);
+      ctx.save();
+      // The layer's own opacity, not a mid-transition value.
+      ctx.globalAlpha = Number.parseFloat(img.style.opacity || '1');
+      ctx.globalCompositeOperation = CANVAS_BLEND_MODES[style.mixBlendMode] || 'source-over';
+      if (style.filter && style.filter !== 'none' && 'filter' in ctx) ctx.filter = style.filter;
+      ctx.imageSmoothingEnabled = !/pixelated|crisp-edges/.test(style.imageRendering);
+      ctx.drawImage(img, (rect.left - sectionRect.left) * ratio, (rect.top - sectionRect.top) * ratio,
+        rect.width * ratio, rect.height * ratio);
+      ctx.restore();
+    }
+    ctx.drawImage(above, 0, 0);
+    return stampCaptureMetadata(out, buildCaptureMetadata(), captureStampOffset());
+  };
+}
+
+/** Wait until the map's image overlays (and pressure contours) have loaded. */
+async function waitForMapImages(timeoutMs = 10000) {
+  const deadline = performance.now() + timeoutMs;
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  while (performance.now() < deadline) {
+    if (state.overlayLayer?.isPressureContours) {
+      try { await state.overlayLayer._loading; } catch { /* drawn as far as it got */ }
+    }
+    const mapEl = leafletMap?.getContainer?.();
+    const images = mapEl ? [...mapEl.querySelectorAll('.leaflet-overlay-pane img, img.leaflet-image-layer')] : [];
+    if (images.every((img) => img.complete)) return;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  }
+}
+
+function setLoopCaptureStatus(text) {
+  const btn = document.getElementById('loopCaptureBtn');
+  let pill = document.getElementById('loopCaptureStatus');
+  if (!text) {
+    pill?.remove();
+    btn?.classList.remove('active');
+    btn?.setAttribute('aria-label', 'Download loop as GIF');
+    if (btn) btn.title = 'Download loop as GIF';
+    return;
+  }
+  if (!pill) {
+    pill = document.createElement('div');
+    pill.id = 'loopCaptureStatus';
+    pill.className = 'loop-capture-status';
+    pill.setAttribute('role', 'status');
+    document.body.appendChild(pill);
+  }
+  pill.textContent = text;
+  btn?.classList.add('active');
+  btn?.setAttribute('aria-label', 'Cancel loop capture');
+  if (btn) btn.title = 'Cancel loop capture';
+}
+
+/**
+ * Step through the loop, capture each frame like the screenshot does, and
+ * download the frames as an animated GIF. Clicking again cancels.
+ */
+async function downloadLoopGif() {
+  if (_loopCapture) {
+    _loopCapture.cancelled = true;
+    return;
+  }
+  const total = (parseInt(scrubber.max, 10) || 0) + 1;
+  if (scrubber.disabled || total < 2) {
+    showToast('This view has no loop to capture.');
+    return;
+  }
+  const job = { cancelled: false };
+  _loopCapture = job;
+  const startIdx = parseInt(scrubber.value, 10) || 0;
+  const wasPlaying = !!state.isPlaying;
+  if (wasPlaying) pause();
+  // Observations keep their newest frames; forecasts start at the first hour.
+  const observed = ['satellite', 'radar', 'home'].includes(state.dataSource);
+  const count = Math.min(total, LOOP_CAPTURE_MAX_FRAMES);
+  const first = observed ? total - count : 0;
+  const goTo = (idx) => {
+    scrubber.value = String(idx);
+    scrubber.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  try {
+    setLoopCaptureStatus('Preparing loop capture…');
+    const { GIFEncoder, quantize, applyPalette } = await import('/static/vendor/gifenc/gifenc.esm.js?v=1.0.3');
+    const gif = GIFEncoder();
+    const scratch = document.createElement('canvas');
+    const ctx = scratch.getContext('2d', { willReadFrequently: true });
+    const delay = loopCaptureFrameDelay();
+    const sectionWidth = document.querySelector('.map-section')?.clientWidth || LOOP_CAPTURE_MAX_WIDTH;
+    const scale = Math.min(window.devicePixelRatio || 1, LOOP_CAPTURE_MAX_WIDTH / sectionWidth);
+    goTo(first);
+    await waitForMapImages();
+    const compose = await buildLoopCompositor(scale);
+    for (let n = 0; n < count; n++) {
+      if (job.cancelled) break;
+      setLoopCaptureStatus(`Capturing loop ${n + 1}/${count} · click the loop button to cancel`);
+      goTo(first + n);
+      await waitForMapImages();
+      const frame = compose ? compose() : await captureMapSectionCanvas({ scale });
+      if (job.cancelled) break;
+      const scale = Math.min(1, LOOP_CAPTURE_MAX_WIDTH / frame.width);
+      scratch.width = Math.round(frame.width * scale);
+      scratch.height = Math.round(frame.height * scale);
+      ctx.drawImage(frame, 0, 0, scratch.width, scratch.height);
+      const { data, width, height } = ctx.getImageData(0, 0, scratch.width, scratch.height);
+      const palette = quantize(data, 256);
+      gif.writeFrame(applyPalette(data, palette), width, height, {
+        palette,
+        delay: n === count - 1 ? LOOP_CAPTURE_HOLD_MS : delay,
+      });
+    }
+    if (job.cancelled) {
+      showToast('Loop capture cancelled.');
+      return;
+    }
+    setLoopCaptureStatus('Saving GIF…');
+    gif.finish();
+    const blob = new Blob([gif.bytes()], { type: 'image/gif' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = buildCaptureFilename().replace(/\.png$/, '-loop.gif');
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast(`Loop saved: ${count} frames, ${(blob.size / 1048576).toFixed(1)} MB.`);
+  } catch (err) {
+    console.error('Loop capture failed:', err);
+    showToast('Loop capture failed. Try again.', 'error');
+  } finally {
+    _loopCapture = null;
+    setLoopCaptureStatus('');
+    goTo(Math.min(startIdx, total - 1));
+    if (wasPlaying && !state.isPlaying) play();
+  }
 }
 
 async function copyMapScreenshot() {
@@ -8733,6 +8943,9 @@ async function init() {
       }
     });
   }
+
+  const loopCaptureBtn = document.getElementById('loopCaptureBtn');
+  if (loopCaptureBtn) loopCaptureBtn.addEventListener('click', downloadLoopGif);
 
   if (copyBtn) {
     copyBtn.addEventListener('click', async () => {

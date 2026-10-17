@@ -1284,6 +1284,7 @@ html[data-capture-mode="1"] .home-section,
 html[data-capture-mode="1"] .scrubber-bar,
 html[data-capture-mode="1"] #captureBtn,
 html[data-capture-mode="1"] #copyBtn,
+html[data-capture-mode="1"] #loopCaptureBtn,
 html[data-capture-mode="1"] #mobileMenuBtn,
 html[data-capture-mode="1"] #mobileBackdrop,
 html[data-capture-mode="1"] #hoverValue,
@@ -5871,3 +5872,21 @@ html, body { background: var(--bg-deep); }
   border-top: 1px solid rgba(226, 242, 255, 0.1);
   max-width: 240px;
 }
+
+/* Loop capture progress: fixed to the viewport so it never lands in the GIF. */
+.loop-capture-status {
+  position: fixed;
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3000;
+  padding: 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  font: 500 13px var(--font-ui);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+#loopCaptureBtn.active { color: var(--accent-bright); border-color: var(--accent-dim); background: var(--accent-bg); }

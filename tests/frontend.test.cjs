@@ -154,7 +154,7 @@ function mapCaptureContext() {
    return {style:{},getContext:()=>drawing,remove(){this.parent.children=this.parent.children.filter(child=>child!==this);}};
   }},requestAnimationFrame:(callback)=>callback(),loadHtml2Canvas:async()=>{},buildCaptureMetadata:()=>'',beginMapLoading(){},endMapLoading(){}});
  const app=source('web/static/js/app.js');
- const start=app.indexOf('async function captureMapSectionCanvas()');
+ const start=app.indexOf('async function captureMapSectionCanvas(');
  vm.runInContext(app.slice(start,app.indexOf('\nfunction buildCaptureFilename()',start)),context);
  return {context,panes,originals,fills};
 }
