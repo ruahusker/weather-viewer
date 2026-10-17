@@ -316,6 +316,45 @@ class DownloadTests(unittest.TestCase):
 
 
 class WindRenderTests(unittest.TestCase):
+    def test_wind_svg_keeps_symbols_vector_and_fill_self_contained(self):
+        import xml.etree.ElementTree as ET
+        renderer = OverlayRenderer()
+        lon, lat = np.meshgrid(np.linspace(-110, -85, 16), np.linspace(30, 45, 12))
+        speed = np.full(lon.shape, 23.0156, dtype=np.float32)
+        speed[:2] = np.nan
+        field = {'data': speed, 'lat': lat, 'lon': lon}
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(renderer, '_get_mpl_resolution', return_value=(160, 120)), \
+             patch.object(renderer, '_get_wind_layout', return_value={**renderer._get_wind_layout('wind_speed'), 'resolution_scale': 1}):
+            output = Path(tmp) / 'f00.png'
+            renderer._render_wind_overlay('wind_speed', field, field, field, output)
+            with Image.open(output) as image:
+                self.assertEqual(image.size, (160, 120))
+            svg = ET.parse(output.with_suffix('.wind.svg')).getroot()
+            ns = {'svg': 'http://www.w3.org/2000/svg'}
+            images = svg.findall('.//svg:image', ns)
+            self.assertEqual(len(images), 1)
+            self.assertTrue(images[0].get('{http://www.w3.org/1999/xlink}href').startswith('data:image/png;base64,'))
+            symbols = svg.findall('.//svg:g[@id="Barbs_2"]//svg:path', ns)
+            self.assertTrue(symbols, 'Wind symbols must remain vector paths')
+            self.assertIn('#edf6ff', ET.tostring(svg, encoding='unicode'))
+            self.assertFalse(list(Path(tmp).glob('*.tmp')))
+
+    def test_vector_availability_includes_only_published_wind_frames(self):
+        with tempfile.TemporaryDirectory() as tmp, TestClient(api.app) as client:
+            run = Path(tmp) / 'hrrr' / '2026101719'
+            (run / 'wind_speed').mkdir(parents=True)
+            (run / 'wind_speed' / 'f00.png').touch()
+            (run / 'wind_speed' / 'f01.png').touch()
+            (run / 'wind_speed' / 'f01.wind.svg').touch()
+            (run / 'wind_speed' / '.f02.wind.svg.tmp').touch()
+            (run / 'wind_speed' / 'fbad.wind.svg').touch()
+            (run / 'mslp').mkdir()
+            (run / 'mslp' / 'f00.contours.json').write_text('{}')
+            with patch.object(api, 'RENDERED_DIR', Path(tmp)):
+                response = client.get('/api/available/hrrr/2026101719/vectors')
+            self.assertEqual(response.json(), {'mslp': [0], 'wind_speed': [1]})
+
     def test_wind_outside_domain_is_transparent_and_surface_barbs_use_knots(self):
         renderer = OverlayRenderer()
         n = 80
@@ -330,6 +369,7 @@ class WindRenderTests(unittest.TestCase):
              patch.object(renderer, '_regrid', return_value=values), \
              patch.object(renderer, '_get_target_grid', return_value={'lon': lon, 'lat': lat}), \
              patch.object(renderer, '_rotate_to_earth_relative', side_effect=lambda lon, lat, tg, u, v: (u, v)) as rotate, \
+             patch.object(renderer, '_write_wind_svg'), \
              patch.object(renderer, '_mpl_to_pil', return_value=True):
             renderer._render_wind_overlay('wind_speed', field, field, field, Path('/tmp/unused.png'))
         self.assertTrue(np.all(ax.images[0].get_array()[:10, :, 3] == 0))

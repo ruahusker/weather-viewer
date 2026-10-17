@@ -293,6 +293,19 @@ test('pressure frame selection uses vectors when available and PNGs for older fr
  assert.match(vm.runInContext('mobileModelFrameUrl(1)',ctx),/f01\.png/);
 });
 
+test('desktop and phone prefer scalable wind images and retain PNG fallback',()=>{
+ const mobile=mobileContext();
+ mobile.window.PressureContours={};
+ vm.runInContext("S.model='hrrr';S.runId='2026101719';S.param='wind_speed';S.vectorAvailability={wind_speed:[0]};",mobile);
+ assert.match(vm.runInContext('mobileModelFrameUrl(0)',mobile),/f00\.wind\.svg/);
+ assert.match(vm.runInContext('mobileModelFrameUrl(1)',mobile),/f01\.png/);
+ const desktop=vm.createContext({BASE:'/wx',MODEL_IMAGE_VERSION:'wind-test',window:{PressureContours:{}},state:{model:'hrrr',vectorAvailableByParam:{wind_speed:[0]}}});
+ const code=source('web/static/js/app.js').match(/function overlayUrl\(runId, param, fxx\) \{[\s\S]*?^\}/m)[0];
+ vm.runInContext(code,desktop);
+ assert.match(vm.runInContext("overlayUrl('2026101719','wind_speed',0)",desktop),/f00\.wind\.svg/);
+ assert.match(vm.runInContext("overlayUrl('2026101719','wind_speed',1)",desktop),/f01\.png/);
+});
+
 function captureMetadataContext() {
  const ctx=vm.createContext({window:{},Date});
  vm.runInContext(source('web/static/js/map-capture.js'),ctx);

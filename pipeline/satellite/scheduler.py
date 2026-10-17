@@ -47,6 +47,7 @@ from pipeline.config import (
 )
 from .goes_downloader import GOESDownloader
 from .satellite_renderer import (
+    L2_PRODUCT_CONFIG,
     SatelliteRenderer,
     clear_satellite_caches,
     set_frame_observer,
@@ -939,7 +940,8 @@ class SatelliteScheduler:
                         "task": f"{source_id} {product_type} render",
                         "filename": Path(path).name,
                     })
-                    with load_dataset(path) as ds:
+                    variables = (L2_PRODUCT_CONFIG[product_type]["var"], "DQF")
+                    with load_dataset(path, variables) as ds:
                         result = self.sat_renderer.render_l2_product(
                             ds, product_type, filename=ts_filename
                         )

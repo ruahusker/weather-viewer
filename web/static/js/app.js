@@ -27,7 +27,7 @@ const CAPTURE_SOURCE = (URL_PARAMS.get('source') || '').toLowerCase();
 const CAPTURE_FRAME = URL_PARAMS.get('frame') || 'latest';
 const BACKGROUND_ONLY = URL_PARAMS.get('background_only') === '1';
 const DEBUG_SCRUBBER = URL_PARAMS.get('debug_scrubber') === '1';
-const MODEL_IMAGE_VERSION = '20261008a';
+const MODEL_IMAGE_VERSION = '20261017-shading1';
 const SHAREABLE_VIEWS = new Set(['home', 'models', 'satellite', 'radar', 'chase', 'surface']);
 const SHAREABLE_MODELS = new Set([
   'ecmwf', 'gdps', 'gefs', 'gfs', 'href', 'hrrr', 'nam12km', 'nam3km', 'rap', 'rrfs', 'rtma',
@@ -7251,7 +7251,8 @@ async function loadRadarTilt() {
 function overlayUrl(runId, param, fxx) {
   const fxxStr = typeof fxx === 'number' ? String(fxx).padStart(2, '0') : fxx;
   const vector = window.PressureContours && state.vectorAvailableByParam?.[param]?.some((frame) => String(frame) === String(fxx));
-  return `${BASE}/rendered/${state.model}/${runId}/${param}/f${fxxStr}.${vector ? 'contours.json' : 'png'}?v=${MODEL_IMAGE_VERSION}`;
+  const extension = vector ? (param.startsWith('wind_') ? 'wind.svg' : 'contours.json') : 'png';
+  return `${BASE}/rendered/${state.model}/${runId}/${param}/f${fxxStr}.${extension}?v=${MODEL_IMAGE_VERSION}`;
 }
 
 function modelOverlayParamClass(param) {

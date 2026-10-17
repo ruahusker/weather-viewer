@@ -27,7 +27,7 @@ const BASE = (() => {
   if (p.startsWith('/wx/')) return '/wx';
   return '';
 })();
-const MODEL_IMAGE_VERSION = '20261008a';
+const MODEL_IMAGE_VERSION = '20261017-shading1';
 const URL_PARAMS = new URLSearchParams(window.location.search || '');
 const MOBILE_VIEWS = new Set(['radar', 'surface', 'models', 'satellite']);
 const MOBILE_MODELS = new Set(['ecmwf', 'gdps', 'gefs', 'gfs', 'href', 'hrrr', 'nam12km', 'nam3km', 'rap', 'rrfs', 'rtma']);
@@ -1535,10 +1535,11 @@ function mobileForecastMinutes(fxx) {
   return match ? Number(match[1]) * 60 + Number(match[2] || 0) : 0;
 }
 
-/** Choose vectors only for pressure frames that have been generated. */
+/** Choose vector pressure/wind frames when available; older frames use PNG. */
 function mobileModelFrameUrl(fxx) {
   const vector = window.PressureContours && S.vectorAvailability?.[S.param]?.some((frame) => String(frame) === String(fxx));
-  return `${BASE}/rendered/${S.model}/${S.runId}/${S.param}/f${String(fxx).padStart(2,'0')}.${vector ? 'contours.json' : 'png'}?v=${MODEL_IMAGE_VERSION}`;
+  const extension = vector ? (S.param.startsWith('wind_') ? 'wind.svg' : 'contours.json') : 'png';
+  return `${BASE}/rendered/${S.model}/${S.runId}/${S.param}/f${String(fxx).padStart(2,'0')}.${extension}?v=${MODEL_IMAGE_VERSION}`;
 }
 
 function showModelFrame() {

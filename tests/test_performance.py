@@ -207,6 +207,51 @@ class RenderMemoryTests(unittest.TestCase):
 
 
 class SatelliteCacheTests(unittest.TestCase):
+    def test_sst_preserves_quality_gaps_and_converts_kelvin_to_celsius(self):
+        from pipeline.satellite.satellite_renderer import SatelliteRenderer
+        source = xr.Dataset({
+            "SST": (("y", "x"), np.array([[300, 301], [302, 303]], dtype=np.float32)),
+            "DQF": (("y", "x"), np.array([[0, 1], [2, 3]], dtype=np.int8)),
+        }, attrs={"time_coverage_start": "2026-10-17T20:00:00Z", "platform_ID": "G19"})
+        with tempfile.TemporaryDirectory() as tmp:
+            renderer = SatelliteRenderer(output_dir=Path(tmp))
+            with patch.object(renderer, "_render_l2_to_mercator", return_value={"west": -145, "east": -50, "south": 15, "north": 52}) as render:
+                renderer.render_l2_product(source, "sst", filename="sst.png")
+            values = render.call_args.args[0]
+            np.testing.assert_allclose(values[0], [26.85, 27.85], atol=.0001)
+            self.assertTrue(np.isnan(values[1]).all())
+            self.assertFalse(render.call_args.kwargs["extend_masked"])
+
+    def test_sst_auxiliary_band_coordinates_keep_their_roles_in_cache(self):
+        from pipeline.satellite import dataset_cache
+        dataset_cache.clear_dataset_cache()
+        source = xr.Dataset(
+            {"SST": (("y", "x"), np.full((4, 5), 300, dtype=np.float32)),
+             "DQF": (("y", "x"), np.zeros((4, 5), dtype=np.int8)),
+             "goes_imager_projection": xr.DataArray(0, attrs={"longitude_of_projection_origin": -75.2})},
+            coords={"x": np.arange(5), "y": np.arange(4),
+                    "SST_day_night_emissive_band_ids": ("bands", [7, 11, 13, 14]),
+                    "SST_day_night_emissive_wavelengths": ("bands", [3.9, 8.4, 10.3, 11.2]),
+                    "SST_night_only_emissive_band_id": 15},
+            attrs={"time_coverage_start": "2026-10-17T19:00:00Z"},
+        )
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "sst.nc"
+                source.to_netcdf(path, engine="scipy")
+                with dataset_cache.load_dataset(path) as detached:
+                    self.assertEqual(set(detached.coords), set(source.coords))
+                    np.testing.assert_array_equal(detached["SST"], 300)
+                    np.testing.assert_array_equal(detached["SST_day_night_emissive_band_ids"], [7, 11, 13, 14])
+                    detached["SST"].values[:] = 999
+                    detached["SST_day_night_emissive_band_ids"].values[:] = 0
+                with dataset_cache.load_dataset(path, ("SST", "DQF", "SST_day_night_emissive_band_ids")) as again:
+                    np.testing.assert_array_equal(again["SST"], 300)
+                    np.testing.assert_array_equal(again["DQF"], 0)
+                    np.testing.assert_array_equal(again["SST_day_night_emissive_band_ids"], [7, 11, 13, 14])
+        finally:
+            dataset_cache.clear_dataset_cache()
+
     def test_satellite_listings_fetch_newest_hours_first_and_stop_when_sufficient(self):
         from datetime import datetime, timedelta, timezone
         from pipeline.satellite.goes_downloader import GOESDownloader

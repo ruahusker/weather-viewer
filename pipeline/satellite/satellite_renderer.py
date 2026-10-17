@@ -364,7 +364,7 @@ L2_PRODUCT_CONFIG = {
         "vmax": 35,
         "celsius": True,
         "max_dqf": 1,
-        "extend_masked": True,
+        "extend_masked": False,
     },
     "rain_rate": {
         "var": "RRQPE",

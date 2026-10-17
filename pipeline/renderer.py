@@ -155,6 +155,14 @@ MERC_NORTH = float(_lat_to_merc(DATA_NORTH))
 # Minimum output width for matplotlib params (contours/barbs need decent res)
 _MPL_MIN_WIDTH = 1800
 
+_WIND_BARB_STYLE = {
+    "barb_color": "#edf6ff",
+    "barb_lw": 0.55,
+    "barb_outline_color": "#101b29",
+    "barb_outline_lw": 0.65,
+    "barb_outline_alpha": 0.95,
+}
+
 _SPARSE_OVERLAY_ALPHA = {
 }
 
@@ -1753,6 +1761,35 @@ class OverlayRenderer:
         return grid_u, grid_v
 
     def _get_wind_style(self, param):
+        """Use legible ice-white symbols with a dark keyline at every level."""
+        return {**self._get_wind_layout(param), **_WIND_BARB_STYLE}
+
+    @staticmethod
+    def _write_wind_svg(fig, output_path: Path) -> None:
+        """Keep barbs/contours as vectors and embed only the existing fill grid.
+
+        A self-contained SVG works with Leaflet's image overlay, frame cache,
+        and canvas exports. It needs no extra map layer or scientific arrays.
+        The PNG remains available for older clients and point-value queries.
+        """
+        destination = output_path.with_suffix(".wind.svg")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=destination.parent,
+                                             prefix=f".{destination.stem}-",
+                                             suffix=".tmp", delete=False) as handle:
+                temporary = Path(handle.name)
+            with matplotlib.rc_context({"svg.image_inline": True, "svg.hashsalt": "wx-wind-v1"}):
+                fig.savefig(temporary, format="svg", dpi=RENDER_DPI, transparent=True,
+                            metadata={"Date": None})
+            temporary.chmod(0o644)
+            temporary.replace(destination)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _get_wind_layout(self, param):
         """Return rendering thresholds and intervals for wind products.
 
         Design philosophy:
@@ -1778,11 +1815,6 @@ class OverlayRenderer:
                 "alpha_gamma": 0.9,
                 "alpha_min": 0,                 # invisible below threshold
                 "alpha_max": 200,               # semi-opaque at vmax
-                "barb_color": "#11161d",
-                "barb_lw": 0.24,
-                "barb_outline_color": "white",
-                "barb_outline_lw": 0.04,
-                "barb_outline_alpha": 0.22,
             }
         if param in {"wind_925mb", "wind_850mb", "wind_700mb"}:
             if param == "wind_700mb":
@@ -1799,11 +1831,6 @@ class OverlayRenderer:
                     "alpha_gamma": 1.0,
                     "alpha_min": 0,
                     "alpha_max": 215,
-                    "barb_color": "#11161d",
-                    "barb_lw": 0.24,
-                    "barb_outline_color": "white",
-                    "barb_outline_lw": 0.04,
-                    "barb_outline_alpha": 0.22,
                     "major_color": "#ffffff",
                     "major_width": 0.7,
                     "major_alpha": 0.45,
@@ -1822,11 +1849,6 @@ class OverlayRenderer:
                 "alpha_gamma": 1.1,
                 "alpha_min": 0,
                 "alpha_max": 215,
-                "barb_color": "#11161d",
-                "barb_lw": 0.24,
-                "barb_outline_color": "white",
-                "barb_outline_lw": 0.04,
-                "barb_outline_alpha": 0.22,
                 "major_color": "#ffffff",
                 "major_width": 0.7,
                 "major_alpha": 0.45,
@@ -1846,11 +1868,6 @@ class OverlayRenderer:
                 "alpha_gamma": 1.1,
                 "alpha_min": 0,
                 "alpha_max": 220,
-                "barb_color": "#10151c",
-                "barb_lw": 0.23,
-                "barb_outline_color": "white",
-                "barb_outline_lw": 0.035,
-                "barb_outline_alpha": 0.2,
                 "major_color": "#ffffff",
                 "major_width": 0.7,
                 "major_alpha": 0.45,
@@ -1870,11 +1887,6 @@ class OverlayRenderer:
                 "alpha_gamma": 1.15,
                 "alpha_min": 0,
                 "alpha_max": 225,
-                "barb_color": "#0f141b",
-                "barb_lw": 0.22,
-                "barb_outline_color": "white",
-                "barb_outline_lw": 0.03,
-                "barb_outline_alpha": 0.18,
                 "major_color": "#ffffff",
                 "major_width": 0.8,
                 "major_alpha": 0.5,
@@ -1893,10 +1905,6 @@ class OverlayRenderer:
             "alpha_gamma": 1.15,
             "alpha_min": 0,
             "alpha_max": 225,
-            "barb_color": "#333333",
-            "barb_lw": 0.35,
-            "barb_outline_color": "white",
-            "barb_outline_lw": 0.10,
             "major_color": "#ffffff",
             "major_width": 0.8,
             "major_alpha": 0.5,
@@ -2058,19 +2066,20 @@ class OverlayRenderer:
 
         valid = (b_spd >= style["barb_floor"]) & np.isfinite(b_u) & np.isfinite(b_v)
         if np.any(valid):
-            barb_color = style.get("barb_color", "#222222")
-            barb_lw = style.get("barb_lw", 0.45)
-            outline_color = style.get("barb_outline_color", "white")
-            outline_lw = max(style.get("barb_outline_lw", 0.15), 0.5)
-            outline_alpha = max(style.get("barb_outline_alpha", 0.5), 0.8)
+            barb_color = style["barb_color"]
+            barb_lw = style["barb_lw"]
+            outline_color = style["barb_outline_color"]
+            outline_lw = style["barb_outline_lw"]
+            outline_alpha = style["barb_outline_alpha"]
 
-            # Very light keyline for contrast without producing a fuzzy double-stroke.
+            # Dark keyline keeps the pale symbols legible over bright wind fill.
             ax.barbs(
                 b_lon[valid], b_lat[valid], b_u[valid], b_v[valid],
                 length=style["barb_length"],
                 linewidth=barb_lw + outline_lw,
                 color=outline_color,
                 alpha=outline_alpha,
+                antialiased=True,
                 zorder=3,
             )
             # Crisp primary barb on top.
@@ -2079,9 +2088,11 @@ class OverlayRenderer:
                 length=style["barb_length"],
                 linewidth=barb_lw,
                 color=barb_color,
+                antialiased=True,
                 zorder=4,
             )
 
+        self._write_wind_svg(fig, output_path)
         return self._mpl_to_pil(fig, output_path)
 
     # ------------------------------------------------------------------

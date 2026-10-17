@@ -59,24 +59,28 @@ def load_dataset(path: Path, variables: tuple[str, ...] | None = None):
                     names = set(source.variables)
                     common = _COMMON & names
                     base = source[list(common)].load().copy(deep=True)
-                    metadata = (base, names)
+                    metadata = (base, names, set(source.coords))
                     _METADATA[identity] = metadata
                     requested = names - common if variables is None else requested & names
                     for name in requested:
                         key = (identity, name)
                         if key not in _ARRAYS:
-                            _ARRAYS[key] = source[name].load().copy(deep=True)
+                            # Cache only this variable, not its attached auxiliary
+                            # coordinates. GOES SST arrays carry band-ID coordinates
+                            # that must not be reinserted as ordinary data variables.
+                            _ARRAYS[key] = source[name].variable.load().copy(deep=True)
             else:
                 requested &= metadata[1]
                 missing = [name for name in requested if (identity, name) not in _ARRAYS]
                 if missing:
                     with xr.open_dataset(path) as source:
                         for name in missing:
-                            _ARRAYS[(identity, name)] = source[name].load().copy(deep=True)
+                            _ARRAYS[(identity, name)] = source[name].variable.load().copy(deep=True)
             detached = metadata[0].copy(deep=True)
             for name in requested:
                 key = (identity, name)
-                detached[name] = _ARRAYS[key].copy(deep=True)
+                target = detached.coords if name in metadata[2] else detached
+                target[name] = _ARRAYS[key].copy(deep=True)
                 _ARRAYS.move_to_end(key)
             _METADATA.move_to_end(identity)
             while len(_METADATA) > 8:

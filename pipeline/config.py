@@ -628,13 +628,6 @@ COLOR_SCALES = {
         "vmax": 3.0,
         "unit": "in",
         "label": "Hourly QPF (in)",
-        "contours": {
-            "levels": [0.10, 0.25, 0.50, 1.00, 2.00, 3.00],
-            "colors": "#f8fafc",
-            "linewidths": 0.42,
-            "alpha": 0.55,
-            "smooth_sigma": 0.7,
-        },
     },
 
     # -- Instability --
@@ -647,13 +640,6 @@ COLOR_SCALES = {
         "vmax": 6500,
         "unit": "J/kg",
         "label": "SBCAPE (J/kg)",
-        "contours": {
-            "levels": [500, 1000, 2000, 3000, 4000, 5000],
-            "colors": "#3b2600",
-            "linewidths": 0.34,
-            "alpha": 0.34,
-            "smooth_sigma": 0.8,
-        },
     },
     "cin": {
         "cmap": "wx_cin",
@@ -661,13 +647,6 @@ COLOR_SCALES = {
         "vmax": 0,
         "unit": "J/kg",
         "label": "SBCIN (J/kg)",
-        "contours": {
-            "levels": [-200, -100, -50, -25],
-            "colors": "#f8fafc",
-            "linewidths": 0.42,
-            "alpha": 0.5,
-            "smooth_sigma": 0.8,
-        },
     },
     "lifted_index": {
         "cmap": "RdBu",
@@ -675,13 +654,6 @@ COLOR_SCALES = {
         "vmax": 8,
         "unit": "\u00b0C",
         "label": "Lifted Index (\u00b0C)",
-        "contours": {
-            "levels": [-8, -6, -4, -2, 0],
-            "colors": "#f8fafc",
-            "linewidths": 0.42,
-            "alpha": 0.48,
-            "smooth_sigma": 0.8,
-        },
     },
     "stp": {
         "cmap": "discrete",
@@ -692,13 +664,6 @@ COLOR_SCALES = {
         "vmax": 10,
         "unit": "",
         "label": "Sig Tornado Param",
-        "contours": {
-            "levels": [1, 2, 3, 4, 6, 8],
-            "colors": "#f8fafc",
-            "linewidths": 0.44,
-            "alpha": 0.52,
-            "smooth_sigma": 0.7,
-        },
     },
     "scp": {
         "cmap": "discrete",
@@ -709,13 +674,6 @@ COLOR_SCALES = {
         "vmax": 20,
         "unit": "",
         "label": "Supercell Composite",
-        "contours": {
-            "levels": [2, 4, 8, 12, 16],
-            "colors": "#f8fafc",
-            "linewidths": 0.44,
-            "alpha": 0.52,
-            "smooth_sigma": 0.7,
-        },
     },
     "cti": {
         "cmap": "wx_cti",
@@ -744,13 +702,6 @@ COLOR_SCALES = {
         "vmax": 4,
         "unit": "",
         "label": "Sig Hail Parameter",
-        "contours": {
-            "levels": [1, 2, 3],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.45,
-            "smooth_sigma": 0.7,
-        },
     },
     "dcp": {
         "cmap": "wx_dcp",
@@ -758,13 +709,6 @@ COLOR_SCALES = {
         "vmax": 4,
         "unit": "",
         "label": "Derecho Composite",
-        "contours": {
-            "levels": [1, 2, 3],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.45,
-            "smooth_sigma": 0.7,
-        },
     },
     "citi": {
         "cmap": "wx_citi",
@@ -807,13 +751,6 @@ COLOR_SCALES = {
         "vmax": 60,
         "unit": "kg/m\u00b2",
         "label": "VIL (kg/m\u00b2)",
-        "contours": {
-            "levels": [20, 40, 60],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.42,
-            "smooth_sigma": 0.5,
-        },
     },
     "uh_25km": {
         "cmap": "YlOrRd",
@@ -821,13 +758,6 @@ COLOR_SCALES = {
         "vmax": 300,
         "unit": "m\u00b2/s\u00b2",
         "label": "2-5km Updraft Helicity",
-        "contours": {
-            "levels": [75, 150, 300],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.45,
-            "smooth_sigma": 0.5,
-        },
     },
 
     # -- Wind Shear --
@@ -840,13 +770,6 @@ COLOR_SCALES = {
         "vmax": 500,
         "unit": "m\u00b2/s\u00b2",
         "label": "0-1km SRH (m\u00b2/s\u00b2)",
-        "contours": {
-            "levels": [100, 150, 200, 300, 400],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.48,
-            "smooth_sigma": 0.8,
-        },
     },
     "srh_03km": {
         "cmap": "discrete",
@@ -857,13 +780,6 @@ COLOR_SCALES = {
         "vmax": 500,
         "unit": "m\u00b2/s\u00b2",
         "label": "0-3km SRH (m\u00b2/s\u00b2)",
-        "contours": {
-            "levels": [100, 150, 200, 300, 400],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.48,
-            "smooth_sigma": 0.8,
-        },
     },
     "shear_06km": {
         "cmap": "wx_shear",
@@ -871,13 +787,6 @@ COLOR_SCALES = {
         "vmax": 80,
         "unit": "kt",
         "label": "0-6km Shear (kt)",
-        "contours": {
-            "levels": [30, 40, 50, 60, 70],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.46,
-            "smooth_sigma": 0.8,
-        },
     },
     "shear_01km": {
         "cmap": "wx_shear",
@@ -885,13 +794,6 @@ COLOR_SCALES = {
         "vmax": 50,
         "unit": "kt",
         "label": "0-1km Shear (kt)",
-        "contours": {
-            "levels": [15, 20, 30, 40, 50],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.46,
-            "smooth_sigma": 0.8,
-        },
     },
     # -- Storm Chase --
     "mlcape": {
@@ -903,13 +805,6 @@ COLOR_SCALES = {
         "vmax": 6500,
         "unit": "J/kg",
         "label": "MLCAPE (J/kg)",
-        "contours": {
-            "levels": [500, 1000, 2000, 3000, 4000, 5000],
-            "colors": "#3b2600",
-            "linewidths": 0.34,
-            "alpha": 0.34,
-            "smooth_sigma": 0.8,
-        },
     },
     "mucape": {
         "cmap": "discrete",
@@ -920,13 +815,6 @@ COLOR_SCALES = {
         "vmax": 6500,
         "unit": "J/kg",
         "label": "MUCAPE (J/kg)",
-        "contours": {
-            "levels": [500, 1000, 2000, 3000, 4000, 5000],
-            "colors": "#3b2600",
-            "linewidths": 0.34,
-            "alpha": 0.34,
-            "smooth_sigma": 0.8,
-        },
     },
     "mlcin": {
         "cmap": "wx_cin",
@@ -934,13 +822,6 @@ COLOR_SCALES = {
         "vmax": 0,
         "unit": "J/kg",
         "label": "MLCIN (J/kg)",
-        "contours": {
-            "levels": [-200, -100, -50, -25],
-            "colors": "#f8fafc",
-            "linewidths": 0.42,
-            "alpha": 0.5,
-            "smooth_sigma": 0.8,
-        },
     },
     "mucin": {
         "cmap": "wx_cin",
@@ -948,13 +829,6 @@ COLOR_SCALES = {
         "vmax": 0,
         "unit": "J/kg",
         "label": "MUCIN (J/kg)",
-        "contours": {
-            "levels": [-200, -100, -50, -25],
-            "colors": "#f8fafc",
-            "linewidths": 0.42,
-            "alpha": 0.5,
-            "smooth_sigma": 0.8,
-        },
     },
     "cape_03km": {
         "cmap": "discrete",
@@ -965,13 +839,6 @@ COLOR_SCALES = {
         "vmax": 750,
         "unit": "J/kg",
         "label": "0-3km CAPE (J/kg)",
-        "contours": {
-            "levels": [50, 100, 200, 300, 500],
-            "colors": "#3b2600",
-            "linewidths": 0.34,
-            "alpha": 0.34,
-            "smooth_sigma": 0.7,
-        },
     },
     # -- Wind at pressure levels --
     "wind_850mb": {
@@ -1022,13 +889,6 @@ COLOR_SCALES = {
         "vmax": 150,
         "unit": "m\u00b2/s\u00b2",
         "label": "0-2km Updraft Helicity",
-        "contours": {
-            "levels": [50, 100, 150],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.45,
-            "smooth_sigma": 0.5,
-        },
     },
     "max_wind": {
         "cmap": "wx_wind",
@@ -1043,13 +903,6 @@ COLOR_SCALES = {
         "vmax": 500,
         "unit": "m\u00b2/s\u00b2",
         "label": "Eff. Helicity (m\u00b2/s\u00b2)",
-        "contours": {
-            "levels": [100, 200, 300, 400],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.45,
-            "smooth_sigma": 0.6,
-        },
     },
     "cloud_cover": {
         "cmap": "wx_cloud",
@@ -1094,13 +947,6 @@ COLOR_SCALES = {
         "vmax": 8,
         "unit": "mi",
         "label": "Visibility (mi)",
-        "contours": {
-            "levels": [0.25, 0.5, 1, 3, 5],
-            "colors": "#f8fafc",
-            "linewidths": 0.38,
-            "alpha": 0.42,
-            "smooth_sigma": 0.6,
-        },
     },
     "snow_depth": {
         "cmap": "discrete",
@@ -1111,13 +957,6 @@ COLOR_SCALES = {
         "vmax": 36,
         "unit": "in",
         "label": "Snow Depth (in)",
-        "contours": {
-            "levels": [1, 2, 4, 6, 8, 12, 18, 24],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.5,
-            "smooth_sigma": 0.6,
-        },
     },
     "frozen_pct": {
         "cmap": "YlGnBu",
@@ -1154,13 +993,6 @@ COLOR_SCALES = {
         "vmax": 36,
         "unit": "in",
         "label": "6hr Kuchera Snow (in)",
-        "contours": {
-            "levels": [1, 2, 4, 6, 8, 12],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.5,
-            "smooth_sigma": 0.6,
-        },
     },
     "kuchera_12hr": {
         "cmap": "discrete",
@@ -1171,13 +1003,6 @@ COLOR_SCALES = {
         "vmax": 36,
         "unit": "in",
         "label": "12hr Kuchera Snow (in)",
-        "contours": {
-            "levels": [1, 2, 4, 6, 8, 12, 18],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.5,
-            "smooth_sigma": 0.6,
-        },
     },
     "snow10_12hr": {
         "cmap": "discrete",
@@ -1188,13 +1013,6 @@ COLOR_SCALES = {
         "vmax": 36,
         "unit": "in",
         "label": "12hr 10:1 Snow (in)",
-        "contours": {
-            "levels": [1, 2, 4, 6, 8, 12, 18],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.5,
-            "smooth_sigma": 0.6,
-        },
     },
 
     # -- Additional pressure levels --
@@ -1249,13 +1067,6 @@ COLOR_SCALES = {
         "vmax": 3,
         "unit": "in",
         "label": "Hail Size (in)",
-        "contours": {
-            "levels": [1, 2, 3],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.45,
-            "smooth_sigma": 0.5,
-        },
     },
     "uh_03km": {
         "cmap": "YlOrRd",
@@ -1263,13 +1074,6 @@ COLOR_SCALES = {
         "vmax": 250,
         "unit": "m\u00b2/s\u00b2",
         "label": "0-3km Updraft Helicity",
-        "contours": {
-            "levels": [75, 150, 250],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.45,
-            "smooth_sigma": 0.5,
-        },
     },
     "uh_25km_swath": {
         "cmap": "YlOrRd",
@@ -1291,13 +1095,6 @@ COLOR_SCALES = {
         "vmax": 6000,
         "unit": "ft",
         "label": "PBL Height (ft)",
-        "contours": {
-            "levels": [1000, 3000, 5000],
-            "colors": "#f8fafc",
-            "linewidths": 0.36,
-            "alpha": 0.38,
-            "smooth_sigma": 0.8,
-        },
     },
     "weasd": {
         "cmap": "discrete",
@@ -1308,13 +1105,6 @@ COLOR_SCALES = {
         "vmax": 3.0,
         "unit": "in",
         "label": "Snow Water Equiv (in)",
-        "contours": {
-            "levels": [0.10, 0.25, 0.50, 1.00, 2.00],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.5,
-            "smooth_sigma": 0.6,
-        },
     },
     # -- ECMWF IFS-specific --
     "snowfall": {
@@ -1326,13 +1116,6 @@ COLOR_SCALES = {
         "vmax": 3.0,
         "unit": "in",
         "label": "Snowfall (in w.e.)",
-        "contours": {
-            "levels": [0.10, 0.25, 0.50, 1.00, 2.00],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.5,
-            "smooth_sigma": 0.6,
-        },
     },
     "gh_500mb": {
         "cmap": "wx_heights",
@@ -1448,13 +1231,6 @@ COLOR_SCALES = {
         "vmax": 20000,
         "unit": "ft",
         "label": "Cloud Ceiling (ft)",
-        "contours": {
-            "levels": [500, 1000, 3000, 5000, 10000],
-            "colors": "#f8fafc",
-            "linewidths": 0.38,
-            "alpha": 0.42,
-            "smooth_sigma": 0.7,
-        },
     },
     "lfc": {
         "cmap": "RdYlGn_r",
@@ -1574,13 +1350,6 @@ COLOR_SCALES = {
         "vmax": 3.0,
         "unit": "in",
         "label": "6h Precipitation (in)",
-        "contours": {
-            "levels": [0.25, 0.50, 1.00, 2.00, 3.00],
-            "colors": "#f8fafc",
-            "linewidths": 0.42,
-            "alpha": 0.55,
-            "smooth_sigma": 0.7,
-        },
     },
     "snowfall_6h": {
         "cmap": "discrete",
@@ -1591,13 +1360,6 @@ COLOR_SCALES = {
         "vmax": 36,
         "unit": "in",
         "label": "6h Snowfall (in)",
-        "contours": {
-            "levels": [1, 2, 4, 6, 8, 12],
-            "colors": "#f8fafc",
-            "linewidths": 0.4,
-            "alpha": 0.5,
-            "smooth_sigma": 0.6,
-        },
     },
     # -- Max/Min Temps --
     "max_temp_1h": {

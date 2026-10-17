@@ -377,7 +377,7 @@ async def get_available(model: str, run_id: str):
 
 @app.get("/api/available/{model}/{run_id}/vectors")
 async def get_available_vectors(model: str, run_id: str):
-    """List pressure frames with vector geometry, including active runs."""
+    """List pressure/wind frames with vector geometry, including active runs."""
     if not re.fullmatch(r"[a-z0-9_]+", model) or not re.fullmatch(r"\d{10}", run_id):
         raise HTTPException(status_code=400, detail="Invalid model or run")
     root = RENDERED_DIR.resolve()
@@ -385,9 +385,11 @@ async def get_available_vectors(model: str, run_id: str):
     if not run_dir.is_relative_to(root):
         raise HTTPException(status_code=400, detail="Invalid run path")
     result = {}
-    for parameter in ("mslp", "psfc"):
+    for parameter in ("mslp", "psfc", "wind_speed", "wind_925mb", "wind_850mb",
+                      "wind_700mb", "wind_500mb", "wind_300mb", "wind_250mb", "wind_200mb"):
+        suffix = "wind.svg" if parameter.startswith("wind_") else "contours.json"
         frames = [int(path.name.split(".")[0][1:])
-                  for path in (run_dir / parameter).glob("f*.contours.json")
+                  for path in (run_dir / parameter).glob(f"f*.{suffix}")
                   if path.name.split(".")[0][1:].isdigit()]
         if frames:
             result[parameter] = sorted(frames)

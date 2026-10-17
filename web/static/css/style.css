@@ -3618,6 +3618,16 @@ html[data-capture-mode="1"] .leaflet-container {
   filter: saturate(1.18) contrast(1.08);
 }
 
+/* Wind symbols carry their own contrasting keyline. Whole-image shadows
+   blur those thin strokes and add unnecessary compositing during playback. */
+.model-overlay[class*="model-overlay-wind_"] {
+  image-rendering: auto;
+}
+.is-playing .model-overlay[class*="model-overlay-wind_"] {
+  filter: none;
+  outline: none;
+}
+
 .is-playing .model-overlay-reflectivity {
   filter:
     saturate(1.18)
