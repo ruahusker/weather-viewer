@@ -1016,21 +1016,29 @@ function clearLoadQueue() {
   _productUrls = [];
 }
 
-// Show loading progress in the frame counter while frames are downloading
+/** Current frame index and total frame count for the active source. */
+function currentFramePosition() {
+  if (state.dataSource === 'models') {
+    const idx = state.availableFxx.indexOf(state.currentFxx);
+    return { idx, count: state.availableFxx.length };
+  }
+  if (state.dataSource === 'satellite') return { idx: state.satFrameIdx, count: state.satFrames.length };
+  if (state.dataSource === 'radar') return { idx: state.radarFrameIdx, count: state.radarFrames.length };
+  if (state.dataSource === 'home') return { idx: state.homeRadarFrameIdx, count: state.homeRadarFrames.length };
+  return { idx: -1, count: 0 };
+}
+
+// Frame counter shows the position in the whole loop ("37/72"). The preload
+// window around the current frame only adds a "loading" state, never its own
+// count, so the total always reflects every frame in the loop.
 function updateLoadStatus() {
   const fc = document.getElementById('frameCounter');
-  if (!fc || !_productUrls.length) return;
-  const total = _productUrls.length;
-  const loaded = _productUrls.reduce((n, u) => {
-    const s = _imgCache.get(u);
-    return n + (s === 'ok' || s === 'error' ? 1 : 0);
-  }, 0);
-  if (loaded < total) {
-    fc.textContent = `↓ ${loaded}/${total}`;
-    fc.classList.add('loading');
-  } else {
-    fc.classList.remove('loading');
-  }
+  if (!fc) return;
+  const { idx, count } = currentFramePosition();
+  fc.textContent = count > 0 && idx >= 0 ? `${idx + 1}/${count}` : '--';
+  const loading = _productUrls.some((u) => _imgCache.get(u) === 'pending');
+  fc.classList.toggle('loading', loading);
+  fc.title = loading ? 'Loading nearby frames' : '';
 }
 
 const captureBtn = $('captureBtn');

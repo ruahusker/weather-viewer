@@ -312,7 +312,8 @@ html[data-ui="v4"] .legend-ticks span {
 
 /* ── Time dock ──────────────────────────────────────────── */
 html[data-ui="v4"] .scrubber-bar {
-  grid-template-columns: auto minmax(150px, auto) minmax(0, 1fr) auto;
+  /* Fixed time column: a label that changes width every frame would shove the slider. */
+  grid-template-columns: auto 250px minmax(0, 1fr) auto;
   grid-template-areas: "play info track speed";
   align-items: center;
   column-gap: 18px;
@@ -355,21 +356,28 @@ html[data-ui="v4"] .speed-btn.active {
 html[data-ui="v4"] .scrubber-track-wrapper { grid-area: track; }
 html[data-ui="v4"] .scrubber-info {
   grid-area: info;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
 }
 html[data-ui="v4"] .valid-time {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font: 600 16px var(--font-ui);
+  font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
   color: var(--text);
   white-space: nowrap;
 }
 html[data-ui="v4"] .frame-counter {
   font: 400 12px var(--font-data);
+  font-variant-numeric: tabular-nums;
   color: var(--text-dim);
 }
+html[data-ui="v4"] .frame-counter.loading { color: var(--accent); }
 html[data-ui="v4"] .scrubber-hint { display: none; }
 
 html[data-ui="v4"] .scrubber {
