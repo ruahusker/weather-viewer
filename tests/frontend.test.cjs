@@ -7,6 +7,33 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const source = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 
+for (const filename of ['web/static/js/app.js', 'web/static/js/mobile.js']) {
+ test(`${filename}: preloading stays near the selected frame and wraps the loop`, () => {
+  const code = source(filename).match(/function frameWindow\(count, current\) \{[\s\S]*?^\}/m)[0];
+  const ctx = vm.createContext({});
+  vm.runInContext(code, ctx);
+  const indices = Array.from(vm.runInContext('frameWindow(209, 208)', ctx));
+  assert.equal(indices.length, 9);
+  assert.deepEqual(indices.slice(0, 4), [208, 0, 1, 2]);
+  assert.deepEqual(Array.from(vm.runInContext('frameWindow(2, 0)', ctx)), [0, 1]);
+  assert.equal(vm.runInContext('frameWindow(0, 0).length', ctx), 0);
+ });
+ test(`${filename}: hidden playback pauses and resumes only if it was playing`, () => {
+  const code = source(filename).match(/let resumePlaybackWhenVisible = false;[\s\S]*?^\}/m)[0];
+  const state = {isPlaying: true};
+  const ctx = vm.createContext({state, S: state, document:{hidden:true},
+   pause(){state.isPlaying=false;}, play(){state.isPlaying=true;},
+   preloadAllFrames(){},preloadAllDesktopFrames(){},_pumpQueue(){}});
+  vm.runInContext(code+';handlePageVisibility();',ctx);
+  assert.equal(state.isPlaying,false);
+  ctx.document.hidden=false;vm.runInContext('handlePageVisibility()',ctx);
+  assert.equal(state.isPlaying,true);
+  state.isPlaying=false;ctx.document.hidden=true;vm.runInContext('handlePageVisibility()',ctx);
+  ctx.document.hidden=false;vm.runInContext('handlePageVisibility()',ctx);
+  assert.equal(state.isPlaying,false);
+ });
+}
+
 function mobileContext(search = '') {
   const elements = new Map();
   const element = () => ({textContent:'',innerHTML:'',value:'0',max:'0',disabled:false,hidden:false,
@@ -105,7 +132,7 @@ test('service worker: image storage stays bounded', async () => {
 });
 
 test('all shipped scripts parse before browser execution', () => {
- for(const file of ['web/static/js/app.js','web/static/js/mobile.js','web/static/js/pressure-contours.js','web/static/js/map-capture.js','web/static/js/viewer-ui.js','web/static/js/surface-obs.js','web/static/sw.js']) {
+ for(const file of ['web/static/js/app.js','web/static/js/mobile.js','web/static/js/pressure-contours.js','web/static/js/map-capture.js','web/static/js/viewer-ui.js','web/static/js/surface-obs.js','web/static/js/meteogram.js','web/static/sw.js']) {
   assert.doesNotThrow(()=>new vm.Script(source(file)),file);
  }
 });

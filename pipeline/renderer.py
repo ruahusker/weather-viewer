@@ -7,6 +7,7 @@ V3: Native-resolution rendering. Geographic features (boundaries, roads,
 
 Backup of V2 (pre-rasterized overlay): renderer_v2_overlay.py
 """
+from collections import OrderedDict
 import hashlib
 import json
 import logging
@@ -15,10 +16,8 @@ import tempfile
 import time
 from pathlib import Path
 
-import cartopy.io.shapereader as shpreader
 import matplotlib
 import matplotlib.colors as mcolors
-import matplotlib.path as mpath
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,6 +34,7 @@ from scipy.spatial import cKDTree
 from shapely.geometry import LineString
 
 from .config import COLOR_SCALES, RENDER_DPI
+from .render_geometry import shared_arrays
 
 # ---------------------------------------------------------------------------
 # Disk-persisted regrid cache directory
@@ -45,6 +45,19 @@ _REGRID_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 matplotlib.use("Agg")
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_png(image: Image.Image, output_path: Path) -> None:
+    """Publish complete frames so an interrupted job remains resumable."""
+    fd, temporary = tempfile.mkstemp(dir=output_path.parent, prefix=f".{output_path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as output:
+            image.save(output, format="PNG", compress_level=1)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, output_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 _REGRID_LOCK_WAIT_SECONDS = 120
 
@@ -165,43 +178,6 @@ _NO_DIFFUSION_PARAMS = {
 }
 
 
-def _path_from_geometry(geom, label):
-    """Convert polygon geometry into a matplotlib Path."""
-    try:
-        all_verts = []
-        all_codes = []
-        polys = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
-        for poly in polys:
-            coords = list(poly.exterior.coords)
-            if len(coords) < 3:
-                continue
-            all_verts.extend(coords)
-            all_codes.extend(
-                [mpath.Path.MOVETO]
-                + [mpath.Path.LINETO] * (len(coords) - 2)
-                + [mpath.Path.CLOSEPOLY]
-            )
-        if all_verts:
-            logger.info("Loaded %s: %d polygons", label, len(polys))
-            return mpath.Path(all_verts, all_codes)
-    except Exception as exc:
-        logger.warning("Failed to load %s: %s", label, exc)
-    return None
-
-
-def _build_usa_path():
-    """Load USA border as a matplotlib Path for point-in-polygon testing."""
-    try:
-        shpfile = shpreader.natural_earth("50m", "cultural", "admin_0_countries")
-        reader = shpreader.Reader(shpfile)
-        for rec in reader.records():
-            if rec.attributes.get("ADMIN") == "United States of America":
-                return _path_from_geometry(rec.geometry, "USA border")
-    except Exception as exc:
-        logger.warning("Failed to load USA border: %s", exc)
-    return None
-
-
 _BOUNDARY_GEOJSON_CACHE: dict[str, dict] = {}
 
 
@@ -245,10 +221,6 @@ def _boundary_geometry_parts(geometry: dict) -> list[list[list[float]]]:
     return []
 
 
-# Load once at module level
-_USA_PATH = _build_usa_path()
-
-
 # ---------------------------------------------------------------------------
 # NWS Composite Reflectivity colormap — from the shared versioned palette
 # registry so model reflectivity matches the Level II radar products exactly.
@@ -284,18 +256,29 @@ class OverlayRenderer:
     def __init__(self):
         # Regrid caches: keyed by (source_shape, bounds, target_w, target_h)
         self._regrid_cache = {}
-        # Target grids: keyed by (bounds, target_w, target_h) -> {lon, lat, masks}
-        self._target_grids = {}
+        # Target grids: keyed by (bounds, target_w, target_h) -> {lon, lat}
+        self._target_grids = OrderedDict()
         # EDT cache: keyed by (grid_h, grid_w, nan_mask_hash) -> {distances, outside_mask}
         self._edt_cache = {}
+        # Only derived numeric height grids are shared between overlays.
+        # Source arrays stay referenced until the next forecast hour.
+        self._height_grid_cache = OrderedDict()
+        self._height_grid_cache_bytes = 0
+        self._height_grid_cache_limit = int(os.getenv("MODEL_HEIGHT_CACHE_MB", "128")) * 1024**2
         self._current_model_name = ""
         self._last_render_bounds: tuple[float, float, float, float] | None = None
+        self.last_render_costs = {}
+        self.geometry_cache_hits = 0
+        self.geometry_cache_misses = 0
+        self._geometry_cache_limit = int(os.getenv("MODEL_GEOMETRY_CACHE_MB", "256")) * 1024**2
 
     def clear_caches(self):
         """Release cached regrid indices and target grids."""
         self._regrid_cache.clear()
         self._target_grids.clear()
         self._edt_cache.clear()
+        self._height_grid_cache.clear()
+        self._height_grid_cache_bytes = 0
 
     def _draw_boundary_lines(self, image: Image.Image, bounds: tuple[float, float, float, float]) -> Image.Image:
         """Overlay state and coastline lines onto a rendered RGBA image."""
@@ -318,6 +301,47 @@ class OverlayRenderer:
                     draw.line(pts, fill=color, width=width_px, joint="curve")
         return image
 
+    def clear_hour_cache(self):
+        """Release hour-specific fields while retaining reusable geometry."""
+        self._height_grid_cache.clear()
+        self._height_grid_cache_bytes = 0
+
+    def _timed_render(self, param, render, *args, **kwargs):
+        started = time.process_time()
+        result = render(*args, **kwargs)
+        if result:
+            self.last_render_costs[param] = max(.000001, time.process_time() - started)
+        return result
+
+    def prepare_shared_heights(self, processed, chunks, model_name):
+        """Compute repeated height grids once before forking render children."""
+        self.clear_hour_cache()
+        self._current_model_name = (model_name or "").lower()
+        requests = {}
+        try:
+            for index, chunk in enumerate(chunks):
+                for param in chunk:
+                    contour = param if param in _HEIGHT_CONTOUR_PARAMS else _SCALAR_HEIGHT_OVERLAYS.get(param)
+                    if contour not in processed or param not in processed:
+                        continue
+                    field, height = processed[param], processed[contour]
+                    bounds = self.get_data_bounds(field["lat"], field["lon"])
+                    w, h = self._get_mpl_resolution(height["lon"], height["lat"], height["data"], bounds)
+                    if param.startswith("wind_"):
+                        w, h = self._get_mpl_resolution(field["lon"], field["lat"], field["data"], bounds)
+                        scale = float(self._get_wind_style(param).get("resolution_scale", 1.0))
+                        w, h = int(round(w * scale)), int(round(h * scale))
+                    elif param != contour:
+                        fw, fh = self._estimate_resolution(field["lon"], field["lat"], field["data"], bounds)
+                        w, h = max(w, fw), max(h, fh)
+                    requests.setdefault((contour, bounds, w, h), set()).add(index)
+            for (contour, bounds, w, h), users in requests.items():
+                if len(users) > 1:
+                    self._height_contour_grid(contour, processed[contour], bounds, w, h,
+                                              _HEIGHT_CONTOUR_CONFIG[contour])
+        finally:
+            self._current_model_name = ""
+
     # ------------------------------------------------------------------
     # Target grid management
     # ------------------------------------------------------------------
@@ -333,31 +357,39 @@ class OverlayRenderer:
         merc_north = float(_lat_to_merc(north))
         key = (bounds, w, h)
         if key not in self._target_grids:
-            lon_1d = np.linspace(west, east, w, dtype=np.float32)
-            # Mercator Y-spacing: linear in Mercator, convert back to geographic
-            merc_1d = np.linspace(merc_north, merc_south, h, dtype=np.float32)
-            lat_1d = np.degrees(2 * np.arctan(np.exp(np.radians(merc_1d))) - np.pi / 2).astype(np.float32)
-            target_lon, target_lat = np.meshgrid(lon_1d, lat_1d)
+            def build():
+                lon_1d = np.linspace(west, east, w, dtype=np.float32)
+                merc_1d = np.linspace(merc_north, merc_south, h, dtype=np.float32)
+                lat_1d = np.degrees(2 * np.arctan(np.exp(np.radians(merc_1d))) - np.pi / 2).astype(np.float32)
+                target_lon, target_lat = np.meshgrid(lon_1d, lat_1d)
+                return {'lon': target_lon, 'lat': target_lat, 'merc_lat': _lat_to_merc(target_lat)}
+            grid, hit = shared_arrays(_REGRID_CACHE_DIR, key, (h, w),
+                                      ("lon", "lat", "merc_lat"), build)
+            self._target_grids[key] = grid
+            self.geometry_cache_hits += int(hit)
+            self.geometry_cache_misses += int(not hit)
+        else:
+            self.geometry_cache_hits += 1
+        grid = self._target_grids[key]
+        self._target_grids.move_to_end(key)
+        self._trim_target_grids()
+        return grid
 
-            # USA border mask — True for pixels OUTSIDE the USA
-            usa_outside = np.ones((h, w), dtype=bool)
-            if _USA_PATH is not None:
-                pts = np.column_stack([target_lon.ravel(), target_lat.ravel()])
-                inside = _USA_PATH.contains_points(pts).reshape(h, w)
-                usa_outside = ~inside
-                logger.info("USA mask for %dx%d: %d/%d pixels inside",
-                            w, h, inside.sum(), inside.size)
+    def _trim_target_grids(self):
+        """Bound reusable projection geometry, retaining one complete grid."""
+        while self._target_grids and (
+            len(self._target_grids) > 5 or
+            sum(array.nbytes for grid in self._target_grids.values()
+                for array in grid.values()) > self._geometry_cache_limit
+        ):
+            self._target_grids.popitem(last=False)
 
-            self._target_grids[key] = {
-                'lon': target_lon,
-                'lat': target_lat,
-                'usa_outside': usa_outside,
-            }
-            # Cap target grid cache size
-            while len(self._target_grids) > 5:
-                self._target_grids.pop(next(iter(self._target_grids)))
-
-        return self._target_grids[key]
+    @staticmethod
+    def _mercator_grid(grid):
+        """Lazily support grids supplied by callers as well as cached grids."""
+        if "merc_lat" not in grid:
+            grid["merc_lat"] = _lat_to_merc(grid["lat"])
+        return grid["merc_lat"]
 
     def _estimate_resolution(self, lon, lat, data, bounds):
         """Estimate output dimensions matching native data resolution."""
@@ -427,17 +459,43 @@ class OverlayRenderer:
         return cast(scalar) if cast is not None else scalar
 
     def _load_regrid_from_disk(self, cache_key):
-        """Try to load a regrid map from disk cache. Returns True on success."""
+        """Load an irregular map with shared, read-only memory mapping."""
         disk_key = self._regrid_disk_key(*cache_key)
+        index_path = _REGRID_CACHE_DIR / f"{disk_key}.indices.npy"
+        mask_path = _REGRID_CACHE_DIR / f"{disk_key}.mask.npy"
+        expected_size = cache_key[2] * cache_key[3]
+        if index_path.exists() and mask_path.exists():
+            try:
+                indices = np.load(index_path, mmap_mode='r')
+                dist_mask = np.load(mask_path, mmap_mode='r')
+                if (indices.size != expected_size or dist_mask.shape != (cache_key[3], cache_key[2])
+                        or indices.dtype != np.int32 or dist_mask.dtype != np.bool_):
+                    raise ValueError("invalid irregular regrid map shape or dtype")
+                self._regrid_cache[cache_key] = {
+                    'indices': indices,
+                    'dist_mask': dist_mask,
+                }
+                return True
+            except Exception as exc:
+                logger.warning("Failed to load memory-mapped regrid cache %s: %s", disk_key, exc)
+                index_path.unlink(missing_ok=True)
+                mask_path.unlink(missing_ok=True)
+
+        # Migrate older .npz entries on first use. The new files are written
+        # atomically, and the legacy entry is removed only after both succeed.
         path = _REGRID_CACHE_DIR / f"{disk_key}.npz"
         if not path.exists():
             return False
         try:
-            data = np.load(path)
+            with np.load(path) as data:
+                indices = data['indices']
+                dist_mask = data['dist_mask']
             self._regrid_cache[cache_key] = {
-                'indices': data['indices'],
-                'dist_mask': data['dist_mask'],
+                'indices': indices,
+                'dist_mask': dist_mask,
             }
+            if self._save_regrid_to_disk(cache_key, indices, dist_mask):
+                path.unlink(missing_ok=True)
             logger.info("Loaded regrid cache from disk: %s (%dx%d)",
                         cache_key[0], cache_key[2], cache_key[3])
             return True
@@ -447,26 +505,28 @@ class OverlayRenderer:
             return False
 
     def _save_regrid_to_disk(self, cache_key, indices, dist_mask):
-        """Persist a regrid map to disk for reuse across process restarts."""
+        """Persist irregular lookup arrays for memory-mapped reuse."""
         disk_key = self._regrid_disk_key(*cache_key)
-        path = _REGRID_CACHE_DIR / f"{disk_key}.npz"
-        try:
-            with tempfile.NamedTemporaryFile(
-                dir=_REGRID_CACHE_DIR,
-                prefix=f"{disk_key}_",
-                suffix=".npz",
-                delete=False,
-            ) as tmp_f:
-                tmp_path = Path(tmp_f.name)
-            np.savez(tmp_path, indices=indices, dist_mask=dist_mask)
-            tmp_path.replace(path)
-            logger.info("Saved regrid cache to disk: %s", path.name)
-        except Exception as exc:
-            logger.warning("Failed to save regrid cache: %s", exc)
+        for suffix, values in (("indices", indices), ("mask", dist_mask)):
+            path = _REGRID_CACHE_DIR / f"{disk_key}.{suffix}.npy"
+            tmp_path = None
             try:
-                tmp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+                with tempfile.NamedTemporaryFile(
+                    dir=_REGRID_CACHE_DIR,
+                    prefix=f"{disk_key}_",
+                    suffix=".npy",
+                    delete=False,
+                ) as tmp_f:
+                    tmp_path = Path(tmp_f.name)
+                np.save(tmp_path, values)
+                tmp_path.replace(path)
+            except Exception as exc:
+                logger.warning("Failed to save regrid cache %s: %s", path, exc)
+                if tmp_path is not None:
+                    tmp_path.unlink(missing_ok=True)
+                return False
+        logger.info("Saved memory-mapped regrid cache: %s", disk_key)
+        return True
 
     def _wait_for_regular_cache(self, cache_key, timeout_s=_REGRID_LOCK_WAIT_SECONDS):
         """Wait for another worker to finish building a regular cache."""
@@ -531,14 +591,33 @@ class OverlayRenderer:
         if not path.exists():
             return False
         try:
-            data = np.load(path)
+            with np.load(path) as data:
+                lon_idx = data['lon_idx']
+                lat_idx = data['lat_idx']
+                lat_descending = self._np_scalar(data['lat_descending'], bool)
+                lon_wrap = self._np_scalar(data['lon_wrap'], bool)
+                wrap_idx = self._np_scalar(data['wrap_idx'], int)
+            # Older caches stored both axes as full 2D grids. For a regular
+            # grid, longitude is constant down columns and latitude across
+            # rows; keep only those axes and migrate the disk entry in place.
+            compacted = False
+            if lon_idx.ndim == lat_idx.ndim == 2:
+                lon_axis = lon_idx[0, :]
+                lat_axis = lat_idx[:, 0]
+                if (np.array_equal(lon_idx, np.broadcast_to(lon_axis, lon_idx.shape))
+                        and np.array_equal(lat_idx, np.broadcast_to(lat_axis[:, None], lat_idx.shape))):
+                    lon_idx = lon_axis.copy()
+                    lat_idx = lat_axis.copy()
+                    compacted = True
             self._regrid_cache[cache_key] = {
-                'lon_idx': data['lon_idx'],
-                'lat_idx': data['lat_idx'],
-                'lat_descending': self._np_scalar(data['lat_descending'], bool),
-                'lon_wrap': self._np_scalar(data['lon_wrap'], bool),
-                'wrap_idx': self._np_scalar(data['wrap_idx'], int),
+                'lon_idx': lon_idx,
+                'lat_idx': lat_idx,
+                'lat_descending': lat_descending,
+                'lon_wrap': lon_wrap,
+                'wrap_idx': wrap_idx,
             }
+            if compacted:
+                self._save_regular_to_disk(cache_key, self._regrid_cache[cache_key])
             logger.info("Loaded regular regrid cache from disk: %s", path.name)
             return True
         except Exception as exc:
@@ -577,7 +656,15 @@ class OverlayRenderer:
             logger.info("Building regular regrid cache for %s -> %dx%d (one-time, will persist to disk)",
                         cache_key, target_w, target_h)
 
-            tg = self._get_target_grid(bounds, target_w, target_h)
+            south, north, west, east = bounds
+            target_lon = np.linspace(west, east, target_w, dtype=np.float32)
+            merc = np.linspace(
+                float(_lat_to_merc(north)), float(_lat_to_merc(south)),
+                target_h, dtype=np.float32,
+            )
+            target_lat = np.degrees(
+                2 * np.arctan(np.exp(np.radians(merc))) - np.pi / 2
+            ).astype(np.float32)
 
             # Convert lon to -180..180 if needed
             lon_1d = np.where(lon_1d > 180, lon_1d - 360, lon_1d)
@@ -593,8 +680,8 @@ class OverlayRenderer:
                 wrap_idx = np.argmin(lon_1d)
                 lon_1d = np.roll(lon_1d, -wrap_idx)
 
-            lon_idx_left = np.searchsorted(lon_1d, tg['lon'], side='right') - 1
-            lat_idx_left = np.searchsorted(lat_1d, tg['lat'], side='right') - 1
+            lon_idx_left = np.searchsorted(lon_1d, target_lon, side='right') - 1
+            lat_idx_left = np.searchsorted(lat_1d, target_lat, side='right') - 1
 
             lon_idx_left = np.clip(lon_idx_left, 0, len(lon_1d) - 2)
             lat_idx_left = np.clip(lat_idx_left, 0, len(lat_1d) - 2)
@@ -602,10 +689,10 @@ class OverlayRenderer:
             lon_idx_right = lon_idx_left + 1
             lat_idx_right = lat_idx_left + 1
 
-            lon_left_dist = np.abs(tg['lon'] - lon_1d[lon_idx_left])
-            lon_right_dist = np.abs(lon_1d[lon_idx_right] - tg['lon'])
-            lat_left_dist = np.abs(tg['lat'] - lat_1d[lat_idx_left])
-            lat_right_dist = np.abs(lat_1d[lat_idx_right] - tg['lat'])
+            lon_left_dist = np.abs(target_lon - lon_1d[lon_idx_left])
+            lon_right_dist = np.abs(lon_1d[lon_idx_right] - target_lon)
+            lat_left_dist = np.abs(target_lat - lat_1d[lat_idx_left])
+            lat_right_dist = np.abs(lat_1d[lat_idx_right] - target_lat)
 
             lon_idx = np.where(lon_right_dist < lon_left_dist, lon_idx_right, lon_idx_left)
             lat_idx = np.where(lat_right_dist < lat_left_dist, lat_idx_right, lat_idx_left)
@@ -621,34 +708,7 @@ class OverlayRenderer:
                 'wrap_idx': wrap_idx,
             }
 
-            # Persist to disk
-            path = _REGRID_CACHE_DIR / f"reg_{disk_key}.npz"
-            tmp_path = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    dir=_REGRID_CACHE_DIR,
-                    prefix=f"reg_{disk_key}_",
-                    suffix=".npz",
-                    delete=False,
-                ) as tmp_f:
-                    tmp_path = Path(tmp_f.name)
-                np.savez(
-                    tmp_path,
-                    lon_idx=lon_idx_i32,
-                    lat_idx=lat_idx_i32,
-                    lat_descending=np.array(lat_descending, dtype=np.bool_),
-                    lon_wrap=np.array(lon_wrap, dtype=np.bool_),
-                    wrap_idx=np.array(wrap_idx, dtype=np.int32),
-                )
-                tmp_path.replace(path)
-                logger.info("Saved regular regrid cache to disk: %s", path.name)
-            except Exception as exc:
-                logger.warning("Failed to save regular regrid cache: %s", exc)
-                if tmp_path is not None:
-                    try:
-                        tmp_path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+            self._save_regular_to_disk(cache_key, self._regrid_cache[cache_key])
         finally:
             if lock_fd is not None:
                 try:
@@ -659,6 +719,34 @@ class OverlayRenderer:
                     lock_path.unlink(missing_ok=True)
                 except Exception:
                     pass
+
+    def _save_regular_to_disk(self, cache_key, cached):
+        """Atomically persist the compact regular-grid lookup axes."""
+        disk_key = self._regrid_disk_key(*cache_key)
+        path = _REGRID_CACHE_DIR / f"reg_{disk_key}.npz"
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=_REGRID_CACHE_DIR,
+                prefix=f"reg_{disk_key}_",
+                suffix=".npz",
+                delete=False,
+            ) as tmp_f:
+                tmp_path = Path(tmp_f.name)
+            np.savez(
+                tmp_path,
+                lon_idx=cached['lon_idx'],
+                lat_idx=cached['lat_idx'],
+                lat_descending=np.array(cached['lat_descending'], dtype=np.bool_),
+                lon_wrap=np.array(cached['lon_wrap'], dtype=np.bool_),
+                wrap_idx=np.array(cached['wrap_idx'], dtype=np.int32),
+            )
+            tmp_path.replace(path)
+            logger.info("Saved regular regrid cache to disk: %s", path.name)
+        except Exception as exc:
+            logger.warning("Failed to save regular regrid cache: %s", exc)
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
     def _regrid_regular(self, lon_1d, lat_1d, data, bounds, target_w, target_h):
         """Regrid from regular lat/lon grid using nearest-neighbor sampling."""
@@ -678,7 +766,10 @@ class OverlayRenderer:
         if c['lon_wrap']:
             data = np.roll(data, -c['wrap_idx'], axis=1) if data.ndim > 1 else data
 
-        result = data[c['lat_idx'], c['lon_idx']]
+        if c['lon_idx'].ndim == c['lat_idx'].ndim == 1:
+            result = data[c['lat_idx'][:, None], c['lon_idx'][None, :]]
+        else:
+            result = data[c['lat_idx'], c['lon_idx']]
         return result.astype(np.float32)
 
     def _extend_outside_domain(
@@ -707,52 +798,90 @@ class OverlayRenderer:
 
         # Step 1: Fill voids with nearest-neighbor colors
         # We always need nearest_idx for color filling (param-dependent),
-        # but reuse cached distances for the alpha fade.
-        distances, nearest_idx = distance_transform_edt(
-            outside_mask, return_indices=True)
-        nearest_y = nearest_idx[0][outside_mask]
-        nearest_x = nearest_idx[1][outside_mask]
+        # but reuse cached distances and index arrays for the alpha fade.
+        if cached_edt is not None and 'nearest_idx' in cached_edt:
+            distances = cached_edt['outside_edt']
+            nearest_idx = cached_edt['nearest_idx']
+            if 'nearest_yx' not in cached_edt:
+                cached_edt['nearest_yx'] = (
+                    nearest_idx[0][outside_mask],
+                    nearest_idx[1][outside_mask],
+                )
+                cached_edt['max_dist'] = float(distances[outside_mask].max())
+            nearest_y, nearest_x = cached_edt['nearest_yx']
+            max_dist = cached_edt['max_dist']
+        else:
+            distances, nearest_idx = distance_transform_edt(
+                outside_mask, return_indices=True)
+            nearest_y = nearest_idx[0][outside_mask]
+            nearest_x = nearest_idx[1][outside_mask]
+            max_dist = float(distances[outside_mask].max())
         rgba[outside_mask, :3] = rgba[nearest_y, nearest_x, :3]
         rgba[outside_mask, 3] = 255
 
-        max_dist = float(distances[outside_mask].max())
         if max_dist < 1:
             return rgba
 
         # Step 2: Iterative blur diffusion on void region only.
-        # Each pass blurs the full image but only writes back to void pixels,
+        # Each pass blurs the image but only writes back to void pixels,
         # keeping valid data sharp while progressively smoothing NN streaks.
+        # Because blur_radius >= 16 is purely low-frequency, downsampling by 4x
+        # before the 3 blur passes and bilinearly upsampling back to the void
+        # mask preserves valid domain pixels identically at a fraction of CPU cost.
         blur_radius = max(16, int(max_dist * 0.12))
         n_passes = 3
-        rgb = rgba[:, :, :3].copy()
-
-        for _ in range(n_passes):
-            blurred = np.array(
-                Image.fromarray(rgb, 'RGB').filter(
-                    ImageFilter.GaussianBlur(radius=blur_radius)))
-            rgb[outside_mask] = blurred[outside_mask]
-
-        rgba[:, :, :3] = rgb
+        scale = 4 if (min(h, w) >= 256 and blur_radius >= 12) else 1
+        if scale > 1:
+            small_rgb = np.ascontiguousarray(rgba[::scale, ::scale, :3])
+            small_mask = (
+                cached_edt.get('small_mask')
+                if cached_edt is not None and 'small_mask' in cached_edt
+                else outside_mask[::scale, ::scale]
+            )
+            if cached_edt is not None and 'small_mask' not in cached_edt:
+                cached_edt['small_mask'] = small_mask
+            small_radius = max(2.0, blur_radius / scale)
+            for _ in range(n_passes):
+                blurred_small = np.asarray(
+                    Image.fromarray(small_rgb, 'RGB').filter(
+                        ImageFilter.GaussianBlur(radius=small_radius)
+                    )
+                )
+                small_rgb[small_mask] = blurred_small[small_mask]
+            upsampled = np.asarray(
+                Image.fromarray(small_rgb, 'RGB').resize((w, h), Image.Resampling.BILINEAR)
+            )
+            np.copyto(rgba[:, :, :3], upsampled, where=outside_mask[:, :, None])
+        else:
+            rgb = rgba[:, :, :3].copy()
+            for _ in range(n_passes):
+                blurred = np.array(
+                    Image.fromarray(rgb, 'RGB').filter(
+                        ImageFilter.GaussianBlur(radius=blur_radius)))
+                rgb[outside_mask] = blurred[outside_mask]
+            rgba[:, :, :3] = rgb
 
         if not apply_alpha_fade:
             return rgba
 
         # Step 3: Alpha fade — opaque near data, fading to transparent at edge.
         # Use a wide, smooth fade so the domain boundary is invisible.
-        fade_start_px = max_dist * fade_start
-        fade_end_px = max_dist * fade_end
-        fade_range = max(fade_end_px - fade_start_px, 1.0)
+        fade_key = ('void_alpha_u8', fade_start, fade_end)
+        if cached_edt is not None and fade_key in cached_edt:
+            void_alpha_u8 = cached_edt[fade_key]
+        else:
+            fade_start_px = max_dist * fade_start
+            fade_end_px = max_dist * fade_end
+            fade_range = max(fade_end_px - fade_start_px, 1.0)
+            # Ease-out curve (quadratic) for a softer, more natural falloff
+            t = np.clip(
+                (distances[outside_mask] - fade_start_px) / fade_range,
+                0, 1)
+            void_alpha_u8 = ((1.0 - t * t) * 255.0).astype(np.uint8)
+            if cached_edt is not None:
+                cached_edt[fade_key] = void_alpha_u8
 
-        # Ease-out curve (quadratic) for a softer, more natural falloff
-        t = np.clip(
-            (distances[outside_mask] - fade_start_px) / fade_range,
-            0, 1)
-        void_alpha = (1.0 - t * t) * 255.0
-
-        alpha = rgba[:, :, 3].astype(np.float32)
-        alpha[outside_mask] = void_alpha
-        rgba[:, :, 3] = alpha.astype(np.uint8)
-
+        rgba[outside_mask, 3] = void_alpha_u8
         return rgba
 
     # ------------------------------------------------------------------
@@ -920,7 +1049,7 @@ class OverlayRenderer:
         output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
         self._last_render_bounds = bounds
         image = Image.fromarray(rgba, 'RGBA')
-        image.save(str(output_path), compress_level=1)
+        _atomic_write_png(image, output_path)
         return True
 
     def _build_fill_rgba(self, param, data_dict):
@@ -941,7 +1070,7 @@ class OverlayRenderer:
 
         # Apply colormap -> RGBA uint8
         normalized = norm(grid_data)
-        rgba = (cmap(normalized) * 255).astype(np.uint8)
+        rgba = cmap(normalized, bytes=True)
 
         # Ensure NaN/masked pixels are fully transparent
         nan_mask = np.isnan(grid_data)
@@ -952,15 +1081,19 @@ class OverlayRenderer:
         # color instead of diffusing boundary colors.
         overlay_alpha_cfg = _SPARSE_OVERLAY_ALPHA.get(param)
 
-        if np.ndim(lon) == 2 and np.any(nan_mask):
-            # Cache EDT results per grid shape — the nan_mask is
-            # identical for every param on the same model grid.
+        needs_edge_fade = (
+            param == "lcl"
+            or (
+                not overlay_alpha_cfg and param not in _NO_DIFFUSION_PARAMS
+            )
+        )
+        if np.ndim(lon) == 2 and needs_edge_fade and np.any(nan_mask):
+            # Sparse and no-diffusion products never use distance transforms.
+            # Cache the expensive transforms for products sharing a mask.
             edt_key = (nan_mask.shape, nan_mask.tobytes().__hash__())
             if edt_key not in self._edt_cache:
-                outside_edt = distance_transform_edt(nan_mask)
                 valid_edt = distance_transform_edt(~nan_mask).astype(np.float32)
                 self._edt_cache[edt_key] = {
-                    'outside_edt': outside_edt,
                     'valid_edt': valid_edt,
                 }
                 # Keep cache bounded
@@ -987,13 +1120,19 @@ class OverlayRenderer:
                 # Some ensemble products, especially HREF, can end up with a
                 # dominant boundary color that turns the outside-domain fill
                 # into a solid slab. Keep the outside fully transparent there.
-                edge_dist = cached_edt['valid_edt']
-                feather_px = max(6, int(min(rgba.shape[:2]) * 0.02))
-                edge_fade = np.clip(edge_dist / feather_px, 0, 1)
-                rgba[:, :, 3] = (rgba[:, :, 3].astype(np.float32) * edge_fade).astype(np.uint8)
+                if 'edge_fade' not in cached_edt:
+                    edge_dist = cached_edt['valid_edt']
+                    feather_px = max(6, int(min(rgba.shape[:2]) * 0.02))
+                    cached_edt['edge_fade'] = np.clip(edge_dist / feather_px, 0, 1)
+                rgba[:, :, 3] = (rgba[:, :, 3].astype(np.float32) * cached_edt['edge_fade']).astype(np.uint8)
             else:
                 # Diffuse boundary colors AND fade them out so the
                 # model domain edge blends invisibly into the basemap.
+                if 'nearest_idx' not in cached_edt:
+                    outside_edt, nearest_idx = distance_transform_edt(
+                        nan_mask, return_indices=True)
+                    cached_edt['outside_edt'] = outside_edt
+                    cached_edt['nearest_idx'] = nearest_idx
                 rgba = self._extend_outside_domain(
                     rgba,
                     nan_mask,
@@ -1004,10 +1143,11 @@ class OverlayRenderer:
                 )
                 # Feather the inner edge of valid data too — prevents
                 # a hard alpha cliff at the domain boundary.
-                edge_dist = cached_edt['valid_edt']
-                feather_px = max(6, int(min(rgba.shape[:2]) * 0.02))
-                edge_fade = np.clip(edge_dist / feather_px, 0, 1)
-                rgba[:, :, 3] = (rgba[:, :, 3].astype(np.float32) * edge_fade).astype(np.uint8)
+                if 'edge_fade' not in cached_edt:
+                    edge_dist = cached_edt['valid_edt']
+                    feather_px = max(6, int(min(rgba.shape[:2]) * 0.02))
+                    cached_edt['edge_fade'] = np.clip(edge_dist / feather_px, 0, 1)
+                rgba[:, :, 3] = (rgba[:, :, 3].astype(np.float32) * cached_edt['edge_fade']).astype(np.uint8)
 
         if overlay_alpha_cfg:
             cfg_vmax = float(COLOR_SCALES.get(param, {}).get("vmax", 100.0))
@@ -1068,7 +1208,7 @@ class OverlayRenderer:
 
         output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
         image = Image.fromarray(buf, 'RGBA')
-        image.save(str(output_path), compress_level=1)
+        _atomic_write_png(image, output_path)
         return True
 
     def _get_mpl_resolution(self, lon, lat, data, bounds):
@@ -1093,7 +1233,7 @@ class OverlayRenderer:
 
         tg = self._get_target_grid(bounds, target_w, target_h)
         lon_grid = tg["lon"]
-        lat_merc_grid = _lat_to_merc(tg["lat"])
+        lat_merc_grid = self._mercator_grid(tg)
         gridded = self._regrid(lon_n, lat, data.astype(np.float32), bounds, target_w, target_h)
 
         # Scale smoothing for coarse grids (same logic as height contours)
@@ -1275,6 +1415,41 @@ class OverlayRenderer:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
+    def _height_contour_grid(self, contour_param, contour_dict, bounds, target_w, target_h, cfg):
+        """Reuse identical smoothed heights within one forecast hour."""
+        data = contour_dict["data"]
+        lat = contour_dict["lat"]
+        lon = contour_dict["lon"]
+        lon_n = np.where(lon > 180, lon - 360, lon)
+
+        # Scale smoothing sigma for coarse grids (GFS 0.25° vs HRRR 3km).
+        # Estimate native grid columns across domain; if target_w is much
+        # larger than that, the NN regrid created stair-steps that need
+        # heavier smoothing.
+        base_sigma = cfg.get("smooth_sigma", 0.8)
+        if lon.ndim == 1 and len(lon) > 1:
+            south, north, west, east = bounds
+            dlon = abs(float(lon[1] - lon[0]))
+            native_cols = max(1, int((east - west) / dlon))
+            upsample = target_w / native_cols
+            if upsample > 2.0:
+                base_sigma = base_sigma * upsample * 0.55
+        key = (contour_param, id(data), id(lon), id(lat), bounds, target_w, target_h, base_sigma)
+        if key in self._height_grid_cache:
+            self._height_grid_cache.move_to_end(key)
+            return self._height_grid_cache[key][0]
+        gridded = self._regrid(lon_n, lat, data.astype(np.float32), bounds, target_w, target_h)
+        contour_data = gaussian_filter(gridded, sigma=base_sigma)
+        size = contour_data.nbytes
+        if size <= self._height_grid_cache_limit:
+            while self._height_grid_cache and self._height_grid_cache_bytes + size > self._height_grid_cache_limit:
+                _, (old_grid, *_) = self._height_grid_cache.popitem(last=False)
+                self._height_grid_cache_bytes -= old_grid.nbytes
+            self._height_grid_cache[key] = (contour_data, data, lon, lat)
+            self._height_grid_cache_bytes += size
+        return contour_data
+
+
     def _draw_height_contours(
         self,
         ax,
@@ -1292,28 +1467,12 @@ class OverlayRenderer:
         if not cfg:
             return
 
-        data = contour_dict["data"]
-        lat = contour_dict["lat"]
-        lon = contour_dict["lon"]
-        lon_n = np.where(lon > 180, lon - 360, lon)
         tg = self._get_target_grid(bounds, target_w, target_h)
         lon_grid = tg["lon"]
-        lat_merc_grid = _lat_to_merc(tg["lat"])
-        gridded = self._regrid(lon_n, lat, data.astype(np.float32), bounds, target_w, target_h)
-
-        # Scale smoothing sigma for coarse grids (GFS 0.25° vs HRRR 3km).
-        # Estimate native grid columns across domain; if target_w is much
-        # larger than that, the NN regrid created stair-steps that need
-        # heavier smoothing.
-        base_sigma = cfg.get("smooth_sigma", 0.8)
-        if lon.ndim == 1 and len(lon) > 1:
-            south, north, west, east = bounds
-            dlon = abs(float(lon[1] - lon[0]))
-            native_cols = max(1, int((east - west) / dlon))
-            upsample = target_w / native_cols
-            if upsample > 2.0:
-                base_sigma = base_sigma * upsample * 0.55
-        contour_data = gaussian_filter(gridded, sigma=base_sigma)
+        lat_merc_grid = self._mercator_grid(tg)
+        contour_data = self._height_contour_grid(
+            contour_param, contour_dict, bounds, target_w, target_h, cfg,
+        )
 
         scale_cfg = COLOR_SCALES.get(contour_param, {})
         vmin = float(scale_cfg.get("vmin", np.nanmin(contour_data)))
@@ -1384,7 +1543,7 @@ class OverlayRenderer:
         lon_n = np.where(lon > 180, lon - 360, lon)
         tg = self._get_target_grid(bounds, target_w, target_h)
         lon_grid = tg["lon"]
-        lat_merc_grid = _lat_to_merc(tg["lat"])
+        lat_merc_grid = self._mercator_grid(tg)
         gridded = self._regrid(lon_n, lat, data, bounds, target_w, target_h)
 
         valid = gridded[np.isfinite(gridded)]
@@ -1576,9 +1735,20 @@ class OverlayRenderer:
             lon_grid = tg["lon"]
             lon0 = -97.5
             parallel_sin = np.sin(np.radians(38.5))
-            angle = parallel_sin * np.radians(lon_grid - lon0)
-            u_earth = grid_u * np.cos(angle) + grid_v * np.sin(angle)
-            v_earth = -grid_u * np.sin(angle) + grid_v * np.cos(angle)
+            if "wind_cos" not in tg:
+                def build():
+                    angle = parallel_sin * np.radians(lon_grid - lon0)
+                    return {"wind_cos": np.cos(angle), "wind_sin": np.sin(angle)}
+                key = ("wind", lon_grid.shape, float(lon_grid[0, 0]), float(lon_grid[0, -1]))
+                arrays, hit = shared_arrays(_REGRID_CACHE_DIR, key, lon_grid.shape,
+                                            ("wind_cos", "wind_sin"), build,
+                                            dtype=np.result_type(lon_grid.dtype, parallel_sin.dtype))
+                tg.update(arrays)
+                self.geometry_cache_hits += int(hit)
+                self.geometry_cache_misses += int(not hit)
+                self._trim_target_grids()
+            u_earth = grid_u * tg["wind_cos"] + grid_v * tg["wind_sin"]
+            v_earth = -grid_u * tg["wind_sin"] + grid_v * tg["wind_cos"]
             return u_earth, v_earth
         return grid_u, grid_v
 
@@ -1794,7 +1964,7 @@ class OverlayRenderer:
         valid_domain_mask = np.isfinite(grid_speed)
         shaded = np.where(grid_speed >= style["fill_floor"], grid_speed, np.nan)
         normalized = norm(shaded)
-        rgba = (cmap(normalized) * 255).astype(np.uint8)
+        rgba = cmap(normalized, bytes=True)
         nan_mask = np.isnan(shaded)
         rgba[nan_mask] = 0
         alpha = np.clip(
@@ -1837,7 +2007,7 @@ class OverlayRenderer:
             self._draw_height_contours(ax, contour_param, contour_dict, bounds, target_w, target_h, zorder=1.7, alpha_scale=0.9)
 
         lon_grid = tg["lon"]
-        lat_merc_grid = _lat_to_merc(tg["lat"])
+        lat_merc_grid = self._mercator_grid(tg)
 
         # -- Isotach contours (major only — no minor clutter) ---------------
         major_levels = [
@@ -1944,11 +2114,15 @@ class OverlayRenderer:
 
     def render_all_params(self, processed, output_dir, fxx,
                           run_time=None, model_name: str = "",
-                          selected_params: set[str] | None = None):
+                          selected_params: set[str] | None = None,
+                          shared_height_cache: bool = False):
         """Render all available parameters as overlays.
 
         Returns list of successfully rendered param names.
         """
+        if not shared_height_cache:
+            self.clear_hour_cache()
+        self.last_render_costs = {}
         rendered = []
         selected = set(selected_params) if selected_params is not None else None
         fxx_str = f"f{fxx:02d}"
@@ -2013,7 +2187,7 @@ class OverlayRenderer:
                 continue
             contour_param = _SCALAR_HEIGHT_OVERLAYS.get(param)
             if contour_param and contour_param in processed:
-                ok = self._render_fill_with_height_contours(
+                ok = self._timed_render(param, self._render_fill_with_height_contours,
                     param,
                     field,
                     contour_param,
@@ -2021,7 +2195,7 @@ class OverlayRenderer:
                     out_path,
                 )
             else:
-                ok = self.render_overlay(param, field, out_path)
+                ok = self._timed_render(param, self.render_overlay, param, field, out_path)
             if ok:
                 rendered.append(param)
             if param not in _needed_later:
@@ -2037,7 +2211,7 @@ class OverlayRenderer:
                 if not out_path.exists():
                     try:
                         contour_param = _SCALAR_HEIGHT_OVERLAYS.get(wind_param)
-                        ok = self._render_wind_overlay(
+                        ok = self._timed_render(wind_param, self._render_wind_overlay,
                             wind_param,
                             processed[wind_param],
                             processed[u_key],
@@ -2065,13 +2239,15 @@ class OverlayRenderer:
             if derived in processed:
                 out_path = output_dir / derived / f"{fxx_str}.png"
                 if not out_path.exists():
-                    ok = self.render_overlay(
-                        derived, processed[derived], out_path)
+                    ok = self._timed_render(derived, self.render_overlay,
+                                            derived, processed[derived], out_path)
                     if ok:
                         rendered.append(derived)
                 else:
                     rendered.append(derived)
                 del processed[derived]
 
+        self._height_grid_cache.clear()
+        self._height_grid_cache_bytes = 0
         self._current_model_name = ""
         return rendered

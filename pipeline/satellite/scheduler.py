@@ -40,7 +40,7 @@ def _release_memory():
 # HDF5/NetCDF4 is not thread-safe: concurrent xr.open_dataset() calls from
 # multiple threads cause HDF errors or segfaults.  Serialize all file-open +
 # data-extraction operations with this lock; downloads remain fully parallel.
-_HDF5_LOCK = threading.Lock()
+from .dataset_cache import load_dataset, clear_dataset_cache
 
 from pipeline.config import (
     COLOR_SCALES, DATA_DIR, SATELLITE_CACHE_DIR, SATELLITE_RENDERED_DIR, SATELLITE_CONFIG
@@ -170,6 +170,10 @@ class SatelliteScheduler:
         self._configured_loop_frames_per_band = self.loop_frames_per_band
         self._cycle_do_maintenance = False
         self._last_archive_refresh = 0.0
+        self._archive_deadline = None
+        self._archive_cursors = {}
+        self._archive_jobs_attempted = 0
+        self.archive_budget_seconds = max(1, int(render_cfg.get("archive_budget_seconds", 15)))
         self._last_cleanup = 0.0
         
         self.goes_downloaders = {}
@@ -324,6 +328,7 @@ class SatelliteScheduler:
         # Regrid entries are disk-backed (npz spill), so clearing them costs a
         # ~10ms reload instead of a multi-second KDTree rebuild.
         clear_satellite_caches(include_regrid=True)
+        clear_dataset_cache()
         self._prune_latest_meta_cache()
         _release_memory()
         logger.info(
@@ -433,9 +438,8 @@ class SatelliteScheduler:
                     "filename": Path(path).name,
                 })
                 try:
-                    with _HDF5_LOCK:
-                        with xr.open_dataset(path) as ds:
-                            result = render_func(ds)
+                    with load_dataset(path) as ds:
+                        result = render_func(ds)
                     if result:
                         logger.info(f"{_sat_tag(source_id, product_type)} Rendered: {result.png_path.name}")
                         self.state["last_download"][f"{source_id}_{product_type}"] = \
@@ -499,6 +503,8 @@ class SatelliteScheduler:
             
             # Process up to loop_frames_per_band most recent files for animation.
             for goes_file in band_files[:self.loop_frames_per_band]:
+                if self._archive_deadline is not None and time.monotonic() >= self._archive_deadline:
+                    break
                 try:
                     # Extract timestamp from filename
                     parts = goes_file.filename.split('_')
@@ -541,9 +547,8 @@ class SatelliteScheduler:
                         "filename": Path(path).name,
                     })
                     try:
-                        with _HDF5_LOCK:
-                            with xr.open_dataset(path) as ds:
-                                result = self.render_l1b_band(ds, product_type, band, ts_filename, iso_ts)
+                        with load_dataset(path, variables=("Rad", "DQF")) as ds:
+                            result = self.render_l1b_band(ds, product_type, band, ts_filename, iso_ts)
                         if result:
                             rendered_count += 1
                             self._refresh_latest_meta(source_id, product_type)
@@ -879,7 +884,7 @@ class SatelliteScheduler:
                     satellite=sat_num, product=product_code, domain=domain
                 )
             downloader = self.l2_downloaders[dl_key]
-            output_dir = SATELLITE_CACHE_DIR / source_id / product_type
+            output_dir = self._shared_composite_cache_dir(source_id)
             output_dir.mkdir(parents=True, exist_ok=True)
 
             if prefetched_files is not None:
@@ -897,6 +902,8 @@ class SatelliteScheduler:
 
             max_frames = max(1, min(frame_limit or self.loop_frames_per_band, self.loop_frames_per_band))
             for goes_file in files[:max_frames]:
+                if self._archive_deadline is not None and time.monotonic() >= self._archive_deadline:
+                    break
                 try:
                     parts = goes_file.filename.split("_")
                     s_part = parts[3]
@@ -932,11 +939,10 @@ class SatelliteScheduler:
                         "task": f"{source_id} {product_type} render",
                         "filename": Path(path).name,
                     })
-                    with _HDF5_LOCK:
-                        with xr.open_dataset(path) as ds:
-                            result = self.sat_renderer.render_l2_product(
-                                ds, product_type, filename=ts_filename
-                            )
+                    with load_dataset(path) as ds:
+                        result = self.sat_renderer.render_l2_product(
+                            ds, product_type, filename=ts_filename
+                        )
                     if result:
                         rendered_count += 1
                         self._refresh_latest_meta(source_id, product_type)
@@ -976,7 +982,7 @@ class SatelliteScheduler:
             downloader = self.goes_cmip_downloaders[dl_key]
             # Keep per-product cache dirs so parallel CMIP jobs for the same band
             # (e.g. `vis` and `vis_1km`) do not race on the same staging file.
-            output_dir = SATELLITE_CACHE_DIR / source_id / "cmip" / product_type / f"C{band_num:02d}"
+            output_dir = SATELLITE_CACHE_DIR / source_id / "cmip" / f"C{band_num:02d}"
             output_dir.mkdir(parents=True, exist_ok=True)
 
             if prefetched_files is not None:
@@ -997,6 +1003,8 @@ class SatelliteScheduler:
             rendered_count = 0
 
             for goes_file in band_files[:self.loop_frames_per_band]:
+                if self._archive_deadline is not None and time.monotonic() >= self._archive_deadline:
+                    break
                 try:
                     parts = goes_file.filename.split("_")
                     s_part = parts[3]
@@ -1033,26 +1041,25 @@ class SatelliteScheduler:
                         "stage": "rendering",
                         "task": f"{source_id} {product_type} render",
                     })
-                    with _HDF5_LOCK:
-                        with xr.open_dataset(path) as ds:
-                            did_render = False
-                            if not regions_only and not base_current:
-                                result = self.sat_renderer.render_cmip_product(
-                                    ds, product_type, band_num, filename=ts_filename
-                                )
-                                did_render = result is not None
+                    with load_dataset(path, variables=("CMI", "DQF", f"CMI_C{band_num:02d}", f"C{band_num:02d}")) as ds:
+                        did_render = False
+                        if not regions_only and not base_current:
+                            result = self.sat_renderer.render_cmip_product(
+                                ds, product_type, band_num, filename=ts_filename
+                            )
+                            did_render = result is not None
 
-                            for region_name, region_bounds in missing_regions:
-                                regional_filename = self._regional_filename(ts_filename, region_name)
-                                result = self.sat_renderer.render_cmip_product(
-                                    ds,
-                                    product_type,
-                                    band_num,
-                                    filename=regional_filename,
-                                    region_name=region_name,
-                                    region_bounds=region_bounds,
-                                )
-                                did_render = did_render or result is not None
+                        for region_name, region_bounds in missing_regions:
+                            regional_filename = self._regional_filename(ts_filename, region_name)
+                            result = self.sat_renderer.render_cmip_product(
+                                ds,
+                                product_type,
+                                band_num,
+                                filename=regional_filename,
+                                region_name=region_name,
+                                region_bounds=region_bounds,
+                            )
+                            did_render = did_render or result is not None
 
                     if did_render:
                         rendered_count += 1
@@ -1103,7 +1110,7 @@ class SatelliteScheduler:
                     satellite=sat_num, product="ABI-L2-MCMIP", domain="C"
                 )
             downloader = self.goes_downloaders[dl_key]
-            output_dir = SATELLITE_CACHE_DIR / source_id / product_type
+            output_dir = self._shared_composite_cache_dir(source_id)
             output_dir.mkdir(parents=True, exist_ok=True)
 
             if prefetched_files is not None:
@@ -1120,6 +1127,8 @@ class SatelliteScheduler:
             rendered_count = 0
 
             for goes_file in files[:self.loop_frames_per_band]:
+                if self._archive_deadline is not None and time.monotonic() >= self._archive_deadline:
+                    break
                 try:
                     parts = goes_file.filename.split("_")
                     s_part = parts[3]
@@ -1154,45 +1163,44 @@ class SatelliteScheduler:
                         "task": f"{source_id} {product_type} render",
                         "filename": Path(path).name,
                     })
-                    with _HDF5_LOCK:
-                        with xr.open_dataset(path) as ds:
-                            did_render = False
-                            if high_res:
-                                result = None
-                                if not regions_only and not base_exists:
-                                    result = self.sat_renderer.render_cmip_product(
-                                        ds, product_type, band_num, filename=ts_filename
-                                    )
-                                    did_render = True
-                            else:
-                                result = None
-                                if not regions_only and not base_exists:
-                                    result = self.sat_renderer.render_abi_product(
-                                        ds, product_type, filename=ts_filename
-                                    )
-                                    did_render = True
+                    with load_dataset(path, variables=("CMI", f"CMI_C{band_num:02d}", f"C{band_num:02d}", f"Rad{band_num}")) as ds:
+                        did_render = False
+                        if high_res:
+                            result = None
+                            if not regions_only and not base_exists:
+                                result = self.sat_renderer.render_cmip_product(
+                                    ds, product_type, band_num, filename=ts_filename
+                                )
+                                did_render = True
+                        else:
+                            result = None
+                            if not regions_only and not base_exists:
+                                result = self.sat_renderer.render_abi_product(
+                                    ds, product_type, filename=ts_filename
+                                )
+                                did_render = True
 
-                            for region_name, region_bounds in missing_regions:
-                                regional_filename = self._regional_filename(ts_filename, region_name)
-                                if high_res:
-                                    self.sat_renderer.render_cmip_product(
-                                        ds,
-                                        product_type,
-                                        band_num,
-                                        filename=regional_filename,
-                                        region_name=region_name,
-                                        region_bounds=region_bounds,
-                                    )
-                                    did_render = True
-                                else:
-                                    self.sat_renderer.render_abi_product(
-                                        ds,
-                                        product_type,
-                                        filename=regional_filename,
-                                        region_name=region_name,
-                                        region_bounds=region_bounds,
-                                    )
-                                    did_render = True
+                        for region_name, region_bounds in missing_regions:
+                            regional_filename = self._regional_filename(ts_filename, region_name)
+                            if high_res:
+                                self.sat_renderer.render_cmip_product(
+                                    ds,
+                                    product_type,
+                                    band_num,
+                                    filename=regional_filename,
+                                    region_name=region_name,
+                                    region_bounds=region_bounds,
+                                )
+                                did_render = True
+                            else:
+                                self.sat_renderer.render_abi_product(
+                                    ds,
+                                    product_type,
+                                    filename=regional_filename,
+                                    region_name=region_name,
+                                    region_bounds=region_bounds,
+                                )
+                                did_render = True
 
                     if did_render:
                         rendered_count += 1
@@ -1235,7 +1243,7 @@ class SatelliteScheduler:
             downloader = self.goes_downloaders[dl_key]
             # Keep per-product cache dirs so parallel RGB jobs do not race on the
             # same temporary file names while downloading identical MCMIP files.
-            output_dir = SATELLITE_CACHE_DIR / source_id / product_type
+            output_dir = self._shared_composite_cache_dir(source_id)
             output_dir.mkdir(parents=True, exist_ok=True)
 
             if prefetched_files is not None:
@@ -1252,6 +1260,8 @@ class SatelliteScheduler:
             rendered_count = 0
 
             for goes_file in files[:self.loop_frames_per_band]:
+                if self._archive_deadline is not None and time.monotonic() >= self._archive_deadline:
+                    break
                 try:
                     parts = goes_file.filename.split("_")
                     s_part = parts[3]
@@ -1280,18 +1290,17 @@ class SatelliteScheduler:
                         "stage": "rendering",
                         "task": f"{source_id} {product_type} render",
                     })
-                    with _HDF5_LOCK:
-                        with xr.open_dataset(path) as ds:
-                            if product_type == "natural_color":
-                                self.sat_renderer.render_natural_color(ds, filename=ts_filename)
-                            elif product_type == "day_cloud_phase":
-                                self.sat_renderer.render_day_cloud_phase(ds, filename=ts_filename)
-                            elif product_type == "sandwich":
-                                self.sat_renderer.render_sandwich(ds, filename=ts_filename)
-                            else:
-                                raise ValueError(f"Unsupported RGB composite: {product_type}")
-                            rendered_count += 1
-                            self._refresh_latest_meta(source_id, product_type)
+                    with load_dataset(path, variables=("CMI_C01", "CMI_C02", "CMI_C03", "CMI_C05", "CMI_C13")) as ds:
+                        if product_type == "natural_color":
+                            self.sat_renderer.render_natural_color(ds, filename=ts_filename)
+                        elif product_type == "day_cloud_phase":
+                            self.sat_renderer.render_day_cloud_phase(ds, filename=ts_filename)
+                        elif product_type == "sandwich":
+                            self.sat_renderer.render_sandwich(ds, filename=ts_filename)
+                        else:
+                            raise ValueError(f"Unsupported RGB composite: {product_type}")
+                        rendered_count += 1
+                        self._refresh_latest_meta(source_id, product_type)
                 except Exception as e:
                     logger.warning(f"Error processing {product_type} {goes_file.filename}: {e}")
 
@@ -1339,6 +1348,8 @@ class SatelliteScheduler:
             band_num = int(str(band).replace("C", ""))
 
             for goes_file in files[:self.loop_frames_per_band]:
+                if self._archive_deadline is not None and time.monotonic() >= self._archive_deadline:
+                    break
                 try:
                     parts = goes_file.filename.split("_")
                     s_part = parts[3]
@@ -1361,11 +1372,10 @@ class SatelliteScheduler:
                         "stage": "rendering",
                         "task": f"{source_id} {product_type} render",
                     })
-                    with _HDF5_LOCK:
-                        with xr.open_dataset(path) as ds:
-                            result = self.sat_renderer.render_mesoscale_product(
-                                ds, product_type, band_num, filename=ts_filename
-                            )
+                    with load_dataset(path, variables=("CMI", "DQF", f"CMI_C{band_num:02d}", f"C{band_num:02d}")) as ds:
+                        result = self.sat_renderer.render_mesoscale_product(
+                            ds, product_type, band_num, filename=ts_filename
+                        )
                     if result:
                         rendered_count += 1
                         self._refresh_latest_meta(source_id, product_type)
@@ -1504,6 +1514,8 @@ class SatelliteScheduler:
             e_downloader = self.goes_downloaders[e_dl_key]
 
             for wf, ef, year, doy, hour, minute in pairs:
+                if self._archive_deadline is not None and time.monotonic() >= self._archive_deadline:
+                    break
                 try:
                     iso_ts = f"{year}-{doy}T{hour}:{minute}:00Z"
                     ts_filename = f"{output_source_id}_{product_type}_{year}{doy}_{hour}{minute}.png"
@@ -1534,75 +1546,74 @@ class SatelliteScheduler:
                         "task": f"composite {product_type} render",
                     })
 
-                    with _HDF5_LOCK:
-                        with xr.open_dataset(w_path) as w_ds, xr.open_dataset(e_path) as e_ds:
-                            var_name = f"CMI_C{band_num:02d}"
-                            w_raw = w_ds.get(var_name)
-                            e_raw = e_ds.get(var_name)
-                            if w_raw is None or e_raw is None:
-                                continue
+                    with load_dataset(w_path, variables=(f"CMI_C{band_num:02d}",)) as w_ds, load_dataset(e_path, variables=(f"CMI_C{band_num:02d}",)) as e_ds:
+                        var_name = f"CMI_C{band_num:02d}"
+                        w_raw = w_ds.get(var_name)
+                        e_raw = e_ds.get(var_name)
+                        if w_raw is None or e_raw is None:
+                            continue
 
-                            if cfg and cfg["type"] == "bt":
-                                w_data = w_raw.values.astype(np.float32) - 273.15
-                                e_data = e_raw.values.astype(np.float32) - 273.15
-                            else:
-                                w_data = w_raw.values.astype(np.float32) * 100.0
-                                e_data = e_raw.values.astype(np.float32) * 100.0
+                        if cfg and cfg["type"] == "bt":
+                            w_data = w_raw.values.astype(np.float32) - 273.15
+                            e_data = e_raw.values.astype(np.float32) - 273.15
+                        else:
+                            w_data = w_raw.values.astype(np.float32) * 100.0
+                            e_data = e_raw.values.astype(np.float32) * 100.0
 
-                            cmap_name = cfg["cmap"] if cfg else "Greys_r"
-                            vmin = cfg["vmin"] if cfg else -110
-                            vmax = cfg["vmax"] if cfg else 50
-                            gamma = cfg.get("gamma", 1.0) if cfg else 1.0
-                            tone_lift = cfg.get("tone_lift", 0.0) if cfg else 0.0
+                        cmap_name = cfg["cmap"] if cfg else "Greys_r"
+                        vmin = cfg["vmin"] if cfg else -110
+                        vmax = cfg["vmax"] if cfg else 50
+                        gamma = cfg.get("gamma", 1.0) if cfg else 1.0
+                        tone_lift = cfg.get("tone_lift", 0.0) if cfg else 0.0
 
-                            bounds = None
-                            did_render = False
-                            if not base_exists:
-                                output_path = png_dir / ts_filename
-                                bounds = self.sat_renderer.render_composite(
-                                    w_data, w_ds, e_data, e_ds,
-                                    output_path,
-                                    cmap=cmap_name, vmin=vmin, vmax=vmax,
-                                    blend_west_lon=blend_west,
-                                    blend_east_lon=blend_east,
-                                    gamma=gamma,
-                                    tone_lift=tone_lift,
-                                    edge_ramp_cfg=cfg.get("edge_ramp") if cfg else None,
-                                )
-                                did_render = True
+                        bounds = None
+                        did_render = False
+                        if not base_exists:
+                            output_path = png_dir / ts_filename
+                            bounds = self.sat_renderer.render_composite(
+                                w_data, w_ds, e_data, e_ds,
+                                output_path,
+                                cmap=cmap_name, vmin=vmin, vmax=vmax,
+                                blend_west_lon=blend_west,
+                                blend_east_lon=blend_east,
+                                gamma=gamma,
+                                tone_lift=tone_lift,
+                                edge_ramp_cfg=cfg.get("edge_ramp") if cfg else None,
+                            )
+                            did_render = True
 
-                            for region_name, region_bounds in missing_regions:
-                                regional_filename = self._regional_filename(ts_filename, region_name)
-                                regional_target_w = self._regional_target_width(product_type)
-                                regional_bounds = self.sat_renderer.render_composite(
-                                    w_data,
-                                    w_ds,
-                                    e_data,
-                                    e_ds,
-                                    png_dir / regional_filename,
-                                    cmap=cmap_name,
-                                    vmin=vmin,
-                                    vmax=vmax,
-                                    blend_west_lon=blend_west,
-                                    blend_east_lon=blend_east,
-                                    target_w=regional_target_w,
-                                    gamma=gamma,
-                                    tone_lift=tone_lift,
-                                    edge_ramp_cfg=cfg.get("edge_ramp") if cfg else None,
-                                    crop_bounds=region_bounds,
-                                )
-                                regional_meta = {
-                                    "satellite": "G19",
-                                    "product": product_type,
-                                    "timestamp": iso_ts,
-                                    "bounds": regional_bounds,
-                                    "png_path": f"satellite/png/{regional_filename}",
-                                    "composite": True,
-                                    "region": region_name,
-                                }
-                                regional_meta_path = self.sat_renderer.meta_dir / regional_filename.replace(".png", ".json")
-                                write_frame_meta(regional_meta_path, regional_meta)
-                                did_render = True
+                        for region_name, region_bounds in missing_regions:
+                            regional_filename = self._regional_filename(ts_filename, region_name)
+                            regional_target_w = self._regional_target_width(product_type)
+                            regional_bounds = self.sat_renderer.render_composite(
+                                w_data,
+                                w_ds,
+                                e_data,
+                                e_ds,
+                                png_dir / regional_filename,
+                                cmap=cmap_name,
+                                vmin=vmin,
+                                vmax=vmax,
+                                blend_west_lon=blend_west,
+                                blend_east_lon=blend_east,
+                                target_w=regional_target_w,
+                                gamma=gamma,
+                                tone_lift=tone_lift,
+                                edge_ramp_cfg=cfg.get("edge_ramp") if cfg else None,
+                                crop_bounds=region_bounds,
+                            )
+                            regional_meta = {
+                                "satellite": "G19",
+                                "product": product_type,
+                                "timestamp": iso_ts,
+                                "bounds": regional_bounds,
+                                "png_path": f"satellite/png/{regional_filename}",
+                                "composite": True,
+                                "region": region_name,
+                            }
+                            regional_meta_path = self.sat_renderer.meta_dir / regional_filename.replace(".png", ".json")
+                            write_frame_meta(regional_meta_path, regional_meta)
+                            did_render = True
 
                     if bounds:
                         # Use output satellite ID (G19) so API filters match
@@ -1692,6 +1703,8 @@ class SatelliteScheduler:
             e_downloader = self.goes_downloaders[e_dl_key]
 
             for wf, ef, year, doy, hour, minute in pairs:
+                if self._archive_deadline is not None and time.monotonic() >= self._archive_deadline:
+                    break
                 try:
                     iso_ts = f"{year}-{doy}T{hour}:{minute}:00Z"
                     ts_filename = f"{output_source_id}_{product_type}_{year}{doy}_{hour}{minute}.png"
@@ -1717,30 +1730,29 @@ class SatelliteScheduler:
                         "task": f"composite {product_type} render",
                     })
 
-                    with _HDF5_LOCK:
-                        with xr.open_dataset(w_path) as w_ds, xr.open_dataset(e_path) as e_ds:
-                            if product_type == "natural_color":
-                                w_rgb = self._extract_natural_color_rgb(w_ds)
-                                e_rgb = self._extract_natural_color_rgb(e_ds)
-                            elif product_type == "day_cloud_phase":
-                                w_rgb = self._extract_day_cloud_phase_rgb(w_ds)
-                                e_rgb = self._extract_day_cloud_phase_rgb(e_ds)
-                            elif product_type == "sandwich":
-                                w_rgb = self._extract_sandwich_rgb(w_ds)
-                                e_rgb = self._extract_sandwich_rgb(e_ds)
-                            else:
-                                continue
+                    with load_dataset(w_path, variables=("CMI_C01", "CMI_C02", "CMI_C03", "CMI_C05", "CMI_C13")) as w_ds, load_dataset(e_path, variables=("CMI_C01", "CMI_C02", "CMI_C03", "CMI_C05", "CMI_C13")) as e_ds:
+                        if product_type == "natural_color":
+                            w_rgb = self._extract_natural_color_rgb(w_ds)
+                            e_rgb = self._extract_natural_color_rgb(e_ds)
+                        elif product_type == "day_cloud_phase":
+                            w_rgb = self._extract_day_cloud_phase_rgb(w_ds)
+                            e_rgb = self._extract_day_cloud_phase_rgb(e_ds)
+                        elif product_type == "sandwich":
+                            w_rgb = self._extract_sandwich_rgb(w_ds)
+                            e_rgb = self._extract_sandwich_rgb(e_ds)
+                        else:
+                            continue
 
-                            if w_rgb is None or e_rgb is None:
-                                continue
+                        if w_rgb is None or e_rgb is None:
+                            continue
 
-                            output_path = png_dir / ts_filename
-                            bounds = self.sat_renderer.render_composite_rgb(
-                                w_rgb, w_ds, e_rgb, e_ds,
-                                output_path,
-                                blend_west_lon=blend_west,
-                                blend_east_lon=blend_east,
-                            )
+                        output_path = png_dir / ts_filename
+                        bounds = self.sat_renderer.render_composite_rgb(
+                            w_rgb, w_ds, e_rgb, e_ds,
+                            output_path,
+                            blend_west_lon=blend_west,
+                            blend_east_lon=blend_east,
+                        )
 
                     if bounds:
                         meta = {
@@ -1973,14 +1985,14 @@ class SatelliteScheduler:
                 try:
                     shared_west_mcmip = self.goes_downloaders[w_mcmip_key].list_available(
                         hours=self.loop_hours,
-                        max_files=max(self.loop_frames_per_band * 5, 100),
+                        max_files=max(self.archive_frames_per_cycle * 2, 24),
                     )
                 except Exception as exc:
                     logger.warning("[composite] West MCMIP listing failed: %s", exc)
                 try:
                     shared_east_mcmip = self.goes_downloaders[e_mcmip_key].list_available(
                         hours=self.loop_hours,
-                        max_files=max(self.loop_frames_per_band * 5, 100),
+                        max_files=max(self.archive_frames_per_cycle * 2, 24),
                     )
                 except Exception as exc:
                     logger.warning("[composite] East MCMIP listing failed: %s", exc)
@@ -2009,7 +2021,7 @@ class SatelliteScheduler:
 
                 logger.info("[%s] Fetching shared satellite listings...", source_id)
                 try:
-                    l1b_min_files = 16 * 12 * self.loop_hours
+                    l1b_min_files = 16 * self.archive_frames_per_cycle * 2
                     shared_l1b_files = l1b_downloader.list_available(
                         hours=self.loop_hours,
                         max_files=max(self.loop_frames_per_band * 20, l1b_min_files),
@@ -2019,16 +2031,21 @@ class SatelliteScheduler:
                     shared_l1b_files = []
 
                 try:
-                    shared_mcmip_files = mcmip_downloader.list_available(
-                        hours=self.loop_hours,
-                        max_files=max(self.loop_frames_per_band * 5, 100),
-                    )
+                    shared_mcmip_files = (
+                        shared_east_mcmip if source_id == comp_east_source else
+                        shared_west_mcmip if source_id == comp_west_source else []
+                    ) if compositing_enabled else []
+                    if not shared_mcmip_files:
+                        shared_mcmip_files = mcmip_downloader.list_available(
+                            hours=self.loop_hours,
+                            max_files=max(self.archive_frames_per_cycle * 2, 24),
+                        )
                 except Exception as exc:
                     logger.warning("[%s] MCMIP listing failed: %s", source_id, exc)
                     shared_mcmip_files = []
 
                 try:
-                    cmip_min_files = 16 * 12 * self.loop_hours
+                    cmip_min_files = 16 * self.archive_frames_per_cycle * 2
                     shared_cmip_files = cmip_downloader.list_available(
                         hours=self.loop_hours,
                         max_files=max(self.loop_frames_per_band * 20, cmip_min_files),
@@ -2038,7 +2055,7 @@ class SatelliteScheduler:
                     shared_cmip_files = []
 
                 # Prefetch mesoscale domain listings
-                meso_max_files = max(self.loop_frames_per_band * 5, 400)
+                meso_max_files = max(self.archive_frames_per_cycle * 2, 24)
                 meso_hours = min(
                     self.config.get("products", {}).get("m1_ir_1km", {}).get("retention_hours", 6),
                     self.loop_hours,
@@ -2223,50 +2240,20 @@ class SatelliteScheduler:
                 logger.info("[%s] Dispatching %d satellite jobs (%d composite)",
                             source_id, len(jobs),
                             sum(1 for j in jobs if j[0].startswith("comp_")))
-                pool = ThreadPoolExecutor(max_workers=self.max_workers)
-                try:
-                    timed_out = False
-                    for batch_start in range(0, len(jobs), self.job_batch_size):
-                        job_batch = jobs[batch_start:batch_start + self.job_batch_size]
-                        futures = {
-                            pool.submit(job_fn, *job_args): product_type
-                            for product_type, job_fn, job_args in job_batch
-                        }
-                        done, not_done = wait(
-                            futures.keys(),
-                            timeout=self.job_timeout_seconds,
-                        )
-                        for future in done:
-                            product_type = futures[future]
-                            try:
-                                if future.result():
-                                    total_rendered += 1
-                            except Exception as exc:
-                                logger.warning("[%s] %s raised: %s", source_id, product_type, exc)
+                jobs.sort(key=lambda job: self._job_priority(job[0]))
+                total_rendered += self._run_job_phase(source_id, jobs, 1, archive=False)
+                if archive_mode:
+                    cursor = self._archive_cursors.get(source_id, 0) % max(1, len(jobs))
+                    archive_jobs = jobs[cursor:] + jobs[:cursor]
+                    total_rendered += self._run_job_phase(
+                        source_id, archive_jobs, self.archive_frames_per_cycle, archive=True,
+                    )
+                    self._archive_cursors[source_id] = (cursor + self._archive_jobs_attempted) % max(1, len(jobs))
 
-                        if not_done:
-                            stalled = sorted({futures[future] for future in not_done})
-                            logger.error(
-                                "[%s] Satellite cycle hit %ss timeout waiting on: %s",
-                                source_id,
-                                self.job_timeout_seconds,
-                                ", ".join(stalled),
-                            )
-                            for future in not_done:
-                                future.cancel()
-                            self._reset_downloader_caches()
-                            timed_out = True
-                            break
-                    if timed_out:
-                        break
-                finally:
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    del jobs
-                    _release_memory()
-                    self._trim_memory_if_needed(f"{source_id} batch")
         finally:
             self.loop_frames_per_band = self._configured_loop_frames_per_band
             self._cycle_do_maintenance = False
+            self._archive_deadline = None
 
         if archive_mode:
             self._last_archive_refresh = cycle_start
@@ -2291,14 +2278,58 @@ class SatelliteScheduler:
         logger.info("=== Satellite cycle complete: %d renders, %.1fs ===",
                     total_rendered, elapsed)
 
+    @staticmethod
+    def _job_priority(name: str) -> int:
+        if name.startswith(("m1_", "m2_")):
+            return 0
+        product = name.removeprefix("comp_").split("_regional_")[0]
+        return 1 if product in {"ir", "ir_native", "wv", "vis", "vis_1km"} else 2
+
+    def _run_job_phase(self, source_id: str, jobs: list, frames: int, archive: bool) -> int:
+        """Publish latest frames first; give archive work a bounded time slice."""
+        self.loop_frames_per_band = frames
+        self._cycle_do_maintenance = archive
+        self._archive_deadline = time.monotonic() + self.archive_budget_seconds if archive else None
+        self._archive_jobs_attempted = 0
+        rendered = 0
+        pool = ThreadPoolExecutor(max_workers=self.max_workers)
+        try:
+            for start in range(0, len(jobs), self.job_batch_size):
+                if self._archive_deadline is not None and time.monotonic() >= self._archive_deadline:
+                    break
+                batch = jobs[start:start + self.job_batch_size]
+                self._archive_jobs_attempted += len(batch)
+                futures = {pool.submit(fn, *args): name for name, fn, args in batch}
+                done, pending = wait(futures, timeout=self.job_timeout_seconds)
+                for future in done:
+                    try:
+                        rendered += bool(future.result())
+                    except Exception as exc:
+                        logger.warning("[%s] %s raised: %s", source_id, futures[future], exc)
+                if pending:
+                    logger.error("[%s] Satellite phase timed out waiting on: %s", source_id,
+                                 ", ".join(sorted(futures[f] for f in pending)))
+                    for future in pending:
+                        future.cancel()
+                    break
+        finally:
+            # Running threads cannot be canceled. Drain before changing frame
+            # limits or starting another phase so old jobs never accumulate.
+            pool.shutdown(wait=True, cancel_futures=True)
+            self._archive_deadline = None
+            _release_memory()
+            self._trim_memory_if_needed(f"{source_id} phase")
+        return rendered
+
     def run_continuous(self, interval_seconds: int = 30):
         """Run scheduler continuously - 30 second cycles for fresh data."""
         logger.info(f"Starting satellite scheduler (CURRENT DATA ONLY, {interval_seconds}s interval)")
         
         while True:
             try:
+                started = time.monotonic()
                 self.run_cycle()
-                time.sleep(interval_seconds)
+                time.sleep(max(1, interval_seconds - (time.monotonic() - started)))
             except Exception as e:
                 logger.error(f"Scheduler error: {e}")
                 time.sleep(10)
@@ -2311,7 +2342,7 @@ def main():
     
     sys.stdout.reconfigure(line_buffering=True)
     
-    log_dir = Path("/home/main/weather-viewer/logs")
+    log_dir = DATA_DIR.parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     
     handlers = [

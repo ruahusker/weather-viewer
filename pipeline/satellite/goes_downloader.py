@@ -14,6 +14,8 @@ import threading
 from typing import Optional
 
 import time
+import threading
+import weakref
 
 import numpy as np
 import s3fs
@@ -28,6 +30,8 @@ S3_BUCKETS = {
     18: "noaa-goes18",   # GOES-West (137.0°W) - operational
     19: "noaa-goes19",   # GOES-East (75.2°W) - operational since April 2025
 }
+_DOWNLOAD_LOCKS = weakref.WeakValueDictionary()
+_DOWNLOAD_LOCKS_GUARD = threading.Lock()
 
 # Product paths in S3 buckets
 PRODUCT_PATHS = {
@@ -108,6 +112,7 @@ class GOESDownloader:
             config_kwargs={
                 "connect_timeout": 15,
                 "read_timeout": 60,
+                "max_pool_connections": 16,
                 "retries": {"max_attempts": 2, "mode": "standard"},
             },
         )
@@ -280,9 +285,10 @@ class GOESDownloader:
         files = []
         
         # Build S3 prefix path: bucket/product/year/day/hour/
-        current = start_time.replace(minute=0, second=0, microsecond=0)
+        current = end_time.replace(minute=0, second=0, microsecond=0)
+        oldest = start_time.replace(minute=0, second=0, microsecond=0)
         
-        while current <= end_time:
+        while current >= oldest:
             year = current.year
             day_of_year = current.timetuple().tm_yday
             hour = current.hour
@@ -314,7 +320,12 @@ class GOESDownloader:
             except Exception as e:
                 logger.warning(f"Error listing S3 prefix {prefix}: {e}")
                 
-            current += timedelta(hours=1)
+            # Each completed hour is newer than every unvisited directory.
+            # Once enough matching files exist, older listings cannot change
+            # the newest max_files results.
+            if len(files) >= max_files:
+                break
+            current -= timedelta(hours=1)
         
         # Sort by timestamp, newest first, then limit to max_files
         files.sort(key=lambda x: x.timestamp, reverse=True)
@@ -350,6 +361,17 @@ class GOESDownloader:
         return files[0] if files else None
     
     def download_file(self, goes_file: GOESFile, output_dir: Path) -> Path:
+        """Share one atomic download when product jobs need the same file."""
+        key = str(Path(output_dir) / goes_file.filename)
+        with _DOWNLOAD_LOCKS_GUARD:
+            lock = _DOWNLOAD_LOCKS.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                _DOWNLOAD_LOCKS[key] = lock
+        with lock:
+            return self._download_file(goes_file, output_dir)
+
+    def _download_file(self, goes_file: GOESFile, output_dir: Path) -> Path:
         """Download a single GOES file.
 
         Uses a .tmp staging file so that a failed or interrupted download never

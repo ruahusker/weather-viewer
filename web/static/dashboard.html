@@ -174,6 +174,7 @@ h1 {
 }
 .radar-region-header:first-child { margin-top: 0; }
 .radar-site-card {
+  min-width: 0;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -191,6 +192,7 @@ h1 {
 }
 .radar-site-id.ne { color: #ff6b6b; }
 .radar-site-name {
+  min-width: 0;
   font-size: 9px;
   color: var(--text-mid);
   flex: 1;
@@ -207,7 +209,7 @@ h1 {
 }
 .radar-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 3px;
   margin-bottom: 4px;
 }
@@ -625,12 +627,12 @@ h1 {
 
 @media (max-width: 1100px) {
   .grid { grid-template-columns: repeat(2, 1fr); }
-  .radar-grid { grid-template-columns: repeat(3, 1fr); }
+  .radar-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .gauge-row { flex-wrap: wrap; }
 }
 @media (max-width: 600px) {
   .grid { grid-template-columns: 1fr; }
-  .radar-grid { grid-template-columns: repeat(2, 1fr); }
+  .radar-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* Service summary bars */
@@ -1145,7 +1147,7 @@ a {
 
 <script>
 const CIRC = 2 * Math.PI * 38; // ~238.76
-const BASE = location.pathname.startsWith('/wx/') ? '/wx' : '';
+const BASE = '';
 
 // --- Collapsible sections ---
 function toggleSection(name) {
@@ -1158,7 +1160,7 @@ function toggleSection(name) {
 // --- Radar site status ---
 const _NE_RADAR_SITES = ['KOAX', 'KUEX', 'KLNX'];
 const _RADAR_REGIONS = {
-  'Central Plains': ['KOAX','KUEX','KLNX','KDMX','KDVN','KARX','KEAX','KLSX','KSGF','KDDC','KGLD','KICT','KFTG','KGJX','KPUX','KABR','KFSD','KUDX'],
+  'Central Plains': ['KOAX','KUEX','KLNX','KDMX','KDVN','KARX','KEAX','KLSX','KSGF','KTWX','KDDC','KGLD','KICT','KFTG','KGJX','KPUX','KABR','KFSD','KUDX'],
   'Northern Plains': ['KMVX','KMBX','KBIS','KBLX','KGGW','KMSX','KTFX','KCBX'],
   'Southern Plains': ['KTLX','KINX','KAMA','KFWS','KGRK','KHGX','KMRX','KSRX','KLZK','KPOE','KSHV','KLCH','KLBB','KMAF','KSJT','KDYX','KFDR'],
   'Midwest': ['KLOT','KILX','KIND','KIWX','KMKX','KGRR','KDTX','KAPX','KCLE','KILN'],
@@ -1352,6 +1354,9 @@ function updateSatCards(satData) {
     } else if (info.status === 'stale') {
       badgeCls = 'badge-stale';
       badgeTxt = 'STALE';
+    } else if (info.status === 'night') {
+      badgeCls = 'badge-idle';
+      badgeTxt = 'NIGHT';
     } else if (info.status === 'old') {
       badgeCls = 'badge-old';
       badgeTxt = 'IDLE';
@@ -1367,7 +1372,8 @@ function updateSatCards(satData) {
       ageText = 'No recent data';
       archiveText = '';
     } else {
-      ageText = ageMin == null ? 'No recent data' :
+      ageText = info.status === 'night' ? (ageMin == null ? 'Waiting for daylight' : `Last daylight frame ${Math.round(ageMin)}m ago`) :
+        ageMin == null ? 'No recent data' :
         ageMin < 1 ? 'Updated just now' :
         `Updated ${Math.round(ageMin)}m ago`;
       const archiveLabel = frames >= maxFrames ? `${maxFrames}/${maxFrames} (full)` : `${frames}/${maxFrames}`;
@@ -1396,11 +1402,13 @@ function updateSatCards(satData) {
       let badgeTxt = 'INACTIVE';
       if (info.status === 'live') { badgeCls = 'badge-live'; badgeTxt = 'CURRENT'; }
       else if (info.status === 'stale') { badgeCls = 'badge-stale'; badgeTxt = 'STALE'; }
+      else if (info.status === 'night') { badgeCls = 'badge-idle'; badgeTxt = 'NIGHT'; }
       else if (info.status === 'old') { badgeCls = 'badge-old'; badgeTxt = 'IDLE'; }
       const pct = info.pct ?? 0;
       const title = info.name || pid.toUpperCase();
       const ageMin = info.age_min;
-      const ageText = info.status === 'no_data' ? 'No active sector'
+      const ageText = info.status === 'night' ? (ageMin == null ? 'Waiting for daylight' : `Last daylight frame ${Math.round(ageMin)}m ago`)
+        : info.status === 'no_data' ? 'No active sector'
         : ageMin == null ? 'No data'
         : ageMin < 1 ? 'Just now'
         : `${Math.round(ageMin)}m ago`;
@@ -1441,6 +1449,9 @@ function updateSatCards(satData) {
       } else if (info.status === 'stale') {
         badgeCls = 'badge-stale';
         badgeTxt = 'STALE';
+      } else if (info.status === 'night') {
+        badgeCls = 'badge-idle';
+        badgeTxt = 'NIGHT';
       } else if (info.status === 'old') {
         badgeCls = 'badge-old';
         badgeTxt = 'IDLE';
@@ -1450,7 +1461,8 @@ function updateSatCards(satData) {
       const maxFrames = info.max_frames ?? 0;
       const title = regionalLabelMap[pid] || info.name || pid.toUpperCase();
       const ageMin = info.age_min;
-      const ageText = ageMin == null ? 'No recent data' :
+      const ageText = info.status === 'night' ? (ageMin == null ? 'Waiting for daylight' : `Last daylight frame ${Math.round(ageMin)}m ago`) :
+        ageMin == null ? 'No recent data' :
         ageMin < 1 ? 'Updated just now' :
         `${Math.round(ageMin)}m ago`;
       const archiveText = `Archive ${frames}/${maxFrames}`;
@@ -1488,6 +1500,7 @@ function updateWorkers(processes, scheduler) {
 
   const rows = processes && processes.length ? processes : (scheduler ? [scheduler] : []);
   rows.forEach((w) => {
+      const sharedThread = w.service === 'satellite' && w.role === 'worker';
       const statusClass = w.status_class || (w.cpu_percent > 50 ? 'processing' : 'idle');
       const statusText  = w.status || (w.cpu_percent > 50 ? 'Processing' : 'Idle');
       const taskText = w.task || '--';
@@ -1500,15 +1513,17 @@ function updateWorkers(processes, scheduler) {
         : '';
       html += `<tr>
         <td><span class="process-name ${nameClass}">${w.name || 'Process'}</span>${queueBadge}${burstBadge}</td>
-        <td class="pid">${w.pid}</td>
+        <td class="pid">${w.pid_label || w.pid}</td>
         <td><span class="worker-status ${statusClass}"></span>${statusText}</td>
         <td title="${String(taskText).replace(/"/g, '&quot;')}">${taskText}</td>
-        <td class="cpu-val">${w.cpu_percent.toFixed(0)}%</td>
-        <td class="mem-val">${formatBytes(w.rss)}</td>
+        <td class="cpu-val">${sharedThread ? 'shared' : (w.cpu_percent.toFixed(0) + '%')}</td>
+        <td class="mem-val">${sharedThread ? 'shared' : formatBytes(w.rss)}</td>
         <td>${formatUptime(w.uptime)}</td>
       </tr>`;
-      totalCpu += w.cpu_percent;
-      totalRss += w.rss;
+      if (!sharedThread) {
+        totalCpu += w.cpu_percent;
+        totalRss += w.rss;
+      }
     });
 
   html += `<tr style="border-top:2px solid var(--border)">
@@ -1562,8 +1577,11 @@ function updateDisk(disk) {
       ['Model cache',        disk.grib_cache],
       ['Satellite cache',    disk.satellite_cache],
       ['Radar cache',        disk.radar_cache],
+      ['Regrid cache',       disk.regrid_cache],
+      ['Quarantine',         disk.quarantine],
     ],
     [
+      ['Other data',         disk.other_data],
       ['Service logs',       disk.logs],
     ],
   ];

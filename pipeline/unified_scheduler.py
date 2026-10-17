@@ -22,7 +22,9 @@ import logging
 import logging.handlers
 import multiprocessing as mp
 import os
+import queue
 import re
+import resource
 import shutil
 import sys
 import threading
@@ -56,6 +58,9 @@ from .config import (
 from .palettes import CURRENT_PALETTE_VERSION
 from .processor import SNOW_PRODUCTS
 from .swath import update_running_max, finalize_swath
+from .resource_budget import RenderAdmission, process_group_pss, render_processes_for_backlog
+from .source_circuit import SOURCE_CIRCUIT
+from .render_cost import RenderCosts, balanced_chunks
 
 # Height fields used as hidden contour dependencies for combo products.
 _HEIGHT_OVERLAY_DEPENDENCIES = {
@@ -262,6 +267,77 @@ MODEL_PRIORITY_ORDER = [
 MODEL_PRIORITY_RANK = {
     model_name: rank for rank, model_name in enumerate(MODEL_PRIORITY_ORDER)
 }
+POOL_MODEL_GROUPS = {
+    "affinity_a": {"hrrr"},
+    "affinity_b": {"nam3km", "rap", "rtma", "href", "rrfs"},
+    "affinity_c": {"gfs", "ecmwf", "nam12km", "gdps", "gefs"},
+}
+
+
+def _balanced_dispatch_plan(renderable_by_model: dict[str, list[int]],
+                            pool_slots: dict[str, int], ready_since: dict[str, float],
+                            now: float, admit: Callable) -> list[tuple[str, str, int]]:
+    """Prefer each pool's model family, borrow idle capacity, and age waiting work."""
+    remaining = {name: list(hours) for name, hours in renderable_by_model.items() if hours}
+    plan = []
+    for pool_name, slots in pool_slots.items():
+        preferred = POOL_MODEL_GROUPS.get(pool_name, set())
+        for _ in range(slots):
+            def rank(name):
+                waited = now - ready_since.get(name, now)
+                return (0 if waited >= 120 else 1,
+                        -waited if waited >= 120 else 0,
+                        name not in preferred, MODEL_PRIORITY_RANK.get(name, 999))
+            submitted = False
+            for model in sorted(remaining, key=rank):
+                # A memory rejection applies to the model, not to a lead time.
+                # Probe one ready hour rather than rebuilding hundreds of job
+                # descriptions while the service is waiting for headroom.
+                for fxx in remaining[model][:1]:
+                    if admit(pool_name, model, fxx):
+                        remaining[model].remove(fxx)
+                        ready_since[model] = now
+                        plan.append((pool_name, model, fxx))
+                        submitted = True
+                        break
+                if not remaining[model]:
+                    del remaining[model]
+                if submitted:
+                    break
+            if not submitted:
+                break
+    return plan
+
+
+def _shared_dispatch_plan(
+    renderable_by_model: dict[str, list[int]],
+    slots: int,
+    fairness_cursor: int,
+) -> tuple[list[tuple[str, int]], int]:
+    """Fill shared slots while giving one ready secondary model a turn."""
+    active = [name for name in MODEL_PRIORITY_ORDER if renderable_by_model.get(name)]
+    if slots <= 0 or not active:
+        return [], fairness_cursor
+
+    remaining = {name: list(renderable_by_model[name]) for name in active}
+    plan: list[tuple[str, int]] = []
+    if slots > 1 and len(active) > 1:
+        # Reserve one slot for a model behind the highest-priority ready one.
+        # Rotate that slot so a long RAP/GFS run cannot starve RTMA or others.
+        for offset in range(len(MODEL_PRIORITY_ORDER)):
+            rank = (fairness_cursor + offset) % len(MODEL_PRIORITY_ORDER)
+            secondary = MODEL_PRIORITY_ORDER[rank]
+            if secondary in remaining and secondary != active[0]:
+                plan.append((secondary, remaining[secondary].pop(0)))
+                fairness_cursor = (rank + 1) % len(MODEL_PRIORITY_ORDER)
+                break
+
+    for model_name in active:
+        while remaining[model_name] and len(plan) < slots:
+            plan.append((model_name, remaining[model_name].pop(0)))
+        if len(plan) >= slots:
+            break
+    return plan, fairness_cursor
 
 
 # ---------------------------------------------------------------------------
@@ -1204,22 +1280,27 @@ MODELS = [
     ),
 ]
 
+_enabled_models = _env_csv_set("WX_MODELS", set())
+if _enabled_models:
+    MODELS = [model for model in MODELS if model.name in _enabled_models]
 MODEL_MAP = {m.name: m for m in MODELS}
 
 
 # Pipeline tuning
 DOWNLOAD_TIMEOUT = 60  # read timeout — drop stalled connections, retry on next scan
 MODEL_WORKER_MAX_TASKS = _env_int("MODEL_WORKER_MAX_TASKS", 2)  # recycle workers periodically to reclaim memory
+MODEL_TASK_METRICS = _env_bool("MODEL_TASK_METRICS", False)
 
 # Shared render pool, with additional backfill handled by the
 # separate low-priority service.
 SHARED_RENDER_WORKERS = _env_int("SHARED_RENDER_WORKERS", 6)
 LOW_PRIORITY_WORKERS = _env_int("LOWPRI_WORKERS", 1, minimum=0)
 AFFINITY_POOL_MODE = _env_bool("AFFINITY_POOL_MODE", False)
+BALANCED_POOL_MODE = _env_bool("BALANCED_POOL_MODE", True)
 AFFINITY_POOL_A_WORKERS = _env_int("AFFINITY_POOL_A_WORKERS", 2)
 AFFINITY_POOL_B_WORKERS = _env_int("AFFINITY_POOL_B_WORKERS", 2)
-AFFINITY_POOL_C_WORKERS = _env_int("AFFINITY_POOL_C_WORKERS", 0, minimum=0)
-AFFINITY_CATCHALL_WORKERS = _env_int("AFFINITY_CATCHALL_WORKERS", 2)
+AFFINITY_POOL_C_WORKERS = _env_int("AFFINITY_POOL_C_WORKERS", 2, minimum=0)
+AFFINITY_CATCHALL_WORKERS = _env_int("AFFINITY_CATCHALL_WORKERS", 0, minimum=0)
 AFFINITY_POOL_LEASE_FXX = _env_int("AFFINITY_POOL_LEASE_FXX", 2)
 AFFINITY_POOL_IDLE_RELEASE_SECONDS = _env_int("AFFINITY_POOL_IDLE_RELEASE_SECONDS", 180)
 AFFINITY_POOL_HOLD_OPEN_SECONDS = _env_int("AFFINITY_POOL_HOLD_OPEN_SECONDS", 45, minimum=0)
@@ -1235,6 +1316,8 @@ BURST_RENDER_MAX_SUBWORKERS = max(1, _env_int("BURST_RENDER_MAX_SUBWORKERS", 2))
 BURST_RENDER_MAX_CPU_PCT = float(os.getenv("BURST_RENDER_MAX_CPU_PCT", "55"))
 BURST_RENDER_MAX_MEM_PCT = float(os.getenv("BURST_RENDER_MAX_MEM_PCT", "80"))
 BURST_RENDER_MIN_PARAMS = max(1, _env_int("BURST_RENDER_MIN_PARAMS", 18))
+BURST_RENDER_TIMEOUT_SECONDS = max(1.0, float(os.getenv("BURST_RENDER_TIMEOUT_SECONDS", "600")))
+BURST_RENDER_MEMORY_FACTOR = max(1.0, float(os.getenv("BURST_RENDER_MEMORY_FACTOR", "2.25")))
 BURST_RENDER_MODELS = _env_csv_set("BURST_RENDER_MODELS", set(MODEL_PRIORITY_ORDER))
 
 WORKER_RSS_LIMIT_MB = 1400
@@ -1285,7 +1368,9 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
     """
     run_id = run_dt.strftime("%Y%m%d%H")
     fallback_sources = [s for s in model.sources if s != "nomads"] or ["aws"]
+    fallback_sources = [s for s in fallback_sources if SOURCE_CIRCUIT.available(model.name, s)]
     candidate_sources = list(dict.fromkeys(model.sources + fallback_sources))
+    candidate_sources = [s for s in candidate_sources if SOURCE_CIRCUIT.available(model.name, s)]
 
     def _build_herbie(priority: list[str]) -> Herbie:
         return _get_herbie_cached(
@@ -1301,7 +1386,11 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
         )
 
     def _build_source_herbie(source: str) -> Herbie:
-        return _build_herbie([source])
+        try:
+            return _build_herbie([source])
+        except Exception as exc:
+            SOURCE_CIRCUIT.failed(model.name, source, exc)
+            raise
 
     def _probe_source(source: str) -> tuple[str, Herbie | None, str | None]:
         try:
@@ -1322,6 +1411,8 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
             cached_sources = _source_race_cache[cache_key]
             results = []
             for s in cached_sources:
+                if s not in candidate_sources:
+                    continue
                 try:
                     h = _build_source_herbie(s)
                     if h.grib is not None:
@@ -1537,8 +1628,19 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
             if local_path is None and model.sources != fallback_sources and viable_fallback:
                 logger.info("[%s] fxx=%02d all single-source probes unavailable, trying grouped fallback %s",
                             model.name.upper(), fxx, viable_fallback)
+                try:
+                    fallback_herbie = _build_herbie(viable_fallback)
+                except KeyError as exc:
+                    if exc.args != ("href",) or "azure" not in viable_fallback:
+                        raise
+                    # Herbie's Azure signer can return JSON without an href.
+                    # All earlier sources were already probed; retry on the
+                    # next scan instead of logging a hard download failure.
+                    logger.info("[%s] fxx=%02d Azure signer unavailable; retrying next scan",
+                                model.name.upper(), fxx)
+                    return None
                 local_path = _download_from_herbie(
-                    _build_herbie(viable_fallback), viable_fallback,
+                    fallback_herbie, viable_fallback,
                 )
                 if local_path is not None:
                     selected_source = ",".join(viable_fallback)
@@ -1773,6 +1875,10 @@ def _write_worker_status(
         "stage": stage,
         "started": time.time(),
         "worker_type": worker_type,
+        "rss_mb": _worker_rss_mb(),
+        "baseline_rss_mb": _worker_state.get("job_baseline_rss_mb", 0),
+        "baseline_pss_mb": _worker_state.get("job_baseline_pss_mb", 0),
+        "child_pids": _worker_state.get("render_child_pids", []),
     }
     if detail:
         status["detail"] = detail
@@ -1801,11 +1907,29 @@ def _clear_worker_status():
         pass
 
 
+def _set_render_children(child_pids):
+    """Expose the actual process family for proportional memory accounting."""
+    _worker_state["render_child_pids"] = list(child_pids)
+    path = WORKER_STATUS_DIR / f"{os.getpid()}.json"
+    try:
+        status = json.loads(path.read_text())
+        status["child_pids"] = list(child_pids)
+        path.write_text(json.dumps(status))
+    except (OSError, ValueError):
+        pass
+
+
 def _chunk_render_params(params: list[str], chunks: int) -> list[list[str]]:
     chunked = [[] for _ in range(chunks)]
     for idx, param in enumerate(params):
         chunked[idx % chunks].append(param)
     return [chunk for chunk in chunked if chunk]
+
+
+def _render_cost_profile():
+    if "render_costs" not in _worker_state:
+        _worker_state["render_costs"] = RenderCosts(DATA_DIR / "render_costs.json")
+    return _worker_state["render_costs"]
 
 
 def _expand_chunk_fields(chunk_params: list[str], processed_keys: set[str]) -> set[str]:
@@ -1845,15 +1969,17 @@ def _burst_render_child(
             for key in needed_fields
             if key in processed
         }
-        renderer = OverlayRenderer()
+        renderer = _worker_state.get("renderer") or OverlayRenderer()
         rendered = renderer.render_all_params(
             subset_processed,
             Path(output_dir_str),
             fxx,
             model_name=model_name,
             selected_params=set(chunk_params),
+            shared_height_cache=True,
         )
-        result_queue.put({"ok": True, "params": chunk_params, "rendered": rendered})
+        result_queue.put({"ok": True, "params": chunk_params, "rendered": rendered,
+                          "costs": renderer.last_render_costs})
     except Exception as exc:
         result_queue.put({"ok": False, "params": chunk_params, "error": str(exc)})
 
@@ -1869,7 +1995,18 @@ def _render_with_burst_subworkers(
 ) -> list[str] | None:
     if subworkers <= 1:
         return None
-    eligible = [param for param in render_param_names if param in processed]
+    from .processor import DERIVED_PARAMS
+
+    component_fields = {
+        key for pair in DERIVED_PARAMS.values() for key in pair if key is not None
+    } | {"ushear_06km", "vshear_06km", "ushear_01km", "vshear_01km"}
+    # Sequential rendering also emits retained contour dependencies (gh_*).
+    # Include those outputs when splitting, while keeping vector components
+    # as dependencies of their wind products rather than separate jobs.
+    eligible = [
+        param for param in dict.fromkeys([*render_param_names, *processed])
+        if param in processed and param not in component_fields
+    ]
     if len(eligible) < BURST_RENDER_MIN_PARAMS:
         return None
     try:
@@ -1879,9 +2016,15 @@ def _render_with_burst_subworkers(
                     model_name.upper(), fxx)
         return None
 
-    chunks = _chunk_render_params(eligible, min(subworkers, len(eligible)))
+    costs = _render_cost_profile()
+    chunks = balanced_chunks(eligible, min(subworkers, len(eligible)),
+                             costs.estimates(model_name, eligible))
     if len(chunks) <= 1:
         return None
+
+    renderer = _worker_state.get("renderer")
+    if renderer is not None:
+        renderer.prepare_shared_heights(processed, chunks, model_name)
 
     _burst_render_state["processed"] = processed
     result_queue = ctx.Queue()
@@ -1899,12 +2042,33 @@ def _render_with_burst_subworkers(
             proc.start()
             procs.append(proc)
 
+        _set_render_children([proc.pid for proc in procs])
+
         rendered: list[str] = []
         failures: list[str] = []
+        measured_costs = {}
+        deadline = time.monotonic() + BURST_RENDER_TIMEOUT_SECONDS
         for _ in chunks:
-            msg = result_queue.get()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    failures.append("child result timeout")
+                    break
+                try:
+                    msg = result_queue.get(timeout=min(1.0, remaining))
+                    break
+                except queue.Empty:
+                    if any(proc.exitcode not in (None, 0) for proc in procs):
+                        failures.append("render child exited without a result")
+                        break
+                    if all(proc.exitcode == 0 for proc in procs):
+                        failures.append("missing render child result")
+                        break
+            if failures:
+                break
             if msg.get("ok"):
                 rendered.extend(msg.get("rendered", []))
+                measured_costs.update(msg.get("costs", {}))
             else:
                 failures.append(
                     f"{','.join(msg.get('params', []))}: {msg.get('error', 'unknown error')}"
@@ -1926,9 +2090,17 @@ def _render_with_burst_subworkers(
 
         logger.info("[%s] fxx=%02d burst render complete: %d params via %d subworkers",
                     model_name.upper(), fxx, len(rendered), len(chunks))
+        costs.update(model_name, measured_costs)
         return sorted(set(rendered))
     finally:
+        for proc in procs:
+            if proc.is_alive():
+                proc.terminate()
+            proc.join(timeout=1)
+        _set_render_children([])
         _burst_render_state.pop("processed", None)
+        if renderer is not None:
+            renderer.clear_hour_cache()
         try:
             result_queue.close()
         except Exception:
@@ -1951,6 +2123,7 @@ def _render_single_fxx_impl(
 ) -> tuple[int, list[str]]:
     """Core render logic for one forecast hour. Runs in subprocess."""
     run_id = run_dt.strftime("%Y%m%d%H")
+    _worker_state["job_baseline_rss_mb"] = _worker_rss_mb()
     burst_active = burst_subworkers > 1
     _write_worker_status(
         model_name,
@@ -2062,6 +2235,7 @@ def _render_single_fxx_impl(
                 run_dt,
                 model_name=model_name,
             )
+            _render_cost_profile().update(model_name, renderer.last_render_costs)
         rss_after_render = _worker_rss_mb()
         _write_worker_status(
             model_name,
@@ -2169,15 +2343,53 @@ def _render_model_batch(
             if lookback_strs is not None else None
         )
 
-        result = _render_single_fxx_impl(
-            grib_path, fxx, out_dir, run_dt,
-            render_param_names, extra_param_names,
-            prev_grib, lookback_gribs, model_name,
-            worker_type=worker_type,
-            burst_subworkers=burst_subworkers,
-            burst_reason=burst_reason,
-        )
-        results.append(result)
+        baseline = _worker_rss_mb()
+        peak = [baseline]
+        baseline_pss = process_group_pss(os.getpid()) / 1024**2
+        _worker_state["job_baseline_pss_mb"] = baseline_pss
+        _worker_state["render_child_pids"] = []
+        peak_pss = [baseline_pss]
+        sampling_stop = threading.Event()
+        def sample_memory():
+            while not sampling_stop.wait(1):
+                peak[0] = max(peak[0], _worker_rss_mb())
+                peak_pss[0] = max(peak_pss[0], process_group_pss(
+                    os.getpid(), _worker_state.get("render_child_pids", []),
+                ) / 1024**2)
+        sampler = threading.Thread(target=sample_memory, daemon=True)
+        sampler.start()
+        started = time.monotonic()
+        cpu_before = resource.getrusage(resource.RUSAGE_SELF)
+        child_cpu_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+        try:
+            result = _render_single_fxx_impl(
+                grib_path, fxx, out_dir, run_dt,
+                render_param_names, extra_param_names,
+                prev_grib, lookback_gribs, model_name,
+                worker_type=worker_type,
+                burst_subworkers=burst_subworkers,
+                burst_reason=burst_reason,
+            )
+        finally:
+            sampling_stop.set()
+            sampler.join(timeout=1)
+        metrics = {"baseline_rss_mb": baseline, "peak_rss_mb": peak[0],
+                   "baseline_pss_mb": baseline_pss, "peak_group_pss_mb": peak_pss[0],
+                   "elapsed_seconds": round(time.monotonic() - started, 2)}
+        cpu_after = resource.getrusage(resource.RUSAGE_SELF)
+        child_cpu_after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        child_cpu = (child_cpu_after.ru_utime + child_cpu_after.ru_stime
+                     - child_cpu_before.ru_utime - child_cpu_before.ru_stime)
+        metrics["cpu_seconds"] = round(cpu_after.ru_utime + cpu_after.ru_stime
+                                       - cpu_before.ru_utime - cpu_before.ru_stime
+                                       + child_cpu, 2)
+        metrics["child_cpu_seconds"] = round(child_cpu, 2)
+        metrics["burst_subworkers"] = burst_subworkers
+        metrics["rendered_params"] = len(result[1])
+        # Existing schedulers may spawn a worker while a rollout is staged.
+        # Enable the extended result protocol explicitly with the new service.
+        results.append((*result, metrics) if MODEL_TASK_METRICS else result)
+        logger.info("[%s] fxx=%02d task metrics: %s", model_name.upper(), fxx, metrics)
 
         # Check memory pressure and trim/clear caches
         rss = _worker_rss_mb()
@@ -2759,6 +2971,11 @@ def _detect_pending(model: ModelConfig) -> datetime | None:
         lookback = 3
     elif model.name in ("nam3km", "nam12km"):
         lookback = 7          # 6h-cycle models — 7h finds the latest cycle
+    elif model.name == "gdps":
+        # GDPS downloads separate files for each parameter and has 81 forecast
+        # hours. Keep an interrupted run eligible until the following day so
+        # the 13-hour cutoff cannot abandon it before a replacement is ready.
+        lookback = 25
     else:
         lookback = 13         # 12h-cycle models (ecmwf, gfs)
     cutoff_ts = calendar.timegm(
@@ -2795,7 +3012,12 @@ def _detect_pending(model: ModelConfig) -> datetime | None:
             try:
                 meta = json.loads(meta_path.read_text())
                 if meta.get("abandoned"):
-                    continue
+                    if model.name != "gdps":
+                        continue
+                    logger.info("[GDPS] Resuming previously abandoned run %s within lookback", rd.name)
+                    meta["abandoned"] = False
+                    meta["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    meta_path.write_text(json.dumps(meta, indent=2, default=str))
                 fxx_list = _canonical_forecast_hours(model, rd.name, meta)
                 if meta.get("forecast_hours", []) != fxx_list:
                     meta["forecast_hours"] = fxx_list
@@ -2910,14 +3132,16 @@ def _detect_pending(model: ModelConfig) -> datetime | None:
         if run_id in completed:
             continue
 
-        # Skip runs that exist in the model_dir but have no rendered output
-        # (they were attempted but failed - already handled above)
+        # Keep the newest run being processed. Skipping its directory here can
+        # select an older still-available cycle and repeatedly switch runs
+        # while the current cycle's downloads are in progress.
         if model_dir.exists():
             run_dir = model_dir / run_id
             if run_dir.exists():
-                # Run directory exists but wasn't marked complete above
-                # This means it has no processing_started or was handled as failed
-                # Skip it to avoid re-processing
+                if newest_in_progress == candidate:
+                    return candidate
+                # A directory without valid in-progress metadata was handled
+                # as failed above; do not immediately restart it.
                 continue
 
         # Prefer locally cached data when present; otherwise probe remote availability.
@@ -3026,12 +3250,14 @@ def _decide_burst_subworkers(
         return 1, "model_off"
     if lowpri_shed_active:
         return 1, "lowpri_shed"
+    if _system_cpu_percent() >= BURST_RENDER_MAX_CPU_PCT:
+        return 1, "cpu_busy"
 
     mem_pct = _system_mem_percent()
     if mem_pct >= BURST_RENDER_MAX_MEM_PCT:
         return 1, f"mem:{mem_pct:.0f}"
 
-    return BURST_RENDER_MAX_SUBWORKERS, f"cpu:off lowpri:{lowpri_in_flight} mem:{mem_pct:.0f}"
+    return BURST_RENDER_MAX_SUBWORKERS, f"cpu:available lowpri:{lowpri_in_flight} mem:{mem_pct:.0f}"
 
 
 def _ready_staleness_seconds(model: ModelConfig, run_dt: datetime) -> float:
@@ -3353,10 +3579,11 @@ def main():
         logger.info("Unified pipeline scheduler started — %d render workers, "
                     "background downloads for all models", SHARED_RENDER_WORKERS)
     logger.info(
-        "Burst render mode: enabled=%s max_subworkers=%d models=%s cpu=off mem<%.0f min_params=%d",
+        "Burst render mode: enabled=%s max_subworkers=%d models=%s cpu<%.0f mem<%.0f min_params=%d",
         BURST_RENDER_ENABLED,
         BURST_RENDER_MAX_SUBWORKERS,
         ",".join(sorted(BURST_RENDER_MODELS)),
+        BURST_RENDER_MAX_CPU_PCT,
         BURST_RENDER_MAX_MEM_PCT,
         BURST_RENDER_MIN_PARAMS,
     )
@@ -3477,6 +3704,9 @@ def main():
     completed_run_ids: dict[str, str] = {}
     # In-flight renders: {(model_name, fxx): (pool_name, Future)}
     in_flight: dict[tuple[str, int], tuple[str, object]] = {}
+    admission = RenderAdmission(metrics_path=DATA_DIR / "render_memory_metrics_v2.json")
+    ready_since: dict[str, float] = {}
+    shared_fairness_cursor = MODEL_PRIORITY_RANK["rap"]
     low_priority_in_flight: dict[tuple[str, int], object]
     if lowpri_max_workers > 0:
         low_priority_in_flight = _load_existing_lowpri_jobs()
@@ -3489,7 +3719,7 @@ def main():
 
     last_memory_check = 0.0
     last_status_log = 0.0
-    MEMORY_CHECK_INTERVAL = 60
+    MEMORY_CHECK_INTERVAL = 5
     STATUS_LOG_INTERVAL = 30
     DISPATCH_INTERVAL = 2
 
@@ -3529,10 +3759,16 @@ def main():
                 pool_name, future = in_flight.pop(key)
                 state = run_states.get(model_name)
                 if state is None:
+                    admission.release(key)
                     continue
                 try:
                     batch_results = future.result(timeout=10)
-                    for done_fxx, rendered in batch_results:
+                    for batch_result in batch_results:
+                        done_fxx, rendered = batch_result[:2]
+                        metrics = batch_result[2] if len(batch_result) > 2 else None
+                        admission.release((model_name, done_fxx), metrics)
+                        if getattr(future, "_wx_run_id", state.run_id) != state.run_id:
+                            continue
                         state.handle_result(done_fxx, rendered)
                         binding = pool_bindings.get(pool_name)
                         if binding is not None and binding.model_name == model_name:
@@ -3545,12 +3781,17 @@ def main():
                     stale_keys = [k for k, (pn, _) in in_flight.items() if pn == pool_name]
                     for stale_key in stale_keys:
                         in_flight.pop(stale_key, None)
+                        admission.release(stale_key)
                 except CancelledError:
                     logger.info("[%s] Render cancelled fxx=%02d",
                                 model_name.upper(), fxx)
                 except Exception as exc:
                     logger.error("[%s] Render failed fxx=%02d: %s",
                                  model_name.upper(), fxx, exc, exc_info=True)
+                finally:
+                    # Keep the process count until metrics are recorded above.
+                    # Also release cancelled, failed, or empty batch results.
+                    admission.release(key)
 
             # --- Expire stale low-priority in-flight entries ---
             LP_STALE_TIMEOUT = 900  # 15 minutes
@@ -3679,7 +3920,10 @@ def main():
                         # silently discarded when the futures complete)
                         old_hp = [k for k in in_flight if k[0] == model_name]
                         for k in old_hp:
-                            in_flight.pop(k)
+                            # Running old-run work still occupies a real slot.
+                            if in_flight[k][1].cancel():
+                                in_flight.pop(k)
+                                admission.release(k)
                         old_lp = [k for k in low_priority_in_flight if k[0] == model_name]
                         for k in old_lp:
                             low_priority_in_flight.pop(k)
@@ -3742,7 +3986,67 @@ def main():
             }
 
             trickle_mode = False
-            if affinity_pool_mode:
+            admission.refresh(WORKER_STATUS_DIR)
+            for model_name in list(ready_since):
+                if model_name not in renderable_by_model:
+                    ready_since.pop(model_name, None)
+            for model_name in renderable_by_model:
+                ready_since.setdefault(model_name, now)
+            if affinity_pool_mode and BALANCED_POOL_MODE:
+                remaining_ready = sum(len(hours) for hours in renderable_by_model.values())
+                remaining_slots = sum(pool_slots.values())
+                def submit_balanced(pool_name: str, model_name: str, fxx: int) -> bool:
+                    nonlocal remaining_ready, remaining_slots
+                    state = run_states[model_name]
+                    item = _build_render_item(state.model, state.run_dt, fxx,
+                                              downloaded_by_model[model_name])
+                    key = (model_name, fxx)
+                    if item is None:
+                        return False
+                    burst_subworkers, burst_reason = _decide_burst_subworkers(
+                        model_name,
+                        lowpri_in_flight=len(low_priority_in_flight),
+                        lowpri_shed_active=lowpri_shed_active,
+                    )
+                    burst_subworkers = min(
+                        burst_subworkers, pool_configs[pool_name].burst_subworkers,
+                    )
+                    planned = render_processes_for_backlog(
+                        remaining_ready, remaining_slots, admission.reserved_processes(),
+                        admission.cpu_budget(), burst_subworkers,
+                    )
+                    if planned < burst_subworkers:
+                        burst_reason = "independent_forecast_hours"
+                    burst_subworkers = planned
+                    while not admission.reserve(key, render_processes=burst_subworkers):
+                        if burst_subworkers <= 1:
+                            return False
+                        burst_subworkers -= 1
+                        burst_reason = "burst_resource_budget"
+                    out_dir = _run_dir(model_name, state.run_dt)
+                    out_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+                    try:
+                        future = _ensure_pool(pool_name).submit(
+                            _render_model_batch, [item], str(out_dir), state.run_dt.isoformat(),
+                            state.render_params, state.extra_soundings, model_name, pool_name,
+                            burst_subworkers, burst_reason,
+                        )
+                    except BrokenProcessPool:
+                        pool_broken[pool_name] = True
+                        admission.release(key)
+                        return False
+                    future._wx_run_id = state.run_id
+                    in_flight[key] = (pool_name, future)
+                    remaining_ready -= 1
+                    remaining_slots -= 1
+                    logger.info(
+                        "[pool %s] [%s] fxx=%02d dispatch mode: burst_subworkers=%d reason=%s balanced",
+                        pool_name, model_name.upper(), fxx, burst_subworkers, burst_reason,
+                    )
+                    return True
+                _balanced_dispatch_plan(renderable_by_model, pool_slots, ready_since,
+                                        now, submit_balanced)
+            elif affinity_pool_mode:
                 sticky_pool_names = [
                     name
                     for name in ("affinity_a", "affinity_b", "affinity_c")
@@ -3784,6 +4088,8 @@ def main():
                     item = _build_render_item(state.model, state.run_dt, fxx, downloaded)
                     if item is None:
                         return False
+                    if not admission.reserve((model_name, fxx)):
+                        return False
                     out_dir = _run_dir(model_name, state.run_dt)
                     out_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
                     try:
@@ -3799,6 +4105,7 @@ def main():
                             burst_subworkers,
                             burst_reason,
                         )
+                        future._wx_run_id = state.run_id
                         in_flight[(model_name, fxx)] = (pool_name, future)
                         binding = pool_bindings.get(pool_name)
                         if binding is not None:
@@ -3806,6 +4113,7 @@ def main():
                         return True
                     except BrokenProcessPool:
                         pool_broken[pool_name] = True
+                        admission.release((model_name, fxx))
                         return False
 
                 def _available_renderable(model_name: str) -> list[int]:
@@ -4066,51 +4374,51 @@ def main():
             else:
                 idle_workers = pool_slots.get("shared", 0)
                 if idle_workers > 0:
-                    for model_name in MODEL_PRIORITY_ORDER:
-                        if idle_workers <= 0:
-                            break
+                    dispatch_plan, shared_fairness_cursor = _shared_dispatch_plan(
+                        renderable_by_model, idle_workers, shared_fairness_cursor,
+                    )
+                    for model_name, fxx in dispatch_plan:
                         state = run_states.get(model_name)
-                        renderable = renderable_by_model.get(model_name, [])
                         downloaded = downloaded_by_model.get(model_name)
-                        if state is None or not renderable or not downloaded:
+                        if state is None or not downloaded:
                             continue
                         out_dir = _run_dir(model_name, state.run_dt)
                         out_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
-                        for fxx in renderable[:idle_workers]:
-                            item = _build_render_item(state.model, state.run_dt, fxx, downloaded)
-                            if item is None:
-                                continue
-                            burst_subworkers, burst_reason = _decide_burst_subworkers(
+                        item = _build_render_item(state.model, state.run_dt, fxx, downloaded)
+                        if item is None:
+                            continue
+                        if not admission.reserve((model_name, fxx)):
+                            continue
+                        burst_subworkers, burst_reason = _decide_burst_subworkers(
+                            model_name,
+                            lowpri_in_flight=len(low_priority_in_flight),
+                            lowpri_shed_active=lowpri_shed_active,
+                        )
+                        logger.info(
+                            "[%s] fxx=%02d dispatch mode: burst_subworkers=%d reason=%s",
+                            model_name.upper(),
+                            fxx,
+                            burst_subworkers,
+                            burst_reason,
+                        )
+                        try:
+                            future = _ensure_pool("shared").submit(
+                                _render_model_batch,
+                                [item],
+                                str(out_dir),
+                                state.run_dt.isoformat(),
+                                state.render_params,
+                                state.extra_soundings,
                                 model_name,
-                                lowpri_in_flight=len(low_priority_in_flight),
-                                lowpri_shed_active=lowpri_shed_active,
-                            )
-                            logger.info(
-                                "[%s] fxx=%02d dispatch mode: burst_subworkers=%d reason=%s",
-                                model_name.upper(),
-                                fxx,
+                                "shared",
                                 burst_subworkers,
                                 burst_reason,
                             )
-                            try:
-                                future = _ensure_pool("shared").submit(
-                                    _render_model_batch,
-                                    [item],
-                                    str(out_dir),
-                                    state.run_dt.isoformat(),
-                                    state.render_params,
-                                    state.extra_soundings,
-                                    model_name,
-                                    "shared",
-                                    burst_subworkers,
-                                    burst_reason,
-                                )
-                                in_flight[(model_name, fxx)] = ("shared", future)
-                                idle_workers -= 1
-                            except BrokenProcessPool:
-                                pool_broken["shared"] = True
-                                break
-                        if idle_workers > 0:
+                            future._wx_run_id = state.run_id
+                            in_flight[(model_name, fxx)] = ("shared", future)
+                        except BrokenProcessPool:
+                            pool_broken["shared"] = True
+                            admission.release((model_name, fxx))
                             break
 
             # --- Low Priority Lane: Dispatch oldest available data via file queue ---
@@ -4239,6 +4547,7 @@ def main():
                                     "completed_fxx": sorted(state.completed),
                                     "total_fxx": len(state.fxx_list),
                                     "trickle_mode": trickle_mode,
+                                    "resources": admission.status(),
                                     "queue_layout": pool_layout,
                                     "queue_activity": pool_activity,
                                     "queue_layout_text": " ".join(pool_layout),
@@ -4252,12 +4561,23 @@ def main():
                             f"[{mn.upper()}] {rid}"
                             for mn, (_, rid) in active.items()
                         ]
+                        _write_state({
+                            "status": "downloading",
+                            "active_downloads": {mn: rid for mn, (_, rid) in active.items()},
+                            "resources": admission.status(),
+                            "trickle_mode": trickle_mode if affinity_pool_mode else False,
+                            "queue_layout": pool_layout,
+                            "queue_activity": pool_activity,
+                            "queue_layout_text": " ".join(pool_layout),
+                            "queue_activity_text": " | ".join(pool_activity),
+                        })
                         logger.info("Downloading (no renders ready): %s",
                                     " + ".join(parts))
                     else:
                         _write_state({
                             "status": "idle",
                             "waiting": True,
+                            "resources": admission.status(),
                             "trickle_mode": trickle_mode if affinity_pool_mode else False,
                             "queue_layout": pool_layout,
                             "queue_activity": pool_activity,

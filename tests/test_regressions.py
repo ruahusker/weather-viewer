@@ -253,6 +253,8 @@ class DownloadTests(unittest.TestCase):
         namespace = {'__package__': 'pipeline', 'ModelConfig': object, 'Herbie': object,
                      'datetime': datetime, 'Path': Path, 'logger': Mock(),
                      'SOURCE_RACE_MODELS': set(), '_HEIGHT_OVERLAY_DEPENDENCIES': _SCALAR_HEIGHT_OVERLAYS}
+        from pipeline.source_circuit import SourceCircuit
+        namespace['SOURCE_CIRCUIT'] = SourceCircuit()
         exec(compile(ast.Module(body=[function], type_ignores=[]), '<download>', 'exec'), namespace)
         return namespace
 
@@ -337,3 +339,118 @@ class WindRenderTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MeteogramTests(unittest.TestCase):
+    """Point forecasts read values back from rendered overlays."""
+
+    def test_png_reverse_lookup_matches_renderer_colormaps(self):
+        renderer = OverlayRenderer.__new__(OverlayRenderer)
+        for param, scale in api.COLOR_SCALES.items():
+            cmap_name = scale.get('cmap')
+            # Radar and satellite scales are painted by their own renderers.
+            if param.startswith(('radar_', 'goes_')):
+                continue
+            if not cmap_name or cmap_name in ('discrete', 'nws_refl') or scale.get('bounds'):
+                continue
+            with self.subTest(param=param):
+                cmap, norm = renderer._make_cmap_norm(param)
+                painted = cmap(np.arange(256), bytes=True)[:, :3]
+                lookup = api._build_cmap_lookup(cmap_name, scale['vmin'], scale['vmax'], param)
+                self.assertEqual(set(lookup), {tuple(int(c) for c in rgb) for rgb in painted})
+                # Values must invert the renderer's normalization.
+                index = 200
+                expected = norm.inverse((index + 0.5) / 256.0)
+                value = lookup[tuple(int(c) for c in painted[index])]
+                step = (norm.vmax - norm.vmin) / 256.0
+                self.assertAlmostEqual(value, float(expected), delta=step * 2)
+
+    def test_grid_cache_round_trips_rendered_values(self):
+        from web import meteogram
+
+        renderer = OverlayRenderer.__new__(OverlayRenderer)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / 'rendered' / 'hrrr' / '2026101600'
+            bounds = {'south': 30.0, 'north': 40.0, 'west': -100.0, 'east': -90.0}
+            run_dir.mkdir(parents=True)
+            (run_dir / 'bounds.json').write_text(json.dumps(bounds))
+            # 1500 px wide forces a stride; left half 50 °F, right half 70 °F.
+            data = np.full((900, 1500), 50.0, dtype=np.float32)
+            data[:, 750:] = 70.0
+            cmap, norm = renderer._make_cmap_norm('temp_2m')
+            (run_dir / 'temp_2m').mkdir()
+            for fxx in (0, 1):
+                Image.fromarray(cmap(norm(data + fxx), bytes=True), 'RGBA').save(run_dir / 'temp_2m' / f'f{fxx:02d}.png')
+            # A transparent precip frame means "below the lowest bin" (0 in).
+            (run_dir / 'precip').mkdir()
+            Image.new('RGBA', (1500, 900), (0, 0, 0, 0)).save(run_dir / 'precip' / 'f01.png')
+
+            with patch.object(meteogram, 'RENDERED_DIR', root / 'rendered'), \
+                    patch.object(meteogram, 'CACHE_DIR', root / 'cache'):
+                self.assertTrue(meteogram.needs_build('hrrr', '2026101600'))
+                built = meteogram.build_run('hrrr', '2026101600', 3, api._rgb_to_value)
+                self.assertEqual(built, 3)
+                self.assertFalse(meteogram.needs_build('hrrr', '2026101600'))
+                west = meteogram.sample_run('hrrr', '2026101600', 35.0, -97.5, None)
+                east = meteogram.sample_run('hrrr', '2026101600', 35.0, -92.5, None)
+                self.assertFalse(meteogram.in_domain('hrrr', '2026101600', 45.0, -95.0))
+
+        self.assertEqual(west['init_time'], '2026-10-16T00:00:00Z')
+        temps = dict(west['series']['temp_2m'])
+        self.assertAlmostEqual(temps[0], 50.0, delta=0.5)
+        self.assertAlmostEqual(temps[1], 51.0, delta=0.5)
+        self.assertAlmostEqual(dict(east['series']['temp_2m'])[0], 70.0, delta=0.5)
+        self.assertEqual(west['series']['precip'], [[1, 0.0]])
+
+    def test_run_selection_prefers_newest_complete_recent_run(self):
+        from datetime import datetime, timedelta, timezone
+        from web import meteogram
+
+        now = datetime.now(timezone.utc)
+        run_id = lambda hours: (now - timedelta(hours=hours)).strftime('%Y%m%d%H')
+        runs = [
+            {'run_id': run_id(1), 'is_complete': False, 'completed_fxx': [0, 1]},
+            {'run_id': run_id(2), 'is_complete': True, 'completed_fxx': list(range(19))},
+            {'run_id': run_id(60), 'is_complete': True, 'completed_fxx': list(range(49))},
+        ]
+        self.assertEqual(meteogram.select_run(runs)['run_id'], run_id(2))
+        self.assertEqual(meteogram.select_run(runs[:1])['run_id'], run_id(1))
+        self.assertIsNone(meteogram.select_run(runs[2:]))
+
+
+class DashboardWorkerStatusTests(unittest.TestCase):
+    def test_busy_worker_without_status_file_is_not_idle(self):
+        watcher = api._WorkerTaskWatcher()
+        with patch.object(api, '_worker_task_watcher', watcher):
+            busy = api._idle_worker_fields(4242, 80.0)
+            idle = api._idle_worker_fields(4242, 2.0)
+        self.assertEqual((busy['status'], busy['status_class']), ('Busy', 'processing'))
+        self.assertEqual((idle['status'], idle['status_class'], idle['task']), ('Idle', 'idle', '--'))
+
+    def test_watcher_keeps_short_radar_task_after_status_file_is_removed(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(api, 'DATA_DIR', Path(tmp)):
+            status_dir = Path(tmp) / 'radar_worker_status'
+            status_dir.mkdir()
+            status_path = status_dir / '4242.json'
+            status_path.write_text(json.dumps({'site': 'KOAX', 'timestamp': '20261017_1600', 'source': 'full'}))
+            watcher = api._WorkerTaskWatcher()
+            watcher._current = watcher._scan()
+            status_path.unlink()
+            with patch.object(api, '_worker_task_watcher', watcher), \
+                    patch.object(watcher, '_scan', return_value={}):
+                watcher._active_until = float('inf')
+                with patch.object(api.time, 'sleep', side_effect=[None, StopIteration]):
+                    with self.assertRaises(StopIteration):
+                        watcher._run()
+                fields = api._idle_worker_fields(4242, 1.0)
+        self.assertEqual(fields['status'], 'Idle')
+        self.assertTrue(fields['task'].startswith('Last: KOAX 20261017_1600 FULL'), fields['task'])
+
+    def test_dashboard_live_sections_refresh_inside_cached_payload(self):
+        cached = {'processes': [], 'models': ['cached'], 'log_entries': [], 'system': {}}
+        with patch.dict(api._dashboard_cache, {'data': cached, 'ts': 0, 'live_ts': 0}), \
+                patch.object(api, '_live_dashboard_sections', return_value={'processes': [{'pid': 1}]}):
+            payload = api._refresh_dashboard_live()
+        self.assertEqual(payload['processes'], [{'pid': 1}])
+        self.assertEqual(payload['models'], ['cached'])

@@ -3,8 +3,10 @@ import asyncio
 import atexit
 import json
 import math
+import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import warnings
@@ -32,6 +34,8 @@ from pipeline.radar.config import RADAR_RENDERED_DIR, RADAR_CACHE_DIR, RADAR_CON
 from pipeline.radar.color_tables import FIELD_CONFIG as RADAR_FIELD_CONFIG, RADAR_PALETTE_VERSION, get_radar_lut
 from pipeline.radar.grid_api import get_radar_grid_binary
 from pipeline.models.grid_api import get_model_grid_binary
+from .heavy_jobs import HeavyJobQueue, QueueBusy
+from . import meteogram
 
 from contextlib import asynccontextmanager
 
@@ -40,11 +44,27 @@ from contextlib import asynccontextmanager
 async def _lifespan(_app: FastAPI):
     # _alerts_refresher is defined later in the module; resolved at runtime.
     refresher = asyncio.create_task(_alerts_refresher())
-    yield
-    refresher.cancel()
+    if os.getenv("WX_METEOGRAM_WARMER", "1") != "0":
+        meteogram.GridWarmer(_scan_runs, _run_palette_version, _rgb_to_value).start()
+    from concurrent.futures import ThreadPoolExecutor
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=4, thread_name_prefix="api-io")
+    )
+    try:
+        yield
+    finally:
+        refresher.cancel()
+        await asyncio.gather(refresher, return_exceptions=True)
+        global _heavy_queue
+        if _heavy_queue is not None:
+            await _heavy_queue.close()
+            _heavy_queue = None
 
 
 app = FastAPI(title="Weather Model Viewer", lifespan=_lifespan)
+
+from web.radar_map3d import router as radar_map3d_router
+app.include_router(radar_map3d_router)
 
 # ─── Compression ────────────────────────────────────────────────
 from fastapi.middleware.gzip import GZipMiddleware
@@ -81,6 +101,8 @@ class CacheHeaderMiddleware(BaseHTTPMiddleware):
                 response.headers["Cache-Control"] = "public, max-age=60"
             elif "/alerts" in p or "/surface/" in p:
                 response.headers["Cache-Control"] = "public, max-age=60"
+            elif "/meteogram/" in p:
+                response.headers["Cache-Control"] = "public, max-age=120"
             elif "/sounding/" in p:
                 response.headers["Cache-Control"] = "public, max-age=300"
         return response
@@ -102,6 +124,22 @@ _CMAP_CACHE_MAX = 64
 _ZONE_GEOM_CACHE_MAX = 256
 _SPC_CACHE_MAX = 32
 _SPC_TEXT_CACHE_MAX = 8
+_heavy_queue = None
+
+
+async def _run_heavy_job(key: str, function, slots: int = 1):
+    global _heavy_queue
+    if _heavy_queue is None:
+        _heavy_queue = HeavyJobQueue(DATA_DIR / "api_job_cache")
+    try:
+        return await _heavy_queue.run(key, function, slots=slots)
+    except QueueBusy as exc:
+        raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "2"}) from exc
+
+
+def _heavy_job_key(kind: str, path: Path, *parameters) -> str:
+    stat = path.stat()
+    return json.dumps((kind, str(path), stat.st_size, stat.st_mtime_ns, parameters))
 
 
 # ---------------------------------------------------------------------------
@@ -853,18 +891,23 @@ def _find_native_sounding_cache(model: str, run_id: str, fxx: int) -> Path | Non
     return path if path.exists() else None
 
 
-def _nearest_cache_value(values, lats, lons, lat: float, lon: float) -> float | None:
+def _nearest_cache_index(lats, lons, lat: float, lon: float) -> tuple[int, int]:
     import numpy as np
 
     lon_n = lon + 360.0 if (np.nanmax(lons) > 180 and lon < 0) else lon
     if lats.ndim == 2:
         dist = (lats - lat) ** 2 + (lons - lon_n) ** 2
         idx = tuple(int(i) for i in np.unravel_index(np.argmin(dist), dist.shape))
-        value = values[idx]
+        return idx
     else:
         li = int(np.argmin(np.abs(lats - lat)))
         lj = int(np.argmin(np.abs(lons - lon_n)))
-        value = values[li, lj]
+        return li, lj
+
+
+def _nearest_cache_value(values, lats, lons, lat: float, lon: float,
+                         index: tuple[int, int] | None = None) -> float | None:
+    value = values[index if index is not None else _nearest_cache_index(lats, lons, lat, lon)]
     value_f = float(value)
     return value_f if math.isfinite(value_f) else None
 
@@ -1056,14 +1099,15 @@ async def get_sounding(
                 lons = cache["lon"]
                 stride = int(cache["stride"][0]) if "stride" in cache else None
                 is_native = "native" in cache or native_cache_path is not None
+                nearest_index = _nearest_cache_index(lats, lons, lat, lon)
 
                 for pressure_hpa, field_map in _SOUNDING_LEVEL_FIELDS.items():
-                    temp_f = _nearest_cache_value(cache[field_map["temp"]], lats, lons, lat, lon) if field_map.get("temp") in cache else None
-                    dewpoint_f = _nearest_cache_value(cache[field_map["dewpoint"]], lats, lons, lat, lon) if field_map.get("dewpoint") in cache else None
-                    rh = _nearest_cache_value(cache[field_map["rh"]], lats, lons, lat, lon) if field_map.get("rh") in cache else None
-                    height_m = _nearest_cache_value(cache[field_map["height"]], lats, lons, lat, lon) if field_map.get("height") in cache else None
-                    u_kt = _nearest_cache_value(cache[field_map["u"]], lats, lons, lat, lon) if field_map.get("u") in cache else None
-                    v_kt = _nearest_cache_value(cache[field_map["v"]], lats, lons, lat, lon) if field_map.get("v") in cache else None
+                    temp_f = _nearest_cache_value(cache[field_map["temp"]], lats, lons, lat, lon, nearest_index) if field_map.get("temp") in cache else None
+                    dewpoint_f = _nearest_cache_value(cache[field_map["dewpoint"]], lats, lons, lat, lon, nearest_index) if field_map.get("dewpoint") in cache else None
+                    rh = _nearest_cache_value(cache[field_map["rh"]], lats, lons, lat, lon, nearest_index) if field_map.get("rh") in cache else None
+                    height_m = _nearest_cache_value(cache[field_map["height"]], lats, lons, lat, lon, nearest_index) if field_map.get("height") in cache else None
+                    u_kt = _nearest_cache_value(cache[field_map["u"]], lats, lons, lat, lon, nearest_index) if field_map.get("u") in cache else None
+                    v_kt = _nearest_cache_value(cache[field_map["v"]], lats, lons, lat, lon, nearest_index) if field_map.get("v") in cache else None
 
                     temp_c = (temp_f - 32.0) * 5.0 / 9.0 if temp_f is not None else None
                     dewpoint_c = (dewpoint_f - 32.0) * 5.0 / 9.0 if dewpoint_f is not None else None
@@ -1091,11 +1135,11 @@ async def get_sounding(
                         "v_kt": round(v_kt, 1) if v_kt is not None else None,
                     })
 
-                surface_temp_f = _nearest_cache_value(cache["temp_2m"], lats, lons, lat, lon) if "temp_2m" in cache else None
-                surface_dewpoint_f = _nearest_cache_value(cache["dewpoint_2m"], lats, lons, lat, lon) if "dewpoint_2m" in cache else None
-                surface_wind_u = _nearest_cache_value(cache["ugrd_10m"], lats, lons, lat, lon) if "ugrd_10m" in cache else None
-                surface_wind_v = _nearest_cache_value(cache["vgrd_10m"], lats, lons, lat, lon) if "vgrd_10m" in cache else None
-                surface_mslp = _nearest_cache_value(cache["mslp"], lats, lons, lat, lon) if "mslp" in cache else None
+                surface_temp_f = _nearest_cache_value(cache["temp_2m"], lats, lons, lat, lon, nearest_index) if "temp_2m" in cache else None
+                surface_dewpoint_f = _nearest_cache_value(cache["dewpoint_2m"], lats, lons, lat, lon, nearest_index) if "dewpoint_2m" in cache else None
+                surface_wind_u = _nearest_cache_value(cache["ugrd_10m"], lats, lons, lat, lon, nearest_index) if "ugrd_10m" in cache else None
+                surface_wind_v = _nearest_cache_value(cache["vgrd_10m"], lats, lons, lat, lon, nearest_index) if "vgrd_10m" in cache else None
+                surface_mslp = _nearest_cache_value(cache["mslp"], lats, lons, lat, lon, nearest_index) if "mslp" in cache else None
                 if surface_temp_f is not None:
                     surface["temp_c"] = round((surface_temp_f - 32.0) * 5.0 / 9.0, 1)
                 if surface_dewpoint_f is not None:
@@ -1266,63 +1310,54 @@ from pipeline.config import COLOR_SCALES
 
 # Cache for colormap RGB -> value lookups
 _CMAP_CACHE: dict[str, dict] = {}
-_MEAN_VAL_CACHE: dict[str, float] = {}
 
 
-def _compute_cmap_mean_val(cmap_name: str) -> float:
-    """Compute the mean pixel value after saturation enhancement for a colormap.
+# Mirrors OverlayRenderer._make_cmap_norm: these parameters render with a
+# raised normalization floor (values below it are transparent).
+# tests/test_regressions.py asserts the reverse lookup matches the renderer.
+_RENDER_UNDER_VMIN = {
+    "precip": 0.01, "cape": 250, "mlcape": 250, "mucape": 250,
+    "cape_03km": 100,
+    "srh_01km": 25, "srh_03km": 25,
+    "shear_06km": 5, "shear_01km": 5,
+    "kuchera_6hr": 0.1, "kuchera_12hr": 0.1, "snow10_12hr": 0.1,
+    "stp": 0.5, "scp": 0.5, "cti": 0.3, "msi": 0.3,
+    "ship": 0.3, "dcp": 0.3, "citi": 0.2, "smi": 0.05,
+    "vil": 1, "uh_25km": 25,
+    "lightning": 0.01,
+}
+_RENDER_SKIP_BOOST = {"cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"}
 
-    This must match the renderer's approach so that contrast enhancement
-    can be reversed correctly when mapping pixel colors back to data values.
+
+def _render_lut_rgb(cmap, parameter: str | None) -> "np.ndarray":
+    """The 256 RGB byte triples the renderer paints for a linear colormap.
+
+    Replicates OverlayRenderer._boost_cmap_lut (1.35x saturation, 1.08x
+    contrast) followed by matplotlib's ``bytes=True`` conversion.
     """
-    if cmap_name in _MEAN_VAL_CACHE:
-        return _MEAN_VAL_CACHE[cmap_name]
-    try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        cmap = plt.get_cmap(cmap_name)
-    except Exception:
-        return 128.0
-    n_samples = 256
-    total = 0.0
-    for i in range(n_samples):
-        t = i / (n_samples - 1)
-        r, g, b, _ = cmap(t)
-        r_sat, g_sat, b_sat = _apply_saturation(r * 255, g * 255, b * 255)
-        total += r_sat + g_sat + b_sat
-    mean_val = total / (n_samples * 3)
-    _MEAN_VAL_CACHE[cmap_name] = mean_val
-    return mean_val
+    import numpy as np
 
-
-def _apply_saturation(r: float, g: float, b: float) -> tuple:
-    """Apply saturation enhancement (factor 2.2x) - same as renderer."""
-    gray = 0.299 * r + 0.587 * g + 0.114 * b
-    r = gray * (1.0 - 2.2) + r * 2.2
-    g = gray * (1.0 - 2.2) + g * 2.2
-    b = gray * (1.0 - 2.2) + b * 2.2
-    return (r, g, b)
-
-
-def _apply_contrast(r: float, g: float, b: float, mean_val: float) -> tuple:
-    """Apply contrast enhancement (factor 1.2x) with given mean - same as renderer."""
-    r = mean_val * (1.0 - 1.2) + r * 1.2
-    g = mean_val * (1.0 - 1.2) + g * 1.2
-    b = mean_val * (1.0 - 1.2) + b * 1.2
-    # Clamp to valid range
-    r = max(0, min(255, r))
-    g = max(0, min(255, g))
-    b = max(0, min(255, b))
-    return (r, g, b)
+    scale = COLOR_SCALES.get(parameter or "", {})
+    if scale.get("reverse"):
+        cmap = cmap.reversed()
+    lut = cmap(np.linspace(0, 1, 256))
+    rgb = lut[:, :3].copy() * 255.0
+    if scale.get("boost", True) and parameter not in _RENDER_SKIP_BOOST and parameter != "reflectivity":
+        gray = (0.299 * rgb[:, 0] + 0.587 * rgb[:, 1] + 0.114 * rgb[:, 2])[:, np.newaxis]
+        rgb = gray * (1.0 - 1.35) + rgb * 1.35
+        mean_val = float(rgb.mean())
+        rgb = mean_val * (1.0 - 1.08) + rgb * 1.08
+        np.clip(rgb, 0, 255, out=rgb)
+    # matplotlib converts float RGBA to bytes by truncating x * 255 of x in 0..1.
+    return (rgb / 255.0 * 255).astype(np.uint8)
 
 
 def _build_cmap_lookup(cmap_name: str, vmin: float, vmax: float, parameter: str = None) -> dict:
-    """Build a lookup table mapping RGB values to data values for a colormap.
+    """Build a lookup table mapping rendered RGB values to data values.
 
-    Applies the same color enhancements as the renderer so that the lookup
-    matches the actual rendered PNG colors.
-    Note: "reflectivity" skips enhancement in the renderer.
+    Each of the renderer's 256 colormap entries maps to the centre of the
+    value bin it paints. Colors shared by several entries resolve to the
+    mean of those bins.
     """
     try:
         import matplotlib
@@ -1332,42 +1367,15 @@ def _build_cmap_lookup(cmap_name: str, vmin: float, vmax: float, parameter: str 
     except Exception:
         return {}
 
-    # Check if this parameter should skip color enhancement (like reflectivity)
-    skip_enhance = parameter and parameter.lower() in ("reflectivity",)
-
-    lookup = {}
-    n_samples = 256
-
-    if skip_enhance:
-        # No enhancement - direct colormap sampling
-        for i in range(n_samples):
-            t = i / (n_samples - 1)
-            r, g, b, _ = cmap(t)
-            rgb_key = (int(r * 255), int(g * 255), int(b * 255))
-            value = vmin + t * (vmax - vmin)
-            lookup[rgb_key] = value
-    else:
-        # First pass: apply saturation to all samples and compute mean
-        # This matches the renderer's approach (pipeline/renderer.py lines 493-503)
-        sat_samples = []
-        for i in range(n_samples):
-            t = i / (n_samples - 1)
-            r, g, b, _ = cmap(t)
-            r_sat, g_sat, b_sat = _apply_saturation(r * 255, g * 255, b * 255)
-            sat_samples.append((r_sat, g_sat, b_sat))
-
-        # Compute mean of all channels after saturation (same as renderer)
-        mean_val = sum(sum(c) for c in sat_samples) / (len(sat_samples) * 3)
-
-        # Second pass: apply contrast with computed mean and build lookup
-        for i, (r_sat, g_sat, b_sat) in enumerate(sat_samples):
-            t = i / (n_samples - 1)
-            r, g, b = _apply_contrast(r_sat, g_sat, b_sat, mean_val)
-            rgb_key = (int(r), int(g), int(b))
-            value = vmin + t * (vmax - vmin)
-            lookup[rgb_key] = value
-
-    return lookup
+    vmin = _RENDER_UNDER_VMIN.get(parameter or "", vmin)
+    rgb = _render_lut_rgb(cmap, parameter)
+    sums: dict[tuple, list] = {}
+    for i, (r, g, b) in enumerate(rgb.tolist()):
+        value = vmin + (i + 0.5) / 256.0 * (vmax - vmin)
+        entry = sums.setdefault((r, g, b), [0.0, 0])
+        entry[0] += value
+        entry[1] += 1
+    return {key: total / count for key, (total, count) in sums.items()}
 
 def _lookup_arrays(lookup: dict) -> tuple:
     """Return (rgb (N,3) int array, values (N,) float array) for a LUT dict."""
@@ -1443,17 +1451,22 @@ def _versioned_cmap_name(palette_name: str, cmap_name: str, version: int) -> str
     return versioned
 
 
+_GRAYSCALE_CMAPS = {"wx_cloud"}
+
+
 def _rgb_to_value(
     rgb: tuple, cmap_name: str, vmin: float, vmax: float,
     parameter: str = None, palette_version: int = CURRENT_PALETTE_VERSION,
 ) -> float | None:
     """Convert an RGB color to a data value using the colormap."""
-    # Skip transparent/black/white pixels (likely no data or background)
     r, g, b = rgb
-    if rgb == (0, 0, 0) or rgb == (255, 255, 255):
+    scale = COLOR_SCALES.get(parameter or "")
+    # Grayscale palettes (cloud cover) legitimately render gray, near-black
+    # and near-white pixels; everywhere else those are background.
+    gray_palette = cmap_name in _GRAYSCALE_CMAPS
+    if not gray_palette and (rgb == (0, 0, 0) or rgb == (255, 255, 255)):
         return None
 
-    scale = COLOR_SCALES.get(parameter or "")
     palette_name = (scale or {}).get("palette")
 
     # Stepped reflectivity renders raw table colors (no enhancement), so a
@@ -1495,7 +1508,7 @@ def _rgb_to_value(
 
     # Check if it's a grayscale pixel (for contour-only params that might have been colormapped)
     gray_tol = 5
-    if abs(r - g) < gray_tol and abs(g - b) < gray_tol and abs(r - b) < gray_tol:
+    if not gray_palette and abs(r - g) < gray_tol and abs(g - b) < gray_tol and abs(r - b) < gray_tol:
         # It's grayscale - treat as no data for colormapped images
         return None
 
@@ -1619,6 +1632,57 @@ async def get_value_from_png(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Meteogram — multi-model point forecast series
+# ---------------------------------------------------------------------------
+
+@app.get("/api/meteogram/models")
+async def get_meteogram_models():
+    """Models the point-forecast plume can sample, in plot order."""
+    return JSONResponse([
+        {"model": model, "label": label} for model, label in meteogram.MODELS.items()
+    ])
+
+
+@app.get("/api/meteogram/{model}")
+async def get_meteogram(
+    model: str,
+    lat: float = Query(..., ge=-90, le=90), lon: float = Query(..., ge=-180, le=180),
+    run_id: str | None = Query(default=None, pattern=r"^\d{10}$"),
+):
+    """Forecast-hour series of surface fields for one model at a point.
+
+    Uses the newest complete run unless ``run_id`` is given. A run whose value
+    grids are not cached yet is decoded through the shared heavy-job queue.
+    """
+    if model not in meteogram.MODELS:
+        raise HTTPException(status_code=404, detail="Model not available for meteograms")
+    runs = _scan_runs(model)
+    if run_id is not None:
+        run = next((r for r in runs if r["run_id"] == run_id), None)
+    else:
+        run = meteogram.select_run(runs)
+    if run is None:
+        raise HTTPException(status_code=404, detail="No recent run")
+    run_id = run["run_id"]
+    if not meteogram.in_domain(model, run_id, lat, lon):
+        raise HTTPException(status_code=404, detail="Point outside model domain")
+
+    def _sample():
+        return meteogram.sample_run(model, run_id, lat, lon, run.get("init_time"))
+
+    if not meteogram.needs_build(model, run_id):
+        return JSONResponse(await asyncio.to_thread(_sample))
+
+    def _build_and_sample():
+        meteogram.build_run(model, run_id, _run_palette_version(model, run_id), _rgb_to_value)
+        return _sample()
+
+    key = json.dumps(("meteogram", model, run_id, round(lat, 3), round(lon, 3),
+                      len(run.get("completed_fxx") or [])))
+    return JSONResponse(await _run_heavy_job(key, _build_and_sample))
 
 
 # ---------------------------------------------------------------------------
@@ -1829,7 +1893,7 @@ _SURFACE_TTL = 120  # serve cached data up to 2 min; pipeline refreshes every 5 
 _dashboard_cache: dict = {"data": None, "ts": 0}
 _DASHBOARD_TTL = 30
 _PROCESS_ROWS_CACHE: dict = {"data": None, "ts": 0}
-_PROCESS_ROWS_TTL = 10
+_PROCESS_ROWS_TTL = 2
 _MODEL_STATUS_CACHE: dict = {"data": None, "ts": 0}
 _MODEL_STATUS_TTL = 30
 _DASHBOARD_LOG_CACHE: dict = {"pipeline": None, "radar": None, "ts": 0}
@@ -1905,7 +1969,7 @@ class _CpuSampler:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._system_cpu: float = 0.0
+        self._system_cpu: float = psutil.cpu_percent(interval=0.1, percpu=False)
         # pid → psutil.Process  (kept alive so .cpu_percent() accumulates δ)
         self._procs: dict[int, psutil.Process] = {}
         self._proc_cpu: dict[int, float] = {}  # pid → last sampled %
@@ -1917,8 +1981,6 @@ class _CpuSampler:
         self._prev_usage: dict[str, int] = {}  # key → previous usage_usec
         self._prev_ts: float = 0.0
         self._stop = threading.Event()
-        # Prime the first reading (returns 0.0, sets baseline)
-        psutil.cpu_percent(interval=None, percpu=False)
         # Prime cgroup baselines
         for key, unit in _CGROUP_SERVICES.items():
             usage = _read_cgroup_usage_usec(unit)
@@ -1941,6 +2003,40 @@ class _CpuSampler:
 
     def service_summaries(self) -> list[dict]:
         """Return per-service CPU/memory summary for the dashboard."""
+        if sys.platform == "darwin":
+            with self._lock:
+                process_cpu = dict(self._proc_cpu)
+            services = (
+                ("models", "Models", "pipeline.unified_scheduler"),
+                ("lowpri", "Low Priority", "pipeline.lowpri_worker"),
+                ("radar", "Radar", "pipeline.radar.scheduler_pipeline"),
+                ("satellite", "Satellite", "pipeline.satellite.scheduler"),
+                ("surface", "Surface", "pipeline.surface.scheduler"),
+                ("web", "Web API", "uvicorn web.app:app"),
+            )
+            result = []
+            for key, label, cmd_fragment in services:
+                main = _find_main_process(cmd_fragment)
+                if main is None:
+                    continue
+                processes = [main, *_descendant_processes(main)]
+                cpu = sum(process_cpu.get(proc.pid, 0.0) for proc in processes)
+                memory = 0
+                for proc in processes:
+                    try:
+                        memory += proc.memory_info().rss
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                result.append({
+                    "name": label,
+                    "key": key,
+                    "cpu_percent": round(cpu, 1),
+                    "cpu_quota": None,
+                    "throttled": False,
+                    "mem_bytes": memory,
+                })
+            return result
+
         labels = {"models": "Models", "lowpri": "Low Priority", "radar": "Radar", "satellite": "Satellite"}
         with self._lock:
             result = []
@@ -1964,18 +2060,26 @@ class _CpuSampler:
         while not self._stop.wait(timeout=_CPU_SAMPLE_INTERVAL):
             try:
                 now = time.time()
-                sys_pct = psutil.cpu_percent(interval=None, percpu=False)
+                # A timed sample is reliable on macOS and does not depend on
+                # which thread primed psutil's nonblocking CPU baseline.
+                sys_pct = psutil.cpu_percent(interval=0.1, percpu=False)
+                # Keep system CPU current even if macOS denies process listing.
+                with self._lock:
+                    self._system_cpu = sys_pct
 
                 # --- per-process sampling ---
                 current_pids: set[int] = set()
-                for proc in psutil.process_iter(["pid", "cmdline"]):
-                    try:
-                        cmdline = " ".join(proc.info["cmdline"] or [])
-                        if "python" not in cmdline.lower():
+                try:
+                    for proc in psutil.process_iter(["pid", "cmdline"]):
+                        try:
+                            cmdline = " ".join(proc.info["cmdline"] or [])
+                            if "python" not in cmdline.lower():
+                                continue
+                            current_pids.add(proc.info["pid"])
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
                             continue
-                        current_pids.add(proc.info["pid"])
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
+                except (OSError, psutil.Error):
+                    pass
 
                 new_cpu: dict[int, float] = {}
 
@@ -2031,7 +2135,6 @@ class _CpuSampler:
                             dead.append(pid)
                     for pid in dead:
                         del self._procs[pid]
-                    self._system_cpu = sys_pct
                     self._proc_cpu = new_cpu
                     # Service-level
                     self._svc_cpu = new_svc_cpu
@@ -2045,6 +2148,105 @@ class _CpuSampler:
                 pass  # never crash the sampler
 
 _cpu_sampler = _CpuSampler()
+
+# A worker with no status file but this much CPU (own + descendants) is
+# working on something between status writes; never label it "Idle".
+_WORKER_BUSY_CPU_PCT = 25.0
+_WORKER_LAST_TASK_WINDOW = 120  # seconds a finished task stays visible
+
+
+class _WorkerTaskWatcher:
+    """Remember each worker's recent tasks between dashboard samples.
+
+    Radar and short model renders finish in one to three seconds and delete
+    their status files, so a dashboard sampled every few seconds would show
+    busy workers as idle. This thread polls the status directories twice a
+    second while the monitor is open and keeps each worker's last task,
+    finish time, and recent completion times.
+    """
+
+    POLL_INTERVAL = 0.5
+    ACTIVE_WINDOW = 300
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._current: dict[str, tuple[int, str]] = {}  # key → (pid, task)
+        self._last: dict[int, tuple[str, float]] = {}  # pid → (task, finished)
+        self._done: dict[int, list[float]] = {}  # pid → finish times
+        self._active_until = 0.0
+        self._thread: threading.Thread | None = None
+
+    def touch(self) -> None:
+        """Keep polling for a while; start the thread on first use."""
+        self._active_until = time.time() + self.ACTIVE_WINDOW
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, daemon=True, name="worker-task-watcher")
+            self._thread.start()
+
+    def recent(self, pid: int) -> tuple[str, float, int] | None:
+        """Return (last task, seconds since it finished, completions/min)."""
+        now = time.time()
+        with self._lock:
+            last = self._last.get(pid)
+            done = [ts for ts in self._done.get(pid, []) if now - ts <= 60]
+        if not last or now - last[1] > _WORKER_LAST_TASK_WINDOW:
+            return None
+        return (last[0], now - last[1], len(done))
+
+    def _scan(self) -> dict[str, tuple[int, str]]:
+        current: dict[str, tuple[int, str]] = {}
+        dirs = (
+            ("model", DATA_DIR / "worker_status"),
+            ("radar", DATA_DIR / "radar_worker_status"),
+        )
+        for kind, status_dir in dirs:
+            if not status_dir.exists():
+                continue
+            for path in status_dir.glob("*.json"):
+                status = _read_status_file(path)
+                if not status:
+                    continue
+                try:
+                    pid = int(path.stem)
+                except ValueError:
+                    continue
+                if kind == "model":
+                    if status.get("stage") in (None, "idle"):
+                        continue
+                    task = _model_task_text(status)[1]
+                else:
+                    task = _radar_task_text(status)[1]
+                # Model status rewrites change detail text within one task;
+                # key on the stable task identity so stages don't count twice.
+                ident = f"{status.get('model')}:{status.get('run_id')}:{status.get('fxx')}" \
+                    if kind == "model" else f"{status.get('site')}:{status.get('timestamp')}"
+                current[f"{kind}:{pid}:{ident}"] = (pid, task)
+        return current
+
+    def _run(self) -> None:
+        while True:
+            time.sleep(self.POLL_INTERVAL)
+            if time.time() > self._active_until:
+                continue
+            try:
+                current = self._scan()
+            except Exception:
+                continue
+            now = time.time()
+            with self._lock:
+                for key, (pid, task) in self._current.items():
+                    if key not in current:
+                        self._last[pid] = (task, now)
+                        done = [ts for ts in self._done.get(pid, []) if now - ts <= 60]
+                        done.append(now)
+                        self._done[pid] = done
+                self._current = current
+                for pid in [p for p, (_, ts) in self._last.items() if now - ts > _WORKER_LAST_TASK_WINDOW]:
+                    self._last.pop(pid, None)
+                    self._done.pop(pid, None)
+
+
+_worker_task_watcher = _WorkerTaskWatcher()
 atexit.register(_cpu_sampler.stop)
 
 NWS_ALERTS_URL = "https://api.weather.gov/alerts/active"
@@ -3161,15 +3363,21 @@ async def get_surface_obs_frame(generated: int):
 async def get_surface_status():
     """Return summary statistics for the current surface observation dataset."""
     now = time.time()
-    data = _surface_cache.get("data")
-    if data is None:
+    if (
+        _surface_cache.get("data") is None
+        or now - _surface_cache.get("ts", 0) >= _SURFACE_TTL
+    ):
         try:
             raw = _SURFACE_OBS_FILE.read_text()
-            data = json.loads(raw)
+            _surface_cache["data"] = json.loads(raw)
+            _surface_cache["ts"] = now
         except FileNotFoundError:
             raise HTTPException(status_code=503, detail="Surface observations not yet available")
         except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"Surface obs read error: {exc}")
+            if _surface_cache.get("data") is None:
+                raise HTTPException(status_code=503, detail=f"Surface obs read error: {exc}")
+
+    data = _surface_cache["data"]
 
     stations = data.get("stations", [])
     generated = data.get("generated", 0)
@@ -3223,18 +3431,35 @@ def _du(path: Path) -> str:
 
 
 def _scan_file_sizes(path: Path, skip_prefixes: tuple[Path, ...] = ()) -> int:
-    """Sum file sizes under a directory, optionally excluding path prefixes."""
+    """Sum file sizes under a directory, pruning excluded prefixes before descent."""
     if not path.exists():
         return 0
 
+    skip_set = {os.path.normpath(str(p)) for p in skip_prefixes}
+    root_norm = os.path.normpath(str(path))
+    if root_norm in skip_set:
+        return 0
+
     total = 0
-    for file_path in path.rglob("*"):
-        if not file_path.is_file():
-            continue
-        if skip_prefixes and any(str(file_path).startswith(str(prefix)) for prefix in skip_prefixes):
-            continue
+    stack = [root_norm]
+    while stack:
+        current = stack.pop()
         try:
-            total += file_path.stat().st_size
+            with os.scandir(current) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            norm = os.path.normpath(entry.path)
+                            if norm not in skip_set and not any(
+                                norm.startswith(sp + os.sep) for sp in skip_set
+                            ):
+                                stack.append(norm)
+                        elif entry.is_file():
+                            norm = os.path.normpath(entry.path)
+                            if norm not in skip_set:
+                                total += entry.stat().st_size
+                    except OSError:
+                        continue
         except OSError:
             continue
     return total
@@ -3260,6 +3485,15 @@ def _get_disk_info() -> dict[str, str]:
     grib_cache_size = _scan_file_sizes(GRIB_CACHE_DIR)
     sat_cache_size = _scan_file_sizes(SATELLITE_CACHE_DIR)
     radar_cache_size = _scan_file_sizes(RADAR_CACHE_DIR)
+    regrid_cache_size = _scan_file_sizes(DATA_DIR / "regrid_cache")
+    quarantine_size = _scan_file_sizes(DATA_DIR / "quarantine")
+    other_data_size = _scan_file_sizes(
+        DATA_DIR,
+        skip_prefixes=(
+            RENDERED_DIR, GRIB_CACHE_DIR, SATELLITE_CACHE_DIR, RADAR_CACHE_DIR,
+            DATA_DIR / "regrid_cache", DATA_DIR / "quarantine",
+        ),
+    )
     logs_size = _scan_file_sizes(LOG_DIR)
     total_size = (
         model_rendered_size
@@ -3268,6 +3502,9 @@ def _get_disk_info() -> dict[str, str]:
         + grib_cache_size
         + sat_cache_size
         + radar_cache_size
+        + regrid_cache_size
+        + quarantine_size
+        + other_data_size
         + logs_size
     )
 
@@ -3278,6 +3515,9 @@ def _get_disk_info() -> dict[str, str]:
         "grib_cache": _fmt_bytes(grib_cache_size),
         "satellite_cache": _fmt_bytes(sat_cache_size),
         "radar_cache": _fmt_bytes(radar_cache_size),
+        "regrid_cache": _fmt_bytes(regrid_cache_size),
+        "quarantine": _fmt_bytes(quarantine_size),
+        "other_data": _fmt_bytes(other_data_size),
         "logs": _fmt_bytes(logs_size),
         "tracked_total": _fmt_bytes(total_size),
     }
@@ -3319,9 +3559,47 @@ def _read_status_file(path: Path) -> dict | None:
         return None
 
 
+def _status_pid_alive(path: Path) -> bool:
+    """True when a pid-named status file belongs to a running process."""
+    try:
+        return psutil.pid_exists(int(path.stem))
+    except ValueError:
+        return False
+
+
 def _read_pipeline_state() -> dict | None:
     """Return the live unified scheduler state, if available."""
-    return _read_status_file(PIPELINE_STATE_FILE)
+    state = _read_status_file(PIPELINE_STATE_FILE)
+    if not state:
+        return state
+
+    # Scheduler slots are assignments sampled every 30 seconds. A worker's
+    # status file describes what is actually rendering right now, so use those
+    # files for the live pool display instead of stale assigned-slot labels.
+    layout = state.get("queue_layout") or []
+    if layout:
+        active: dict[str, list[str]] = {}
+        status_dir = DATA_DIR / "worker_status"
+        for path in status_dir.glob("*.json"):
+            if not _status_pid_alive(path):
+                continue
+            status = _read_status_file(path)
+            if not status or status.get("stage") in (None, "idle"):
+                continue
+            label = _queue_pool_label(status.get("worker_type"))
+            model = status.get("model")
+            fxx = status.get("fxx")
+            if label and model and fxx is not None:
+                active.setdefault(label, []).append(f"{model.upper()} f{int(fxx):02d}")
+        for tasks in active.values():
+            tasks.sort()
+        activity = []
+        for label in layout:
+            tasks = active.get(label, [])
+            activity.append(f"{label}:{tasks.pop(0) if tasks else '-'}")
+        state["queue_activity"] = activity
+        state["queue_activity_text"] = " | ".join(activity)
+    return state
 
 
 def _queue_pool_label(worker_type: str | None) -> str | None:
@@ -3476,14 +3754,14 @@ def _model_task_text(status: dict | None) -> tuple[str, str, str | None]:
     if not status:
         return ("Idle", "--", None)
     model = (status.get("model") or "").upper()
-    run_id = status.get("run_id") or "unknown"
+    run_id = status.get("run_id") or ""
     fxx = status.get("fxx")
     stage = (status.get("stage") or "rendering").replace("_", " ").title()
     worker_type = status.get("worker_type", "shared")
 
-    task = f"{model} {run_id}"
+    task = f"{model} {run_id}".strip()
     if fxx is not None:
-        task += f" F{int(fxx):02d}"
+        task = f"{task} F{int(fxx):02d}".strip()
     detail_parts = []
     if status.get("render_params") is not None:
         detail_parts.append(f"{int(status['render_params'])} params")
@@ -3492,7 +3770,10 @@ def _model_task_text(status: dict | None) -> tuple[str, str, str | None]:
     if status.get("detail"):
         detail_parts.append(str(status["detail"]))
     if detail_parts:
-        task += f" ({', '.join(detail_parts)})"
+        detail = ", ".join(detail_parts)
+        task = f"{task} ({detail})" if task else detail
+    if not task:
+        task = "Waiting for queue" if stage == "Idle" else "--"
 
     if worker_type == "low_priority":
         stage = f"[LP] {stage}"
@@ -3529,6 +3810,42 @@ def _satellite_worker_name(status: dict | None, idx: int) -> str:
     return f"Satellite Render: {source_id} {product_type}"
 
 
+def _subtree_metrics(proc: psutil.Process, metrics: dict, now: float) -> dict:
+    """Add render children (burst subworkers) to a worker's CPU and RSS."""
+    for child in _descendant_processes(proc):
+        child_metrics = _proc_metrics(child, now)
+        if not child_metrics:
+            continue
+        metrics["cpu_percent"] = round(metrics["cpu_percent"] + child_metrics["cpu_percent"], 1)
+        metrics["rss"] += child_metrics["rss"]
+    return metrics
+
+
+def _format_age(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds}s ago" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s ago"
+
+
+def _idle_worker_fields(pid: int, cpu_percent: float) -> dict:
+    """Status for a worker with no live status file.
+
+    Short renders start and finish between samples, so report recent work
+    and CPU use instead of a bare "Idle" for a worker that is busy.
+    """
+    busy = cpu_percent >= _WORKER_BUSY_CPU_PCT
+    recent = _worker_task_watcher.recent(pid)
+    task = "--"
+    if recent:
+        last_task, age, per_min = recent
+        task = f"Last: {last_task} · {_format_age(age)}"
+        if per_min > 1:
+            task += f" · {per_min}/min"
+    if busy:
+        return {"status": "Busy", "status_class": "processing",
+                "task": task if recent else "Working between status updates"}
+    return {"status": "Idle", "status_class": "idle", "task": task}
+
+
 def _build_process_rows() -> list[dict]:
     """Build a service-aware process inventory for the dashboard."""
     now = time.time()
@@ -3547,7 +3864,11 @@ def _build_process_rows() -> list[dict]:
     if pipeline_main:
         metrics = _proc_metrics(pipeline_main, now)
         if metrics:
-            active_models = len(list(model_status_dir.glob("*.json"))) if model_status_dir.exists() else 0
+            active_models = 0
+            for child in _child_processes(pipeline_main):
+                child_status = _read_status_file(model_status_dir / f"{child.pid}.json")
+                if child_status and child_status.get("stage") not in (None, "idle"):
+                    active_models += 1
             rows.append({
                 **metrics,
                 "name": "Model Scheduler",
@@ -3562,20 +3883,10 @@ def _build_process_rows() -> list[dict]:
             if not metrics:
                 continue
             status = _read_status_file(model_status_dir / f"{proc.pid}.json")
-            if status:
-                try:
-                    child_cpu = 0.0
-                    child_rss = 0
-                    for child in _descendant_processes(proc):
-                        child_metrics = _proc_metrics(child, now)
-                        if not child_metrics:
-                            continue
-                        child_cpu += child_metrics["cpu_percent"]
-                        child_rss += child_metrics["rss"]
-                    metrics["cpu_percent"] = round(metrics["cpu_percent"] + child_cpu, 1)
-                    metrics["rss"] += child_rss
-                except Exception:
-                    pass
+            try:
+                metrics = _subtree_metrics(proc, metrics, now)
+            except Exception:
+                pass
             state, task, worker_type = _model_task_text(status)
             model_label = (status.get("model") or "").upper() if status else ""
             
@@ -3584,14 +3895,17 @@ def _build_process_rows() -> list[dict]:
             else:
                 worker_name = f"Model Render: {model_label}" if model_label else f"Model Worker #{idx}"
                 
+            if status:
+                live = {"status": state, "task": task,
+                        "status_class": "low-priority" if worker_type == "low_priority" else "active"}
+            else:
+                live = _idle_worker_fields(proc.pid, metrics["cpu_percent"])
             rows.append({
                 **metrics,
                 "name": worker_name,
                 "service": "pipeline",
                 "role": "worker",
-                "status": state,
-                "status_class": "low-priority" if worker_type == "low_priority" else ("active" if status else ("processing" if metrics["cpu_percent"] > 50 else "idle")),
-                "task": task,
+                **live,
                 "worker_type": worker_type or "shared",
                 "queue_label": _queue_pool_label(worker_type),
                 "burst_active": bool(status.get("burst_active")) if status else False,
@@ -3601,7 +3915,9 @@ def _build_process_rows() -> list[dict]:
 
     lowpri_main = _find_main_process("pipeline.lowpri_worker")
     if lowpri_main:
-        for idx, proc in enumerate(_child_processes(lowpri_main), start=1):
+        # With one worker the low-priority service renders in its main process.
+        lowpri_processes = _child_processes(lowpri_main) or [lowpri_main]
+        for idx, proc in enumerate(lowpri_processes, start=1):
             metrics = _proc_metrics(proc, now)
             if not metrics:
                 continue
@@ -3632,6 +3948,8 @@ def _build_process_rows() -> list[dict]:
             sat_state, sat_task = _satellite_task_text(sat_status)
             sat_status_class = "active" if sat_status else ("processing" if metrics["cpu_percent"] > 10 else "idle")
             active_workers = len(list(satellite_status_dir.glob("*.json"))) if satellite_status_dir.exists() else 0
+            if active_workers:
+                sat_state, sat_status_class = "Rendering", "active"
             rows.append({
                 **metrics,
                 "name": "Satellite Scheduler",
@@ -3652,7 +3970,8 @@ def _build_process_rows() -> list[dict]:
         for idx, status in enumerate(worker_statuses, start=1):
             state, task = _satellite_task_text(status)
             rows.append({
-                "pid": status.get("thread_ident") or satellite_main.pid,
+                "pid": satellite_main.pid,
+                "pid_label": f"{satellite_main.pid} (thread)",
                 "cpu_percent": per_worker_cpu,
                 "rss": metrics["rss"] if metrics else 0,
                 "uptime": metrics["uptime"] if metrics else 0,
@@ -3664,11 +3983,28 @@ def _build_process_rows() -> list[dict]:
                 "task": task,
             })
 
+    surface_main = _find_main_process("pipeline.surface.scheduler")
+    if surface_main:
+        metrics = _proc_metrics(surface_main, now)
+        if metrics:
+            rows.append({
+                **metrics,
+                "name": "Surface Scheduler",
+                "service": "surface",
+                "role": "scheduler",
+                "status": "Polling",
+                "status_class": "active",
+                "task": "Updating surface observations",
+            })
+
     radar_main = _find_main_process("pipeline.radar.scheduler_")
     if radar_main:
         metrics = _proc_metrics(radar_main, now)
         if metrics:
-            active_renders = len(list(radar_status_dir.glob("*.json"))) if radar_status_dir.exists() else 0
+            active_renders = sum(
+                1 for child in _child_processes(radar_main)
+                if (radar_status_dir / f"{child.pid}.json").exists()
+            )
             rows.append({
                 **metrics,
                 "name": "Radar Scheduler",
@@ -3686,14 +4022,16 @@ def _build_process_rows() -> list[dict]:
             state, task = _radar_task_text(status)
             site_label = (status.get("site") or "").upper() if status else ""
             worker_name = f"Radar Render: {site_label}" if site_label else f"Radar Worker #{idx}"
+            if status:
+                live = {"status": state, "status_class": "active", "task": task}
+            else:
+                live = _idle_worker_fields(proc.pid, metrics["cpu_percent"])
             rows.append({
                 **metrics,
                 "name": worker_name,
                 "service": "radar",
                 "role": "worker",
-                "status": state,
-                "status_class": "active" if status else ("processing" if metrics["cpu_percent"] > 50 else "idle"),
-                "task": task,
+                **live,
             })
 
     web_main = _find_main_process("uvicorn web.app:app")
@@ -4151,7 +4489,22 @@ def _latest_model_quicklooks(limit: int = 3) -> list[dict]:
     seen: set[str] = set()
     quicklooks: list[dict] = []
 
-    for item in reversed(items):
+    # A new installation can render useful frames long before its first full
+    # run is recorded in recent_completions.json.
+    candidates = list(reversed(items))
+    disk_runs = []
+    for model in preferred_models:
+        model_dir = RENDERED_DIR / model
+        if model_dir.is_dir():
+            disk_runs.extend(
+                (run_dir.name, model)
+                for run_dir in model_dir.iterdir()
+                if run_dir.is_dir() and re.fullmatch(r"\d{10}", run_dir.name)
+            )
+    for run_id, model in sorted(disk_runs, reverse=True):
+        candidates.append({"run_id": f"{model}/{run_id}"})
+
+    for item in candidates:
         run_ref = item.get("run_id") or ""
         if "/" not in run_ref:
             continue
@@ -4238,7 +4591,7 @@ def _featured_home_map() -> dict | None:
 
 def _home_quicklook_cards(warned_sites: list[dict], focus_sites: list[dict], model_quicklooks: list[dict]) -> list[dict]:
     cards: list[dict] = []
-    radar_cards = warned_sites or focus_sites
+    radar_cards = (warned_sites or focus_sites) if RADAR_CONFIG.get("enabled", True) else []
 
     def add_card(card: dict | None) -> None:
         if not card:
@@ -4330,20 +4683,26 @@ def _home_quicklook_cards(warned_sites: list[dict], focus_sites: list[dict], mod
     return cards[:4]
 
 
-def _build_dashboard_payload() -> dict:
-    now = time.time()
+def _live_dashboard_sections() -> dict:
+    """Sections that change second to second: system, processes, pools.
+
+    These are cheap (~0.1 s) and are rebuilt per request so the monitor
+    never shows worker state from an older 30 s snapshot.
+    """
     # System resources — CPU% comes from background sampler (fresh 3s δ)
     cpu_pct = _cpu_sampler.system_cpu()
     cpu_freq = psutil.cpu_freq()
     mem = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
+    disk = psutil.disk_usage(str(DATA_DIR))
 
     system = {
         "cpu_percent": cpu_pct,
         "cpu_count": psutil.cpu_count(),
         "cpu_freq": round(cpu_freq.current) if cpu_freq else 0,
         "mem_percent": mem.percent,
-        "mem_used": mem.used,
+        # psutil's macOS `used` excludes some memory counted by `percent`.
+        # Derive the displayed amount from available so it matches the gauge.
+        "mem_used": mem.total - mem.available,
         "mem_total": mem.total,
         "disk_percent": disk.percent,
         "disk_used": disk.used,
@@ -4351,11 +4710,6 @@ def _build_dashboard_payload() -> dict:
     }
 
     processes = _build_process_rows()
-
-    # Model status
-    models = _get_model_status()
-
-    disk_info = _get_disk_info()
     pipeline_state = _read_pipeline_state() or {}
     queue_snapshot = _pipeline_queue_snapshot(processes)
     if queue_snapshot:
@@ -4365,22 +4719,40 @@ def _build_dashboard_payload() -> dict:
     if not pipeline_state:
         pipeline_state = None
 
-    log_entries, radar_log_entries = _dashboard_log_entries()
-
-    payload = {
+    return {
         "system": system,
         "processes": processes,
         "workers": [],
         "scheduler": None,
         "pipeline_state": pipeline_state,
-        "models": models,
-        "disk": disk_info,
+        "service_summary": _cpu_sampler.service_summaries(),
+        "generated_at": time.time(),
+    }
+
+
+def _build_dashboard_payload() -> dict:
+    now = time.time()
+    log_entries, radar_log_entries = _dashboard_log_entries()
+    payload = {
+        **_live_dashboard_sections(),
+        "models": _get_model_status(),
+        "disk": _get_disk_info(),
         "log_entries": log_entries,
         "radar_log_entries": radar_log_entries,
-        "service_summary": _cpu_sampler.service_summaries(),
     }
     _dashboard_cache["data"] = payload
     _dashboard_cache["ts"] = now
+    _dashboard_cache["live_ts"] = now
+    return payload
+
+
+_DASHBOARD_LIVE_TTL = 2
+
+
+def _refresh_dashboard_live() -> dict:
+    payload = {**_dashboard_cache["data"], **_live_dashboard_sections()}
+    _dashboard_cache["data"] = payload
+    _dashboard_cache["live_ts"] = time.time()
     return payload
 
 
@@ -4418,8 +4790,11 @@ async def get_dashboard():
     # dashboard is in use. A cold/stale cache rebuilds off the event loop so
     # other endpoints never stall behind the ~3s build.
     _dashboard_last_request["ts"] = time.time()
+    _worker_task_watcher.touch()
     if _dashboard_cache["data"] is None or (time.time() - _dashboard_cache["ts"]) > (_DASHBOARD_TTL * 2):
         await asyncio.to_thread(_build_dashboard_payload)
+    elif time.time() - _dashboard_cache.get("live_ts", 0) > _DASHBOARD_LIVE_TTL:
+        await asyncio.to_thread(_refresh_dashboard_live)
     return JSONResponse(_dashboard_cache["data"])
 
 
@@ -4692,17 +5067,13 @@ async def get_satellite_frames(
     return JSONResponse(frames)
 
 
-@app.get("/api/satellite/status")
-async def get_satellite_status():
-    """Get per-product archive status (frame count + freshness) for all satellite sources."""
-    now = time.time()
-    if _satellite_status_cache["data"] is not None and (now - _satellite_status_cache["ts"]) < _SATELLITE_STATUS_TTL:
-        return JSONResponse(_satellite_status_cache["data"])
-
+def _build_satellite_status() -> dict:
     meta_dir = SATELLITE_RENDERED_DIR / "meta"
+    manifest_dir = SATELLITE_RENDERED_DIR / "manifests"
     products_cfg = SATELLITE_CONFIG.get("products", {})
     sources      = list(SATELLITE_CONFIG.get("sources", {}).keys())
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_dt = datetime.now(timezone.utc)
+    now_ts = now_dt.timestamp()
 
     result: dict = {source_id: {} for source_id in sources}
     regional_result: dict[str, dict] = {}
@@ -4711,42 +5082,86 @@ async def get_satellite_status():
     latest_keys: dict[tuple[str, str, str | None], tuple[float, float, str]] = {}
     regions_cfg = SATELLITE_CONFIG.get("regions", {})
 
+    manifest_files = list(manifest_dir.glob("*.json")) if manifest_dir.exists() else []
+    if manifest_files:
+        for mf in manifest_files:
+            try:
+                payload = json.loads(mf.read_text())
+            except Exception:
+                continue
+            source_raw = str(payload.get("satellite") or "").lower()
+            if source_raw.startswith("g") and source_raw[1:].isdigit():
+                source_raw = f"goes{source_raw[1:]}"
+            elif source_raw.startswith("goes-") and source_raw[5:].isdigit():
+                source_raw = f"goes{source_raw[5:]}"
+            product_id = str(payload.get("product") or "")
+            region_id = payload.get("region")
+            region_id = str(region_id) if region_id else None
+            if not product_id or source_raw not in result:
+                continue
+            frames = payload.get("frames") or []
+            if not frames:
+                continue
+            cutoff_dt = now_dt - timedelta(hours=_satellite_loop_hours(product_id))
+            cnt = 0
+            # Manifest frames are sorted oldest -> newest; scan from newest and stop at cutoff.
+            for frame in reversed(frames):
+                dt = _parse_satellite_meta_timestamp(frame.get("timestamp"))
+                if dt is None:
+                    continue
+                if dt >= cutoff_dt:
+                    cnt += 1
+                else:
+                    break
+            count_key = (source_raw, product_id, region_id)
+            frame_counts[count_key] = cnt
+            latest_meta[count_key] = frames[-1]
+    else:
+        for meta_file in meta_dir.glob("*.json"):
+            stem = meta_file.stem
+            try:
+                meta = json.loads(meta_file.read_text())
+            except Exception:
+                continue
 
-    for meta_file in meta_dir.glob("*.json"):
-        stem = meta_file.stem
-        try:
-            meta = json.loads(meta_file.read_text())
-        except Exception:
-            continue
+            source_raw = str(meta.get("satellite") or "")
+            product_id = str(meta.get("product") or "")
+            region_id = meta.get("region")
+            region_id = str(region_id) if region_id else None
+            if not product_id:
+                continue
 
-        source_raw = str(meta.get("satellite") or "")
-        product_id = str(meta.get("product") or "")
-        region_id = meta.get("region")
-        region_id = str(region_id) if region_id else None
-        if not product_id:
-            continue
+            source_id = source_raw.lower()
+            if source_id.startswith("g") and source_id[1:].isdigit():
+                source_id = f"goes{source_id[1:]}"
+            if source_id not in result:
+                continue
 
-        source_id = source_raw.lower()
-        if source_id.startswith("g") and source_id[1:].isdigit():
-            source_id = f"goes{source_id[1:]}"
-        if source_id not in result:
-            continue
+            count_key = (source_id, product_id, region_id)
+            dt = _parse_satellite_meta_timestamp(meta.get("timestamp"))
+            if not stem.endswith("_latest"):
+                loop_hours = _satellite_loop_hours(product_id)
+                cutoff_dt = now_dt - timedelta(hours=loop_hours)
+                if dt is not None and dt >= cutoff_dt:
+                    frame_counts[count_key] = frame_counts.get(count_key, 0) + 1
+            key = ((dt.timestamp() if dt is not None else meta_file.stat().st_mtime), meta_file.stat().st_mtime, meta_file.name)
+            meta_key = (source_id, product_id, region_id)
+            if meta_key not in latest_keys or key > latest_keys[meta_key]:
+                latest_keys[meta_key] = key
+                latest_meta[meta_key] = meta
 
-        count_key = (source_id, product_id, region_id)
-        dt = _parse_satellite_meta_timestamp(meta.get("timestamp"))
-        if not stem.endswith("_latest"):
-            loop_hours = _satellite_loop_hours(product_id)
-            cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=loop_hours)
-            if dt is not None and dt >= cutoff_dt:
-                frame_counts[count_key] = frame_counts.get(count_key, 0) + 1
-        key = ((dt.timestamp() if dt is not None else meta_file.stat().st_mtime), meta_file.stat().st_mtime, meta_file.name)
-        meta_key = (source_id, product_id, region_id)
-        if meta_key not in latest_keys or key > latest_keys[meta_key]:
-            latest_keys[meta_key] = key
-            latest_meta[meta_key] = meta
+    daylight_products = {
+        "vis", "vis_blue", "vis_1km", "veggie", "snow_ice", "cirrus",
+        "cloud_particle", "natural_color", "day_cloud_phase", "sandwich",
+        "m1_vis_1km", "m2_vis_1km",
+    }
+    daylight_paused = 2 <= now_dt.hour < 10
 
     for source_id in sources:
+        standalone_products = SATELLITE_CONFIG["sources"][source_id].get("standalone_products")
         for product_id, prod_cfg in products_cfg.items():
+            if standalone_products is not None and product_id not in standalone_products:
+                continue
             loop_hours = _satellite_loop_hours(product_id)
             meta = latest_meta.get((source_id, product_id, None), {})
             age_min: float | None = None
@@ -4767,7 +5182,9 @@ async def get_satellite_status():
             live_threshold_min = max(30, update_freq * 2 + 15)
             stale_threshold_min = max(180, update_freq * 4 + 30)
 
-            if age_min is None:
+            if product_id in daylight_products and daylight_paused:
+                status_str = "night"
+            elif age_min is None:
                 status_str = "no_data"
             elif age_min < live_threshold_min:
                 status_str = "live"
@@ -4816,7 +5233,9 @@ async def get_satellite_status():
             live_threshold_min = max(30, update_freq * 2 + 15)
             stale_threshold_min = max(180, update_freq * 4 + 30)
 
-            if age_min is None:
+            if product_id in daylight_products and daylight_paused:
+                status_str = "night"
+            elif age_min is None:
                 status_str = "no_data"
             elif age_min < live_threshold_min:
                 status_str = "live"
@@ -4845,10 +5264,24 @@ async def get_satellite_status():
         }
 
     result["regional"] = regional_result
+    return result
 
+
+_satellite_status_cache: dict = {"data": None, "ts": 0.0}
+_SATELLITE_STATUS_TTL = 20.0
+
+
+@app.get("/api/satellite/status")
+async def get_satellite_status():
+    """Return frame count, freshness, and status for all configured satellite products."""
+    now = time.time()
+    if _satellite_status_cache["data"] and (now - _satellite_status_cache["ts"]) < _SATELLITE_STATUS_TTL:
+        return JSONResponse(_satellite_status_cache["data"])
+    result = await asyncio.to_thread(_build_satellite_status)
     _satellite_status_cache["data"] = result
-    _satellite_status_cache["ts"] = now
+    _satellite_status_cache["ts"] = time.time()
     return JSONResponse(result)
+
 
 
 # ---------------------------------------------------------------------------
@@ -5005,36 +5438,79 @@ async def get_latest_radar(site: str, product: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_radar_frames_cache: dict[tuple, list[dict]] = {}
+_radar_frame_meta_cache: dict[tuple, dict | None] = {}
+
+
 @app.get("/api/radar/frames/{site}/{product}")
 async def get_radar_frames(
     site: str, product: str, tilt: float = Query(default=0.5, ge=0, le=90),
 ):
     """Get all available radar frames for a site and product, oldest→newest."""
     _, short = _resolve_radar_short(product)
-    frames = []
     meta_dir = RADAR_RENDERED_DIR / "meta"
-    for f in meta_dir.glob(f"{site}_{short}_*.json"):
-        if f.stem.endswith("_latest"):
-            continue
-        try:
-            meta = json.loads(f.read_text())
-            # Scan elevations vary by a few hundredths of a degree. Do not mix
-            # on-demand upper sweeps into the lowest-elevation animation.
-            if abs(float(meta.get("tilt", 0.5)) - tilt) > 0.15:
-                continue
-            frames.append({
-                "timestamp": meta.get("timestamp", ""),
-                "png_path": meta.get("png_path", ""),
-                "bounds": meta.get("bounds"),
-                "tilt": meta.get("tilt", 0.5),
-                "site": site,
-                "product": short,
-                "field": meta.get("field", ""),
-                "palette_version": meta.get("palette_version", 1),
-            })
-        except Exception:
-            pass
+    try:
+        dir_mtime_ns = meta_dir.stat().st_mtime_ns
+    except OSError:
+        return JSONResponse([])
+
+    meta_dir_str = str(meta_dir)
+    cache_key = (meta_dir_str, site, short, round(float(tilt), 2), dir_mtime_ns)
+    cached_frames = _radar_frames_cache.get(cache_key)
+    if cached_frames is not None:
+        return JSONResponse(cached_frames)
+
+    prefix = f"{site}_{short}_"
+    frames = []
+    try:
+        with os.scandir(meta_dir) as it:
+            for entry in it:
+                name = entry.name
+                if not (name.startswith(prefix) and name.endswith(".json")):
+                    continue
+                if name.endswith("_latest.json"):
+                    continue
+                try:
+                    file_mtime_ns = entry.stat().st_mtime_ns
+                except OSError:
+                    continue
+                f_key = (meta_dir_str, name, file_mtime_ns)
+                if f_key in _radar_frame_meta_cache:
+                    meta = _radar_frame_meta_cache[f_key]
+                else:
+                    try:
+                        meta = json.loads(Path(entry.path).read_text())
+                    except Exception:
+                        meta = None
+                    _radar_frame_meta_cache[f_key] = meta
+                if not meta:
+                    continue
+                try:
+                    # Scan elevations vary by a few hundredths of a degree. Do not mix
+                    # on-demand upper sweeps into the lowest-elevation animation.
+                    if abs(float(meta.get("tilt", 0.5)) - tilt) > 0.15:
+                        continue
+                    frames.append({
+                        "timestamp": meta.get("timestamp", ""),
+                        "png_path": meta.get("png_path", ""),
+                        "bounds": meta.get("bounds"),
+                        "tilt": meta.get("tilt", 0.5),
+                        "site": site,
+                        "product": short,
+                        "field": meta.get("field", ""),
+                        "palette_version": meta.get("palette_version", 1),
+                    })
+                except Exception:
+                    pass
+    except OSError:
+        pass
+
     frames.sort(key=lambda x: x["timestamp"])
+    if len(_radar_frame_meta_cache) > 8192:
+        _radar_frame_meta_cache.clear()
+    if len(_radar_frames_cache) > 512:
+        _radar_frames_cache.clear()
+    _radar_frames_cache[cache_key] = frames
     return JSONResponse(frames)
 
 
@@ -5054,15 +5530,11 @@ async def get_radar_tilts(site: str):
     raw_path = raw_files[0]
 
     def _extract_tilts():
-        from pipeline.radar.parser import parse_volume
-        volume = parse_volume(raw_path)
-        if volume is None:
-            return [0.5]
-        return sorted({round(float(tilt), 1) for tilt in volume.tilts}) or [0.5]
+        from pipeline.radar.parser import read_volume_tilts
+        return {"site": site, "tilts": read_volume_tilts(raw_path)}
 
-    loop = asyncio.get_event_loop()
-    tilts = await loop.run_in_executor(None, _extract_tilts)
-    return JSONResponse({"site": site, "tilts": tilts})
+    result = await _run_heavy_job(_heavy_job_key("tilt-metadata", raw_path, site), _extract_tilts)
+    return JSONResponse(result)
 
 
 @app.get("/api/radar/grid/{site}/{product}")
@@ -5097,14 +5569,17 @@ async def render_radar_tilt(site: str, product: str, tilt: float):
     def _do_render():
         from pipeline.radar.renderer import Level2Renderer
         renderer = Level2Renderer()
-        return renderer.render_on_demand(raw_path, site, field_name, tilt)
+        try:
+            rendered = renderer.render_on_demand(raw_path, site, field_name, tilt)
+            return json.loads(rendered.meta_path.read_text()) if rendered else None
+        finally:
+            renderer.close()
 
-    result = await loop.run_in_executor(None, _do_render)
+    result = await _run_heavy_job(_heavy_job_key("tilt", raw_path, site, field_name, tilt), _do_render)
     if result is None:
         raise HTTPException(status_code=404, detail=f"Could not render {site}/{product} at {tilt}°")
 
-    meta = json.loads(result.meta_path.read_text())
-    return JSONResponse(meta)
+    return JSONResponse(result)
 
 
 @app.get("/api/radar/storm3d/{site}")
@@ -5134,13 +5609,14 @@ async def get_radar_storm_3d(
     def _build():
         from pipeline.radar.storm3d import build_storm_volume
 
-        return build_storm_volume(site=site, raw_path=raw_path, click_lat=lat, click_lon=lon)
+        result = build_storm_volume(site=site, raw_path=raw_path, click_lat=lat, click_lon=lon)
+        return result.payload if result else None
 
-    result = await loop.run_in_executor(None, _build)
+    result = await _run_heavy_job(_heavy_job_key("storm3d", raw_path, site, lat, lon), _build, slots=2)
     if result is None:
         raise HTTPException(status_code=404, detail="No storm object found near that click")
 
-    return JSONResponse(result.payload)
+    return JSONResponse(result)
 
 
 @app.get("/api/radar/volume3d/{site}")
@@ -5186,16 +5662,10 @@ async def get_radar_volume_3d(
         None if box_lon_max is None else round(float(box_lon_max), 4),
     )
     cache_key = f"{site}:{raw_path.name}:{int(stat.st_mtime)}:{click_key[0]}:{click_key[1]}:{box_key[0]}:{box_key[1]}:{box_key[2]}:{box_key[3]}:{mode}"
-    cached = _RADAR_3D_CACHE.get(cache_key)
-    if cached is not None:
-        return JSONResponse(cached)
-
-    loop = asyncio.get_event_loop()
-
     def _build():
         if mode == "enhanced":
             from pipeline.radar.storm3d import build_volume_scene_enhanced
-            return build_volume_scene_enhanced(
+            result = build_volume_scene_enhanced(
                 site=site,
                 raw_path=raw_path,
                 click_lat=lat,
@@ -5207,20 +5677,19 @@ async def get_radar_volume_3d(
             )
         else:
             from pipeline.radar.storm3d import build_volume_scene
-            return build_volume_scene(
+            result = build_volume_scene(
                 site=site,
                 raw_path=raw_path,
                 click_lat=lat,
                 click_lon=lon,
             )
+        return result.payload if result else None
 
-    result = await loop.run_in_executor(None, _build)
+    result = await _run_heavy_job(_heavy_job_key("volume3d", raw_path, cache_key), _build, slots=2)
     if result is None:
         raise HTTPException(status_code=404, detail="No volumetric storm scene available for that scan")
 
-    _RADAR_3D_CACHE.clear()
-    _RADAR_3D_CACHE[cache_key] = result.payload
-    return JSONResponse(result.payload)
+    return JSONResponse(result)
 
 
 @app.get("/wx/api/radar/volume3d/{site}")

@@ -47,7 +47,7 @@
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css?v=1.9.4" />
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260930e" />
   <link rel="stylesheet" href="/static/css/surface-obs.css?v=20260329d" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20261008g" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20261016a" />
   <link rel="stylesheet" href="/static/css/pressure-contours.css?v=20261008d" />
 </head>
 <body>
@@ -189,6 +189,9 @@
         <div class="sidebar-action-row">
           <button id="soundingProbeBtn" class="sidebar-action-btn" type="button" aria-pressed="false">
             Sounding Probe
+          </button>
+          <button id="meteogramProbeBtn" class="sidebar-action-btn" type="button" aria-pressed="false">
+            Point Forecast
           </button>
         </div>
       </div>
@@ -915,6 +918,7 @@
             </div>
           </div>
           <div style="margin-top:8px;">
+            <a href="/wx/radar-map-3d" class="sidebar-action-btn" style="display:flex;align-items:center;justify-content:center;text-decoration:none;margin-bottom:8px;">Live 3D Radar Map · Omaha / Hastings</a>
             <button id="storm3dActivate" class="sidebar-action-btn" type="button">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
                 <circle cx="8" cy="8" r="6"/><path d="M8 1v4M8 11v4M1 8h4M11 8h4"/>
@@ -1395,6 +1399,24 @@
         <div class="map-info-time" id="mapInfoTime">Valid: --</div>
       </div>
 
+      <aside id="meteogramPanel" class="sounding-panel meteogram-panel hidden" aria-label="Point forecast">
+        <div class="sounding-panel-header">
+          <div>
+            <div class="sounding-panel-kicker">Point Forecast · Model Plume</div>
+            <div id="meteogramTitle" class="sounding-panel-title">Click the map</div>
+          </div>
+          <button id="meteogramClose" class="sounding-panel-close" type="button" aria-label="Close point forecast">×</button>
+        </div>
+        <div id="meteogramMeta" class="sounding-panel-meta">Click any point to compare every model’s forecast there.</div>
+        <div class="meteogram-toolbar">
+          <div id="meteogramRange" class="meteogram-range" role="group" aria-label="Forecast range"></div>
+          <div id="meteogramLegend" class="meteogram-legend" aria-label="Models"></div>
+        </div>
+        <div id="meteogramStatus" class="sounding-panel-status hidden" aria-live="polite"></div>
+        <div id="meteogramCharts" class="meteogram-charts"></div>
+        <div id="meteogramTooltip" class="meteogram-tooltip" role="status" hidden></div>
+      </aside>
+
       <aside id="soundingPanel" class="sounding-panel hidden" aria-live="polite">
         <div class="sounding-panel-header">
           <div>
@@ -1627,8 +1649,9 @@
   <!-- main.js (module) must execute before the deferred legacy scripts:
        module scripts and deferred scripts run in document order. -->
   <script type="module" src="/static/js/main.js?v=20260709a"></script>
-  <script defer src="/static/js/surface-obs.js?v=20260930e"></script>
-  <script defer src="/static/js/app.js?v=20261008g"></script>
+  <script defer src="/static/js/surface-obs.js?v=20261014a"></script>
+  <script defer src="/static/js/app.js?v=20261016a"></script>
+  <script defer src="/static/js/meteogram.js?v=20261016a"></script>
   <script defer src="/static/js/storm3d-modal.js?v=20260809a"></script>
 </body>
 </html>

@@ -5,15 +5,32 @@ https://eccc-msc.github.io/open-data/msc-data/nwp_gdps/readme_gdps-datamart_en/.
 """
 
 import logging
+import os
 import shutil
+import threading
+import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import GRIB_CACHE_DIR, MAX_DOWNLOAD_THREADS
 
 logger = logging.getLogger(__name__)
+_PARAMETER_POOL = None
+_PARAMETER_POOL_LOCK = threading.Lock()
+
+
+def _parameter_pool() -> ThreadPoolExecutor:
+    """Share the parameter download budget across all active forecast hours."""
+    global _PARAMETER_POOL
+    with _PARAMETER_POOL_LOCK:
+        if _PARAMETER_POOL is None:
+            _PARAMETER_POOL = ThreadPoolExecutor(
+                max_workers=max(1, int(os.getenv("GDPS_PARAMETER_THREADS", "8"))),
+                thread_name_prefix="gdps-parameter",
+            )
+    return _PARAMETER_POOL
 
 # Base URL for GDPS data
 BASE_URL = "https://dd.weather.gc.ca"
@@ -146,6 +163,27 @@ def check_availability(run_dt: datetime, fxx: int = 0) -> bool:
         return False
 
 
+def _forecast_has_grib(run_dt: datetime, fxx: int) -> bool | None:
+    """Return False only when the Datamart index confirms no GRIB is published.
+
+    GDPS creates forecast-hour directories before publishing GRIB fields. A
+    missing hour otherwise occupies a pipeline download thread while every
+    parameter is retried. On a network/index error, preserve the normal
+    per-parameter download path.
+    """
+    index_url = (f"{BASE_URL}/{run_dt:%Y%m%d}/WXO-DD/model_gdps/15km/"
+                 f"{run_dt:%H}/{fxx:03d}/")
+    try:
+        with urllib.request.urlopen(index_url, timeout=10) as response:
+            return b".grib2" in response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        return None
+    except Exception:
+        return None
+
+
 def download_single_param(run_dt: datetime, fxx: int, param: str,
                           output_dir: Path, max_retries: int = 3) -> Path | None:
     """Download a single GDPS parameter.
@@ -187,6 +225,10 @@ def download_forecast_hour(run_dt: datetime, fxx: int, params: list[str],
     # If already exists and not empty, skip
     if output_path.exists() and output_path.stat().st_size > 1000:
         return output_path
+
+    if _forecast_has_grib(run_dt, fxx) is False:
+        logger.info("[GDPS] fxx=%03d has no published GRIB fields yet", fxx)
+        return None
     
     params = list(dict.fromkeys(p for p in params if p in GDPS_PARAM_MAP))
     if not params:
@@ -195,14 +237,19 @@ def download_forecast_hour(run_dt: datetime, fxx: int, params: list[str],
     # Download all parameters in parallel
     downloaded_files = []
     
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(params))) as executor:
-        future_to_param = {
-            executor.submit(download_single_param, run_dt, fxx, param, output_dir): param
-            for param in params if param in GDPS_PARAM_MAP
-        }
-        
-        for future in as_completed(future_to_param):
-            param = future_to_param[future]
+    executor = _parameter_pool()
+    remaining = iter(params)
+    future_to_param = {}
+    def submit_next() -> None:
+        param = next(remaining, None)
+        if param is not None:
+            future_to_param[executor.submit(download_single_param, run_dt, fxx, param, output_dir)] = param
+    for _ in range(min(max_workers, len(params))):
+        submit_next()
+    while future_to_param:
+        done, _ = wait(future_to_param, return_when=FIRST_COMPLETED)
+        for future in done:
+            param = future_to_param.pop(future)
             try:
                 path = future.result()
                 if path:
@@ -211,6 +258,7 @@ def download_forecast_hour(run_dt: datetime, fxx: int, params: list[str],
                     logger.debug("[GDPS] Failed to download %s fxx=%03d", param, fxx)
             except Exception as exc:
                 logger.warning("[GDPS] Exception downloading %s: %s", param, exc)
+            submit_next()
     
     if not downloaded_files:
         logger.warning("[GDPS] No parameters downloaded for fxx=%03d", fxx)

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#091321" />
+  <title>Live 3D Radar Map · WX Viewer</title>
+  <link rel="icon" href="/static/brand/wx-mark.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/vendor/maplibre/maplibre-gl.css?v=5.7.3" />
+  <link rel="stylesheet" href="/static/css/radar-map3d.css?v=20261015a" />
+  <script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js?v=0.161.0"}}</script>
+</head>
+<body>
+  <div id="map" aria-label="Interactive live 3D radar map of Nebraska"></div>
+  <header class="topbar">
+    <a class="brand" href="/wx/" aria-label="Back to weather viewer"><img src="/static/brand/wx-mark.svg" alt="" /> WX VIEWER</a>
+    <span class="mode">3D Radar Map</span>
+    <span id="liveBadge" class="badge">LIVE</span>
+    <a class="back" href="/wx/">2D weather ↗</a>
+  </header>
+  <button id="controlsToggle" class="panel-toggle" type="button" aria-controls="radarControlsPanel" aria-expanded="false">☰ Radar controls</button>
+  <aside id="radarControlsPanel" class="panel controls" aria-label="Radar controls">
+    <h1>Storms in three dimensions</h1>
+    <p class="subtle">Omaha &amp; Hastings · NEXRAD Level II</p>
+    <div class="sites" role="group" aria-label="Radar coverage">
+      <button type="button" data-site="KOAX">Omaha</button>
+      <button type="button" data-site="KUEX">Hastings</button>
+      <button type="button" data-site="both" class="selected" aria-pressed="true">Both</button>
+    </div>
+    <div id="siteStatus" class="site-status" aria-live="polite">Preparing radar volumes…</div>
+    <label>Minimum reflectivity <output id="thresholdValue">10 dBZ</output><input id="threshold" type="range" min="0" max="60" step="5" value="10" /></label>
+    <label>Opacity <output id="opacityValue">65%</output><input id="opacity" type="range" min="10" max="100" value="65" /></label>
+    <label>Vertical exaggeration <output id="heightValue">1×</output><input id="height" type="range" min="1" max="5" step="0.25" value="1" /></label>
+    <label class="check"><input id="warnings" type="checkbox" checked /> NWS warning polygons</label>
+    <div id="warningStatus" class="subtle" role="status">Checking warning feed…</div>
+    <label class="check"><input id="rulers" type="checkbox" checked /> Height markers in feet</label>
+    <label class="check"><input id="imagery" type="checkbox" /> Satellite basemap</label>
+    <div class="view-actions"><button id="oblique" type="button">Tilted view</button><button id="top" type="button">Top view</button><button id="refresh" type="button">Refresh</button></div>
+    <details><summary>About this view</summary><p>Real reflectivity observations from full radar scans. Heights are in feet above each radar antenna. Radar echoes can include insects, birds, and ground clutter. Unsampled regions are left empty.</p><p>When both sites are shown, overlap uses the nearer radar. Each site's observation time is shown separately. New complete scans appear automatically.</p><p>Drag to pan. Right-drag or Ctrl-drag to tilt and rotate. On touch screens, use two fingers to tilt. This is a regional preview.</p></details>
+  </aside>
+  <div id="notice" class="notice" role="status">Loading map and latest observations…</div>
+  <section class="legend panel" aria-label="Reflectivity legend"><strong>Reflectivity <span>dBZ</span></strong><div id="legendRamp"></div><div class="legend-labels"><span>0</span><span>20</span><span>40</span><span>60</span><span>80</span></div><small>Height markers: ft above radar</small></section>
+  <footer class="timeline panel">
+    <button id="play" type="button" aria-label="Play recent scans">▶</button>
+    <div class="time-track"><label for="timeline"><span id="frameTime">Latest scans</span><span id="historyStatus">Recent scan history</span></label><input id="timeline" type="range" min="0" max="0" value="0" step="1" /></div>
+    <button id="goLive" type="button" class="selected">Live</button>
+  </footer>
+  <div id="heightLabels" aria-hidden="true"></div>
+  <noscript>This interactive radar map requires JavaScript and WebGL 2.</noscript>
+  <script src="/static/vendor/maplibre/maplibre-gl.js?v=5.7.3"></script>
+  <script type="module" src="/static/js/radar-map3d.js?v=20261015b"></script>
+</body>
+</html>

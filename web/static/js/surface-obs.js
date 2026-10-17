@@ -297,6 +297,7 @@ const SurfaceObs = (() => {
 
   // ─── Fetch data from API ─────────────────────────────────────
   async function _fetch() {
+    if (document.hidden) return;
     const requestId = ++_requestId;
     try {
       const r = await fetch(`${_base}/api/surface/current`);

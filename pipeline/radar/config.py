@@ -1,13 +1,16 @@
 """Radar configuration — Level II NEXRAD sites and products."""
 
+import os
 from pathlib import Path
+
+from pipeline.config import DATA_DIR
 
 # Import FIELD_CONFIG from color_tables for hover value lookup support
 from .color_tables import FIELD_CONFIG as RADAR_FIELD_CONFIG
 
 # Radar data directories
-RADAR_CACHE_DIR = Path("/home/main/weather-viewer/data/radar_cache/level2")
-RADAR_RENDERED_DIR = Path("/home/main/weather-viewer/data/rendered/radar")
+RADAR_CACHE_DIR = DATA_DIR / "radar_cache" / "level2"
+RADAR_RENDERED_DIR = DATA_DIR / "rendered" / "radar"
 
 # Ensure directories exist
 RADAR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -25,8 +28,8 @@ PNG_OPTIMIZE = False         # faster write path for high-frequency radar render
 
 # Scheduler - active path is scheduler_pipeline with S3-first ingest
 POLL_INTERVAL_SECONDS = 2     # shorter scheduler cadence for lower ingest latency
-DOWNLOAD_WORKERS = 12         # more source checks/downloads in parallel
-RENDER_WORKERS = 4            # processes for PyART parse + render
+DOWNLOAD_WORKERS = int(os.getenv("RADAR_DOWNLOAD_WORKERS", "12"))
+RENDER_WORKERS = int(os.getenv("RADAR_RENDER_WORKERS", "4"))
 RADAR_WORKER_MAX_TASKS = 25   # keep workers warmer so renderer caches persist longer
 RENDER_TIMEOUT_SECONDS = 180  # per-site render timeout — increased for CPUQuota=50% throttling
 MAX_VOLUME_AGE_HOURS = 2      # S3/THREDDS lookback window
@@ -180,6 +183,7 @@ NEXRAD_SITES = {
     "KRTX": {"name": "Portland", "state": "OR", "lat": 45.715, "lon": -122.965, "priority": 2},
     "KMAX": {"name": "Medford", "state": "OR", "lat": 42.081, "lon": -122.717, "priority": 2},
 }
+
 
 # Level II products — raw radar moments from volume scans
 LEVEL2_PRODUCTS = {

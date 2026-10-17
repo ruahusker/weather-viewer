@@ -141,7 +141,8 @@ All important configuration is in `pipeline/config.py`:
 - `COLOR_SCALES`: 70+ parameter color map definitions
 - `SATELLITE_CONFIG`: GOES-19 product definitions
 - `RETENTION`: Data retention policies (6 full runs, 2 GRIB caches)
-- `RENDER_WORKERS`: 1 (memory-constrained, griddata is hungry)
+- Model render capacity: eight forecast-hour slots (pools of 3/3/2), independent hours first; up to two render children for overlapping hours and four for a lone hour when resources permit
+- Radar render capacity: four processes; satellite: three product threads, two active render contexts
 - `RENDER_DPI`: 200
 
 ## Running the Application
@@ -260,7 +261,14 @@ def process_run(model: str, run_dt: datetime) -> list[Path]:
 
 ## Testing
 
-There is no formal test suite. Testing is manual:
+Automated resource and regression checks:
+
+```bash
+.venv/bin/python -m unittest tests.test_performance tests.test_regressions -q
+node tests/frontend.test.cjs
+```
+
+Also verify live behavior manually:
 
 1. **Pipeline test**: Check logs for successful download/render cycle
    ```bash
@@ -299,15 +307,23 @@ There is no formal test suite. Testing is manual:
 
 ### Scheduler (unified_scheduler.py)
 
-- One ProcessPoolExecutor per model (1 worker each)
+- Three ProcessPoolExecutors with 3/3/2 parent workers; family preferences and idle-slot borrowing
+- Independent forecast hours have priority; split CPU capacity is shared across ready hours, with four children reserved for a lone hour and up to two for overlapping hours
 - FIFO processing by run time
 - Download ahead of render for throughput
 - Resume capability: skips existing PNGs on restart
-- Preemption: yields to higher-priority models
+- Dispatch at forecast-hour boundaries; waiting models gain priority after two minutes
+- Cgroup memory, host memory, CPU, pressure, and swap growth govern dispatch
 
 ### Memory Management
 
-- `RENDER_WORKERS = 1` (single render process)
+- Up to eight model jobs and ten rendering CPUs; dynamic CPU admission subtracts other host work; 20 GiB working-memory admission, 22/24 GiB service high/maximum, and a 4 GiB host reserve
+- Scientific-library threads capped at one per worker
+- Per-model proportional-memory peaks persist in data/render_memory_metrics_v2.json, keyed by render-process count; keep the reservation until completion metrics are recorded
+- Model projection/rotation arrays are read-only memory maps shared across workers, with a 256 MiB mapping budget per process; smoothed height grids: 128 MiB within a forecast hour, shared with forked children and cleared at hour completion; radar lookup cache: 192 MiB per process; shared satellite array cache: 192 MiB
+- Splits use measured per-map CPU costs from data/render_costs.json; cold profiles use render-type estimates. Radar memory high/maximum is 10/12 GiB to reduce reclaim while host memory is available.
+- Radar PNGs use exact indexed colors and per-entry alpha when a transparent palette entry is available; full-color RGBA fallback preserves frames needing all 256 colors plus missing data; PNG compression level 1
+- API: two workers with two compute slots shared across them; 3D jobs consume both slots
 - GRIB cache limited to 2 runs
 - Aggressive cleanup triggers at <5GB free disk
 - Process pools recreated periodically to prevent memory growth
@@ -327,7 +343,7 @@ There is no formal test suite. Testing is manual:
 | No new runs processing | Disk full | Check `df -h`, cleanup runs manually |
 | Partial parameters | GRIB field not in model | Check `PARAM_SEARCH_STRINGS` |
 | Misaligned overlay | Bounds mismatch | Check `bounds.json` in run directory |
-| Slow rendering | Memory pressure | Reduce `RENDER_WORKERS` to 1 |
+| Slow rendering | Memory pressure | Check `/api/status` resources and service cgroup limits; tune admission estimates |
 | 503 errors in logs | Rate limited by NOMADS | Automatic retry with exponential backoff |
 | Pipeline not starting | Port/file lock | Check `lsof` for stale Python processes |
 
@@ -346,6 +362,9 @@ PARTIAL_PARAMS = ["temp_2m", "reflectivity", "precip"]  # Unused with partial=0
 
 Cleanup runs automatically when disk pressure detected.
 
+See [docs/performance.md](docs/performance.md) for current worker assignments,
+CPU and memory budgets, benchmark results, observation files, and configuration recovery.
+
 ## Satellite Configuration
 
 GOES-19 East is the primary source. Products defined in `SATELLITE_CONFIG`:
@@ -354,3 +373,37 @@ GOES-19 East is the primary source. Products defined in `SATELLITE_CONFIG`:
 - **Products**: IR (Band 13), WV (Band 9), Vis (Band 2), GLM (lightning)
 - **Retention**: 24 hours default, 6 hours for mesoscale
 - **Update frequency**: 5-10 minutes for most products, 1 minute for mesoscale
+
+## Project holds and shared monitor (2026-10-14)
+
+The user requested all other Vibe projects be put on hold for weather processing.
+Bitcoin Core/dashboard, Nexus, Options Desk, Poly, IB Gateway/quote feeds,
+OpenClaw and its project timers, and all three running Docker workloads are
+stopped. Keep them held until the user requests resumption. Persistent unit
+guards and container restart policies enforce the hold. The protected manifest,
+verification, and restore tool are in
+`data/performance/vibe-project-hold-20261014/`; do not run the restore tool as
+part of routine weather maintenance. Weather, management, and OS services stay
+available.
+
+Both hosts use identical `web/static/dashboard.html` at `/wx/monitor`. It includes
+all 106 radar cards (including KTWX), radar refresh and logs, night status,
+shared satellite-thread accounting, disk categories, and responsive radar cards.
+Use root `/api/...` paths, which also work on the Mac without nginx prefix
+rewriting. Browser evidence is in
+`data/performance/mac-dashboard-parity-20261014/`.
+
+The 10:43 CDT repeated matched-input test had medians of 19.405 s on Mac and
+28.329 s on Vibe for one HRRR hour, 70 maps, two render children. This is
+per-hour latency with normal weather work active, not whole-release throughput
+or an isolated hardware comparison. See `docs/mac-vibe-comparison-20261014.md`.
+
+## Adaptive burst and shared geometry update (11:30 CDT)
+
+The verified policy uses four children for an eligible lone forecast hour and
+up to two when hours overlap, retaining independent-hour priority. Shared
+read-only geometry and per-hour height preparation preserve exact output.
+The completion bookkeeping bug that mixed split and ordinary memory peaks is
+fixed; v2 histories were reconstructed from actual task metrics. Detailed
+benchmarks, deployed settings, checks, and rollback instructions are in
+`docs/adaptive-four-20261014.md`. Keep the other projects held.

@@ -26,8 +26,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from .config import DATA_DIR, LOG_DIR
+
 # Queue directories
-QUEUE_DIR = Path("/home/main/weather-viewer/data/lowpri_queue")
+QUEUE_DIR = DATA_DIR / "lowpri_queue"
 PENDING_DIR = QUEUE_DIR / "pending"
 CLAIMED_DIR = QUEUE_DIR / "claimed"
 RESULTS_DIR = QUEUE_DIR / "results"
@@ -37,7 +39,7 @@ SUPERVISOR_POLL_INTERVAL = 5  # seconds between child health checks
 PENDING_SCAN_LIMIT = 32
 WORKER_TARGET_FILE = QUEUE_DIR / "worker_target"
 CLAIMED_STALE_SECONDS = 600  # re-queue claimed jobs older than 10 minutes
-WORKER_STATUS_DIR = Path("/home/main/weather-viewer/data/worker_status")
+WORKER_STATUS_DIR = DATA_DIR / "worker_status"
 
 logger = logging.getLogger(__name__)
 
@@ -364,7 +366,7 @@ def run(worker_label: str | None = None):
 
 
 def _configure_logging(worker_name: str) -> None:
-    log_dir = Path("/home/main/weather-viewer/logs")
+    log_dir = LOG_DIR
     log_dir.mkdir(parents=True, exist_ok=True)
 
     handlers = [
@@ -493,7 +495,9 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
     _requeue_stale_claimed_jobs()
     worker_count = _worker_count()
-    if worker_count == 1:
+    # On macOS, keep the supervisor even for one worker so the scheduler can
+    # shed this extra renderer when system memory becomes tight.
+    if worker_count == 1 and sys.platform != "darwin":
         logger.info("Low-priority service configured for 1 worker")
         run(worker_label="w1")
         return

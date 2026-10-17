@@ -5652,3 +5652,222 @@ html, body { background: var(--bg-deep); }
 .home-side-panel { bottom: auto; max-height: calc(100% - 24px); }
 .home-side-panel .side-panel-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
 .home-side-panel .side-panel-pane { position: static; inset: auto; overflow-y: visible; }
+
+/* Point forecast (multi-model meteogram plume) */
+
+.sidebar-action-row .sidebar-action-btn + .sidebar-action-btn {
+  margin-top: 6px;
+}
+
+/* Clears the Leaflet zoom control, which sits above panels at the top right. */
+.meteogram-panel {
+  right: 56px;
+  width: min(840px, calc(100% - 72px));
+}
+
+.meteogram-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.meteogram-range {
+  display: inline-flex;
+  border: 1px solid rgba(226, 242, 255, 0.12);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.meteogram-range:empty {
+  display: none;
+}
+
+.meteogram-range-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-mid);
+  font-family: var(--font-data);
+  font-size: 10px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.meteogram-range-btn + .meteogram-range-btn {
+  border-left: 1px solid rgba(226, 242, 255, 0.12);
+}
+
+.meteogram-range-btn[aria-pressed="true"] {
+  background: rgba(114, 169, 255, 0.18);
+  color: var(--text);
+}
+
+.meteogram-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.meteogram-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid rgba(226, 242, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font-family: var(--font-data);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.meteogram-chip:disabled {
+  cursor: default;
+}
+
+.meteogram-chip-key {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.meteogram-chip-run {
+  color: var(--text-dim);
+}
+
+.meteogram-chip.is-off,
+.meteogram-chip.is-unavailable {
+  opacity: 0.45;
+}
+
+.meteogram-chip.is-off .meteogram-chip-key {
+  background: transparent !important;
+  outline: 1px solid var(--text-dim);
+}
+
+.meteogram-charts {
+  display: grid;
+  gap: 8px;
+}
+
+.meteogram-section {
+  padding-bottom: 6px;
+}
+
+.meteogram-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  touch-action: pan-y;
+}
+
+.meteogram-chart .mg-axis-label {
+  fill: var(--text-dim);
+  font-family: var(--font-data);
+  font-size: 9px;
+}
+
+.meteogram-chart .mg-axis-label--minor {
+  fill: rgba(145, 161, 183, 0.6);
+}
+
+.meteogram-chart .mg-value-line,
+.meteogram-chart .mg-hour-line,
+.meteogram-chart .mg-row-line {
+  stroke: rgba(226, 242, 255, 0.06);
+  stroke-width: 1;
+}
+
+.meteogram-chart .mg-day-line {
+  stroke: rgba(226, 242, 255, 0.18);
+  stroke-width: 1;
+}
+
+.meteogram-chart .mg-now-line {
+  stroke: rgba(236, 241, 248, 0.55);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.meteogram-chart .mg-ref-line {
+  stroke: rgba(150, 200, 255, 0.45);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.meteogram-chart .mg-spread {
+  fill: rgba(236, 241, 248, 0.08);
+}
+
+.meteogram-chart .mg-series {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.meteogram-chart .mg-median {
+  fill: none;
+  stroke: rgba(236, 241, 248, 0.85);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+
+.meteogram-chart .mg-crosshair {
+  stroke: rgba(236, 241, 248, 0.6);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.meteogram-chart .mg-hit {
+  cursor: crosshair;
+}
+
+.meteogram-tooltip {
+  position: absolute;
+  z-index: 5;
+  min-width: 170px;
+  padding: 8px 10px;
+  border: 1px solid rgba(226, 242, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(6, 12, 24, 0.96);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
+  font-family: var(--font-data);
+  font-size: 10px;
+  color: var(--text-mid);
+  pointer-events: none;
+}
+
+.mg-tip-time {
+  margin-bottom: 5px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.mg-tip-row {
+  display: grid;
+  grid-template-columns: 14px auto 1fr;
+  align-items: center;
+  gap: 7px;
+  line-height: 1.6;
+}
+
+.mg-tip-key {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.mg-tip-value {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.mg-tip-footer {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(226, 242, 255, 0.1);
+  max-width: 240px;
+}

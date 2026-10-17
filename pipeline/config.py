@@ -1,4 +1,5 @@
 """Central configuration for the weather-viewer pipeline."""
+import os
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -365,7 +366,7 @@ def _register_custom_cmaps():
 
 _register_custom_cmaps()
 
-BASE_DIR = Path("/home/main/weather-viewer")
+BASE_DIR = Path(os.environ.get("WX_BASE_DIR", Path(__file__).resolve().parent.parent)).expanduser()
 DATA_DIR = BASE_DIR / "data"
 GRIB_CACHE_DIR = DATA_DIR / "grib_cache"
 RENDERED_DIR = DATA_DIR / "rendered"
@@ -373,9 +374,9 @@ LOG_DIR = BASE_DIR / "logs"
 
 # Retention policy: number of complete runs to keep
 RETENTION = {
-    "full_rendered": 6,     # keep all images for 6 most recent runs
+    "full_rendered": int(os.environ.get("WX_FULL_RENDERED_RUNS", "6")),
     "partial_rendered": 0,  # keep only PARTIAL_PARAMS for older runs
-    "grib_cache": 2,        # keep grib files for 2 most recent runs
+    "grib_cache": int(os.environ.get("WX_GRIB_CACHE_RUNS", "2")),
 }
 
 # Parameters kept for partial (older) runs
@@ -2271,7 +2272,7 @@ for _level in (1000, 900, 800, 750, 650, 600, 550, 450, 400, 350):
     )
 
 # Disk pressure threshold — trigger aggressive cleanup below this
-DISK_PRESSURE_THRESHOLD_GB = 5.0
+DISK_PRESSURE_THRESHOLD_GB = float(os.environ.get("WX_DISK_PRESSURE_GB", "5"))
 
 # ---------------------------------------------------------------------------
 # Satellite Configuration
@@ -2285,6 +2286,8 @@ SATELLITE_CONFIG = {
             "coverage": "Pacific / Western Americas",
             "location": "137.0°W",
             "domains": ["F", "C", "M1", "M2"],
+            # Other GOES-18 bands feed the GOES-19 blend or regional views.
+            "standalone_products": ["pwat", "sst", "rain_rate", "stability", "fire"],
         },
         "goes19": {
             "name": "GOES-19 East",
@@ -2714,6 +2717,7 @@ SATELLITE_CONFIG = {
         "archive_frames_per_cycle": 12,
         # Fire archive more often but each cycle has far fewer new frames to catch up.
         "archive_refresh_interval_seconds": 90,
+        "archive_budget_seconds": 15,
         # Cleanup is handled by the cron job (scripts/cleanup_weather_data.py, hourly).
         "cleanup_in_process": False,
         # Cleanup is handled by the cron job (scripts/cleanup_weather_data.py, hourly).
@@ -2728,6 +2732,20 @@ SATELLITE_CONFIG = {
         "job_batch_size": 6,
     },
 }
+
+_satellite_workers = os.environ.get("WX_SATELLITE_WORKERS")
+if _satellite_workers is not None:
+    SATELLITE_CONFIG["render"]["max_workers"] = max(1, int(_satellite_workers))
+    SATELLITE_CONFIG["render"]["job_batch_size"] = max(2, int(_satellite_workers) * 2)
+
+_satellite_loop_hours = os.environ.get("WX_SATELLITE_LOOP_HOURS")
+if _satellite_loop_hours is not None:
+    _loop_hours = max(1, int(_satellite_loop_hours))
+    SATELLITE_CONFIG["render"]["loop_hours"] = _loop_hours
+    for _product in SATELLITE_CONFIG["products"].values():
+        _product["loop_hours"] = _loop_hours
+        if "retention_hours" in _product:
+            _product["retention_hours"] = min(_product["retention_hours"], _loop_hours)
 
 # Satellite data directories
 SATELLITE_CACHE_DIR = DATA_DIR / "satellite_cache"

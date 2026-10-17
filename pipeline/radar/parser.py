@@ -49,6 +49,7 @@ class VolumeData:
     sweep_ends: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int32))
     backend: str = "pyart"
     radar: object | None = None
+    derived_context: dict = field(default_factory=dict, repr=False)
 
 
 _COMPACT_FIELD_NAMES = {
@@ -69,7 +70,8 @@ def _masked_to_float32(data) -> np.ndarray:
     return np.asarray(data, dtype=np.float32)
 
 
-def _build_compact_pyart_sweeps(radar, fixed_angles: np.ndarray) -> dict[str, list[Optional[SweepData]]]:
+def _build_compact_pyart_sweeps(radar, fixed_angles: np.ndarray,
+                               lowest_tilt_only: bool = False) -> dict[str, list[Optional[SweepData]]]:
     """Extract only the per-sweep arrays needed after parse and drop the live Radar object."""
     sweep_starts = radar.sweep_start_ray_index["data"]
     sweep_ends = radar.sweep_end_ray_index["data"]
@@ -81,31 +83,48 @@ def _build_compact_pyart_sweeps(radar, fixed_angles: np.ndarray) -> dict[str, li
     ]
 
     field_sweeps: dict[str, list[Optional[SweepData]]] = {}
-    for field_name in radar.fields.keys():
+    lowest_indices = [i for i, angle in enumerate(fixed_angles)
+                      if abs(round(float(angle), 1) - .5) <= .3]
+    for field_name in list(radar.fields):
         if field_name not in _COMPACT_FIELD_NAMES:
             continue
-        per_sweep: list[Optional[SweepData]] = []
+        per_sweep: list[Optional[SweepData]] = [None] * nsweeps
         field_data = radar.fields[field_name]["data"]
-        for sweep_idx in range(nsweeps):
+        indices = range(nsweeps) if not lowest_tilt_only or field_name == "reflectivity" else lowest_indices
+        def extract(sweep_idx: int, minimum: int = 50) -> Optional[SweepData]:
             s_start = sweep_starts[sweep_idx]
             s_end = sweep_ends[sweep_idx] + 1
             data = _masked_to_float32(field_data[s_start:s_end])
             if data.ndim != 2:
-                per_sweep.append(None)
-                continue
+                return None
             valid_count = int(np.count_nonzero(np.isfinite(data)))
-            if valid_count <= 50:
-                per_sweep.append(None)
-                continue
-            per_sweep.append(SweepData(
-                data=data,
+            if valid_count <= minimum:
+                return None
+            return SweepData(
+                # Detach compact slices from the full lazy field allocation.
+                data=data.copy() if lowest_tilt_only else data,
                 azimuth=azimuth_by_sweep[sweep_idx],
                 tilt_angle=round(float(fixed_angles[sweep_idx]), 1),
                 max_range_km=max_range_km,
                 n_gates=data.shape[1],
                 cc_data=None,
-            ))
+            )
+        for sweep_idx in indices:
+            per_sweep[sweep_idx] = extract(sweep_idx)
+        if lowest_tilt_only and field_name != "reflectivity" and not any(per_sweep):
+            # Preserve the existing first-valid-sweep fallback when a lowest
+            # elevation is missing for a moment.
+            for sweep_idx in range(nsweeps):
+                candidate = extract(sweep_idx, minimum=100)
+                if candidate is not None:
+                    per_sweep[sweep_idx] = candidate
+                    break
         field_sweeps[field_name] = per_sweep
+        if lowest_tilt_only:
+            # Lazy decoding lets each full field leave memory before the next
+            # is decoded. The API's full-volume path retains its original data.
+            radar.fields.pop(field_name, None)
+        del field_data
 
     cc_sweeps = field_sweeps.get("cross_correlation_ratio")
     if cc_sweeps is not None:
@@ -123,7 +142,17 @@ def _build_compact_pyart_sweeps(radar, fixed_angles: np.ndarray) -> dict[str, li
     return field_sweeps
 
 
-def parse_volume(path: Path) -> Optional[VolumeData]:
+def read_volume_tilts(path: Path) -> list[float]:
+    """Read elevation metadata without decoding each full radar field."""
+    if path.suffix == ".chunkbin":
+        volume = _parse_chunk_volume(path)
+        return sorted(set(volume.tilts)) if volume is not None else [0.5]
+    import pyart
+    radar = pyart.io.read_nexrad_archive(str(path), delay_field_loading=True)
+    return sorted({round(float(angle), 1) for angle in radar.fixed_angle["data"]}) or [0.5]
+
+
+def parse_volume(path: Path, lowest_tilt_only: bool = False) -> Optional[VolumeData]:
     """Parse a Level II volume scan file with PyART.
 
     Args:
@@ -139,7 +168,7 @@ def parse_volume(path: Path) -> Optional[VolumeData]:
         import pyart
         # Set memory limit to prevent OOM on large files (8GB)
         # This helps prevent the process from being killed
-        radar = pyart.io.read_nexrad_archive(str(path))
+        radar = pyart.io.read_nexrad_archive(str(path), delay_field_loading=lowest_tilt_only)
     except MemoryError:
         logger.error(f"Out of memory reading {path.name}")
         return None
@@ -152,7 +181,7 @@ def parse_volume(path: Path) -> Optional[VolumeData]:
     fixed_angles = np.array(radar.fixed_angle['data'], dtype=np.float32)
     sweep_starts = np.asarray(radar.sweep_start_ray_index['data'], dtype=np.int32)
     sweep_ends = np.asarray(radar.sweep_end_ray_index['data'], dtype=np.int32)
-    field_sweeps = _build_compact_pyart_sweeps(radar, fixed_angles)
+    field_sweeps = _build_compact_pyart_sweeps(radar, fixed_angles, lowest_tilt_only)
 
     # Parse timestamp from filename: Level2_KTLX_20260310_1541.ar2v
     timestamp = None

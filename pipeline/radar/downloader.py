@@ -4,11 +4,13 @@ import logging
 import re
 import time
 import threading
+from types import SimpleNamespace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 import botocore
 import requests
 from botocore.client import Config
@@ -35,6 +37,37 @@ _chunk_bucket = None
 _tls = threading.local()
 _s3_cooldowns: dict[str, tuple[datetime, str]] = {}
 _s3_cooldown_lock = threading.Lock()
+_s3_client_lock = threading.Lock()
+_s3_client = None
+_TRANSFER_CONFIG = TransferConfig(use_threads=False, max_concurrency=1)
+
+
+class _S3Bucket:
+    """Thread-safe client adapter with one transfer per download worker."""
+
+    def __init__(self, name: str) -> None:
+        global _s3_client
+        with _s3_client_lock:
+            if _s3_client is None:
+                _s3_client = boto3.session.Session().client(
+                    "s3", region_name="us-east-1",
+                    config=Config(signature_version=botocore.UNSIGNED,
+                                  max_pool_connections=32, connect_timeout=15,
+                                  read_timeout=60, retries={"max_attempts": 2},
+                                  user_agent_extra="weather-viewer"),
+                )
+        self.client = _s3_client
+        self.name = name
+        self.objects = self
+
+    def filter(self, **kwargs):
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.name, **kwargs):
+            for obj in page.get("Contents", []):
+                yield SimpleNamespace(key=obj["Key"])
+
+    def download_file(self, key: str, path: str) -> None:
+        self.client.download_file(self.name, key, path, Config=_TRANSFER_CONFIG)
 
 
 def get_l2_server() -> RadarServer:
@@ -53,11 +86,7 @@ def get_s3_bucket():
     """Get or create the shared unsigned S3 bucket handle."""
     global _s3_bucket
     if _s3_bucket is None:
-        s3 = boto3.resource(
-            "s3",
-            config=Config(signature_version=botocore.UNSIGNED, user_agent_extra="weather-viewer"),
-        )
-        _s3_bucket = s3.Bucket(PRIMARY_BUCKET)
+        _s3_bucket = _S3Bucket(PRIMARY_BUCKET)
         logger.info("Connected to Level II S3 bucket (%s)", PRIMARY_BUCKET)
     return _s3_bucket
 
@@ -66,11 +95,7 @@ def get_chunk_bucket():
     """Get or create the shared unsigned chunk-bucket handle."""
     global _chunk_bucket
     if _chunk_bucket is None:
-        s3 = boto3.resource(
-            "s3",
-            config=Config(signature_version=botocore.UNSIGNED, user_agent_extra="weather-viewer"),
-        )
-        _chunk_bucket = s3.Bucket(CHUNK_BUCKET)
+        _chunk_bucket = _S3Bucket(CHUNK_BUCKET)
         logger.info("Connected to chunk S3 bucket (%s)", CHUNK_BUCKET)
     return _chunk_bucket
 

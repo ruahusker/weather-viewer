@@ -319,6 +319,7 @@ const PRELOAD_CONCURRENCY = 4;
 let _productUrls = [];   // URLs belonging to the current product
 
 function _pumpQueue() {
+  if (document.hidden) return;
   while (_loadActive < PRELOAD_CONCURRENCY && _loadQueue.length) {
     const url = _loadQueue.shift();
     const s = _imgCache.get(url);
@@ -380,7 +381,7 @@ function updateCacheStatus() {
     if (scrubLabel && scrubLabel.textContent === '--') scrubLabel.textContent = 'Loading frames…';
   } else {
     const curIdx = parseInt(scrubSlider.value);
-    scrubFrameCount.textContent = `${curIdx + 1}/${total}`;
+    scrubFrameCount.textContent = `${curIdx + 1}/${parseInt(scrubSlider.max) + 1}`;
     scrubFrameCount.classList.remove('loading');
   }
 }
@@ -412,20 +413,45 @@ function frameUrl(idx) {
   return null;
 }
 
-// Aggressively preload all frames for the current product.
+// Keep a small moving window ready for playback and scrubbing.
 // Prioritises the next 6 frames ahead of current position.
+let resumePlaybackWhenVisible = false;
+function handlePageVisibility() {
+  if (document.hidden) {
+    resumePlaybackWhenVisible = S.isPlaying;
+    pause();
+  } else {
+    preloadAllFrames();
+    _pumpQueue();
+    if (resumePlaybackWhenVisible) play();
+    resumePlaybackWhenVisible = false;
+  }
+}
+document.addEventListener('visibilitychange', handlePageVisibility);
+
+function frameWindow(count, current) {
+  if (!Number.isFinite(count) || count <= 0) return [];
+  current = Number.isFinite(current) ? current : 0;
+  return [...new Set([0, 1, 2, 3, 4, 5, 6, -1, -2]
+    .map(offset => ((current + offset) % count + count) % count))];
+}
+
+function trimPreloadCache() {
+  const keep = new Set(_productUrls);
+  for (const [url, status] of _imgCache) {
+    if (_imgCache.size <= 96) break;
+    if (status !== 'pending' && !keep.has(url)) _imgCache.delete(url);
+  }
+}
+
 function preloadAllFrames() {
+  if (document.hidden) return;
   const cur = parseInt(scrubSlider.value);
   const count = parseInt(scrubSlider.max) + 1;
-  _productUrls = [];
-  for (let i = 0; i < count; i++) {
-    const url = frameUrl(i);
-    if (url) _productUrls.push(url);
-  }
-  const priority = _productUrls.filter((_, i) => i > cur && i <= cur + 6);
-  const rest     = _productUrls.filter((_, i) => i <= cur || i > cur + 6);
-  cacheFrames(priority, true);
-  cacheFrames(rest, false);
+  clearLoadQueue();
+  _productUrls = frameWindow(count, cur).map(frameUrl).filter(Boolean);
+  trimPreloadCache();
+  cacheFrames(_productUrls, true);
   updateCacheStatus();
 }
 
@@ -1331,6 +1357,7 @@ function showHomeFrame() {
   topInfo.textContent = `Radar ${formatTs(f.timestamp)}`;
   scrubLabel.textContent = formatTs(f.timestamp);
   updateCacheStatus();
+  preloadAllFrames();
 }
 
 function toggleAlerts() {
@@ -1356,6 +1383,7 @@ const ALERT_COLORS = {
 };
 
 async function loadAlerts() {
+  if (document.hidden) return;
   try {
     const types = encodeURIComponent(ALERT_TYPES.join(','));
     const data = await api(`/api/alerts?types=${types}`);
@@ -1540,6 +1568,7 @@ function showModelFrame() {
   updateCacheStatus();
   updatePill(`${MODELS[S.model]?.label || S.model} / ${paramLabel(S.param)}`);
   syncMobileUrl();
+  preloadAllFrames();
 }
 
 
@@ -1614,6 +1643,7 @@ function showSatFrame() {
     });
   }
   syncMobileUrl();
+  preloadAllFrames();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1794,6 +1824,7 @@ function stopRadarAutoRefresh() {
 }
 
 async function refreshRadarFrames() {
+  if (document.hidden) return;
   if (S.tab !== 'radar') { stopRadarAutoRefresh(); return; }
   const requestId = mobileDataRequestId;
   try {
@@ -1848,6 +1879,7 @@ function showRadarFrame(fitBounds) {
     leafletMap.flyTo([b.center_lat, b.center_lon], 7, { duration: 1 });
   }
   syncMobileUrl();
+  preloadAllFrames();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1954,6 +1986,7 @@ function toggleChasers() {
 }
 
 async function loadChasers() {
+  if (document.hidden) return;
   try {
     const data = await api('/api/spotters?max_age_min=1440&moving_only=false');
     if (S.chaserLayer) { leafletMap.removeLayer(S.chaserLayer); S.chaserLayer = null; }

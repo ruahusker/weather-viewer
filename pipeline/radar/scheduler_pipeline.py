@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from pipeline.config import DATA_DIR
+
 from .config import (
     NEXRAD_SITES, RADAR_CACHE_DIR, RADAR_RENDERED_DIR, RADAR_CONFIG,
     POLL_INTERVAL_SECONDS, DOWNLOAD_WORKERS, RENDER_WORKERS, RADAR_WORKER_MAX_TASKS,
@@ -36,8 +38,8 @@ from .cleanup import cleanup_all
 
 logger = logging.getLogger(__name__)
 
-STATE_FILE = Path("/home/main/weather-viewer/data/radar_state.json")
-WORKER_STATUS_DIR = Path("/home/main/weather-viewer/data/radar_worker_status")
+STATE_FILE = DATA_DIR / "radar_state.json"
+WORKER_STATUS_DIR = DATA_DIR / "radar_worker_status"
 _TS_RE = re.compile(r"(\d{8})_(\d{4,6})")
 CHUNK_LAG_THRESHOLD_MINUTES = 8
 MAX_PENDING_DOWNLOADS = max(1, DOWNLOAD_WORKERS * 2)
@@ -131,6 +133,12 @@ def _clear_worker_status():
 
 def _worker_rss_mb() -> float:
     """Return current worker RSS in MiB."""
+    if os.name != "posix" or not Path("/proc/self/statm").exists():
+        try:
+            import psutil
+            return psutil.Process().memory_info().rss / (1024 * 1024)
+        except Exception:
+            return 0.0
     try:
         with open("/proc/self/statm", "r", encoding="utf-8") as fh:
             parts = fh.read().strip().split()
@@ -150,16 +158,19 @@ def _worker_rss_mb() -> float:
 def _trim_worker_memory() -> None:
     """Best-effort release of Python/native free memory back to the OS."""
     from .renderer import clear_renderer_caches
-    rss = _worker_rss_mb()
-    # If RSS is high (over 1000 MiB), clear global caches to contain creep
-    if rss > 1000:
-        clear_renderer_caches()
     gc.collect()
     if _libc is not None:
         try:
             _libc.malloc_trim(0)
         except Exception:
             pass
+    # Released image/volume buffers can still be held by the allocator. Trim
+    # those first so a transient peak does not discard useful geometry.
+    if _worker_rss_mb() > 1000:
+        clear_renderer_caches()
+        gc.collect()
+        if _libc is not None:
+            _libc.malloc_trim(0)
 
 
 def _init_render_worker() -> None:
@@ -200,7 +211,7 @@ def _parse_and_render(site: str, raw_path: str, timestamp: str) -> tuple[str, in
 
     try:
         _write_worker_status(site, timestamp, raw_path)
-        volume = parse_volume(path)
+        volume = parse_volume(path, lowest_tilt_only=True)
         if volume is None:
             logger.warning(f"{site}: failed to parse volume {path.name}")
             return (site, 0)

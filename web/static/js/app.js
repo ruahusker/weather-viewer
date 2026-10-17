@@ -955,6 +955,7 @@ const PRELOAD_CONCURRENCY = 4;
 let _productUrls = [];   // URLs belonging to the current product
 
 function _pumpQueue() {
+  if (document.hidden) return;
   while (_loadActive < PRELOAD_CONCURRENCY && _loadQueue.length) {
     const url = _loadQueue.shift();
     const s = _imgCache.get(url);
@@ -1646,12 +1647,17 @@ function debouncedMapHover(evt) {
 // Keep click handler for compatibility
 async function handleMapValueClick(evt) {
   if (!evt?.latlng) return;
-  if (state.dataSource === 'models' && state.soundingProbeEnabled) {
+  const meteogramProbe = window.WXMeteogram?.isEnabled?.() === true;
+  if (state.dataSource === 'models' && (state.soundingProbeEnabled || meteogramProbe)) {
     if (_mapPointerDragged) return;
     if (_mapPointerDownPoint && evt.containerPoint) {
       const dx = evt.containerPoint.x - _mapPointerDownPoint.x;
       const dy = evt.containerPoint.y - _mapPointerDownPoint.y;
       if (Math.hypot(dx, dy) > 6) return;
+    }
+    if (meteogramProbe) {
+      window.WXMeteogram.open(evt.latlng);
+      return;
     }
     await loadModelSounding(evt.latlng);
     return;
@@ -4672,6 +4678,7 @@ function showSatelliteFrame(idx) {
     markCaptureReady('satellite');
   }
   syncShareableDesktopUrl();
+  preloadAllDesktopFrames();
 }
 
 function updateSatScrubber() {
@@ -4865,6 +4872,7 @@ function stopRadarAutoRefresh() {
 }
 
 async function refreshRadarFrames() {
+  if (document.hidden) return;
   if (state.dataSource !== 'radar') { stopRadarAutoRefresh(); return; }
   const requestId = state.radarRequestId;
   try {
@@ -5059,6 +5067,7 @@ function clearOverlayLayer(key) {
 }
 
 async function refreshSevereWarnings() {
+  if (document.hidden) return;
   try {
     state.severeWarnings = await apiFetch(`${BASE}/api/alerts/severe?limit=24`);
     renderSevereWarnings();
@@ -5171,6 +5180,7 @@ async function initHomeDashboard() {
   // Auto-refresh featured chaser dots every 2 minutes
   if (state.featuredChaserTimer) clearInterval(state.featuredChaserTimer);
   state.featuredChaserTimer = setInterval(() => {
+    if (document.hidden) return;
     if (['home', 'radar'].includes(state.dataSource)) refreshFeaturedChasers();
   }, 120_000);
 }
@@ -5341,6 +5351,7 @@ function updateHomeRadarMode() {
     });
     if (!state.homeSiteLayersTimer) {
       state.homeSiteLayersTimer = setInterval(() => {
+    if (document.hidden) return;
         if (state.dataSource === 'home' && state.homeSiteLayersActive) loadHomeSiteLayers();
       }, 120_000);
     }
@@ -5432,6 +5443,7 @@ async function initRainViewerLayer() {
   // Auto-refresh every 2 min so newly generated composites appear without a reload.
   if (state.homeRainViewerTimer) clearInterval(state.homeRainViewerTimer);
   state.homeRainViewerTimer = setInterval(() => {
+    if (document.hidden) return;
     if (state.dataSource === 'home' && state.radarCompositeEnabled) {
       initRainViewerLayer();
     }
@@ -5504,6 +5516,7 @@ function showHomeRadarFrame(idx) {
   const frameCounter = document.getElementById('frameCounter');
   if (frameCounter) frameCounter.textContent = `${idx + 1}/${state.homeRadarFrames.length}`;
   markCaptureReady('home_radar');
+  preloadAllDesktopFrames();
 }
 
 function updateMapInfoForHomeRadar() {
@@ -5523,6 +5536,7 @@ async function initWarningTicker() {
   await refreshWarningsPanel();
   if (state.homeWarningTickerTimer) clearInterval(state.homeWarningTickerTimer);
   state.homeWarningTickerTimer = setInterval(() => {
+    if (document.hidden) return;
     if (state.dataSource === 'home') refreshWarningsPanel();
   }, 45_000);
 }
@@ -5713,6 +5727,7 @@ async function loadHomeSidePanelData() {
   // Auto-refresh every 60s
   if (state.homeSidePanelTimer) clearInterval(state.homeSidePanelTimer);
   state.homeSidePanelTimer = setInterval(() => {
+    if (document.hidden) return;
     if (state.dataSource === 'home') loadHomeSidePanelData();
   }, 60_000);
 }
@@ -5737,6 +5752,7 @@ async function loadChaserPanel() {
   // Auto-refresh every 90s
   if (state.homeChaserTimer) clearInterval(state.homeChaserTimer);
   state.homeChaserTimer = setInterval(() => {
+    if (document.hidden) return;
     if (state.dataSource === 'home') loadChaserPanel();
   }, 90_000);
 }
@@ -6280,6 +6296,7 @@ function syncHomeSpcControls() {
 }
 
 async function refreshAlertOverlay() {
+  if (document.hidden) return;
   if (!['radar', 'home'].includes(state.dataSource)) {
     clearOverlayLayer('alertsLayer');
     return;
@@ -6332,6 +6349,7 @@ async function refreshAlertOverlay() {
 }
 
 async function refreshSpcOverlay() {
+  if (document.hidden) return;
   if (state.dataSource !== 'home') {
     clearOverlayLayer('spcLayer');
     clearHomeSpcLayers();
@@ -6359,6 +6377,7 @@ function clearHomeMcdLayer() {
 }
 
 async function refreshHomeSpcLayers() {
+  if (document.hidden) return;
   const requestSeq = ++state.homeSpcRequestSeq;
   const selectedProducts = getSelectedHomeSpcProducts();
 
@@ -6412,6 +6431,7 @@ async function refreshHomeSpcLayers() {
 }
 
 async function refreshMcdOverlay() {
+  if (document.hidden) return;
   // Home dashboard: controlled by homeMcdEnabled
   if (state.dataSource === 'home') {
     if (!state.homeMcdEnabled) { clearHomeMcdLayer(); return; }
@@ -6505,6 +6525,7 @@ function applyHomeSidePanelState() {
 }
 
 async function refreshSpotterOverlay() {
+  if (document.hidden) return;
   if (!['radar', 'home'].includes(state.dataSource)) {
     clearOverlayLayer('spotterLayer');
     return;
@@ -6550,6 +6571,7 @@ async function refreshSpotterOverlay() {
 }
 
 async function refreshFeaturedChasers() {
+  if (document.hidden) return;
   if (!['home', 'radar'].includes(state.dataSource)) {
     if (state.featuredChaserLayer) {
       leafletMap.removeLayer(state.featuredChaserLayer);
@@ -6603,6 +6625,7 @@ async function refreshFeaturedChasers() {
 }
 
 async function refreshExternalOverlays() {
+  if (document.hidden) return;
   await Promise.all([
     refreshAlertOverlay(),
     refreshSpcOverlay(),
@@ -6670,6 +6693,7 @@ function showRadarFrame(idx) {
   markCaptureReady('radar');
   syncShareableDesktopUrl();
 
+  preloadAllDesktopFrames();
 }
 
 function radarStepForward() {
@@ -6930,6 +6954,7 @@ function showOverlay() {
   updateModelFrame();
   markCaptureReady('model');
   syncShareableDesktopUrl();
+  preloadAllDesktopFrames();
 }
 
 async function loadAvailability() {
@@ -7154,7 +7179,37 @@ function desktopFrameUrl(idx) {
 }
 
 // Preload all frames for the current product with priority on the next 6.
+let resumePlaybackWhenVisible = false;
+function handlePageVisibility() {
+  if (document.hidden) {
+    resumePlaybackWhenVisible = state.isPlaying;
+    pause();
+  } else {
+    preloadAllDesktopFrames();
+    _pumpQueue();
+    if (resumePlaybackWhenVisible) play();
+    resumePlaybackWhenVisible = false;
+  }
+}
+document.addEventListener('visibilitychange', handlePageVisibility);
+
+function frameWindow(count, current) {
+  if (!Number.isFinite(count) || count <= 0) return [];
+  current = Number.isFinite(current) ? current : 0;
+  return [...new Set([0, 1, 2, 3, 4, 5, 6, -1, -2]
+    .map(offset => ((current + offset) % count + count) % count))];
+}
+
+function trimPreloadCache() {
+  const keep = new Set(_productUrls);
+  for (const [url, status] of _imgCache) {
+    if (_imgCache.size <= 96) break;
+    if (status !== 'pending' && !keep.has(url)) _imgCache.delete(url);
+  }
+}
+
 function preloadAllDesktopFrames() {
+  if (document.hidden) return;
   clearLoadQueue();
   let totalCount = 0;
   let currentIdx = 0;
@@ -7174,17 +7229,9 @@ function preloadAllDesktopFrames() {
     return;
   }
 
-  _productUrls = [];
-  for (let i = 0; i < totalCount; i++) {
-    const url = desktopFrameUrl(i);
-    if (url) _productUrls.push(url);
-  }
-
-  // Prioritize next 6 frames so playback starts smoothly
-  const priority = _productUrls.filter((_, i) => i > currentIdx && i <= currentIdx + 6);
-  const rest     = _productUrls.filter((_, i) => i <= currentIdx || i > currentIdx + 6);
-  cacheFrames(priority, true);
-  cacheFrames(rest, false);
+  _productUrls = frameWindow(totalCount, currentIdx).map(desktopFrameUrl).filter(Boolean);
+  trimPreloadCache();
+  cacheFrames(_productUrls, true);
   updateLoadStatus();
 }
 
@@ -7901,6 +7948,7 @@ async function updateLegend() {
 }
 
 async function refreshModelStatus() {
+  if (document.hidden) return;
   if (state.dataSource !== 'models') return;
   try {
     const resp = await fetch(`${BASE}/api/dashboard`);
@@ -7979,6 +8027,7 @@ let _satStatusData = null;
 let _satStatusTab = 'goes19';
 
 async function refreshSatelliteStatus() {
+  if (document.hidden) return;
   try {
     const data = await apiFetch(`${BASE}/api/satellite/status`);
     _satStatusData = data;
@@ -8203,6 +8252,7 @@ async function init() {
     soundingProbeBtn.addEventListener('click', () => {
       setSoundingProbeEnabled(!state.soundingProbeEnabled);
       if (state.soundingProbeEnabled) {
+        window.WXMeteogram?.setEnabled(false);
         if (state.soundingPoint && state.soundingData) {
           if (soundingPanel) soundingPanel.classList.remove('hidden');
           if (soundingPanelTitle) soundingPanelTitle.textContent = formatLatLonLabel(state.soundingPoint);

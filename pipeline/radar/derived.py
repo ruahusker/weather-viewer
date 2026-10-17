@@ -211,7 +211,11 @@ def _derive_debris_flag(volume: VolumeData, target_tilt: float) -> SweepData | N
     return _make_sweep(debris, refl)
 
 
-def _derive_volume_reflectivity_products(volume: VolumeData) -> tuple[SweepData, list[np.ndarray], np.ndarray] | tuple[None, None, None]:
+def _derive_volume_reflectivity_products(volume: VolumeData) -> tuple[SweepData, np.ndarray, np.ndarray] | tuple[None, None, None]:
+    """Prepare the shared reflectivity column once per volume."""
+    cached = volume.derived_context.get("reflectivity_column")
+    if cached is not None:
+        return cached
     ref = extract_sweep(volume, "reflectivity", target_tilt=0.5, prefer_long_range=True)
     sweeps = extract_all_sweeps(volume, "reflectivity")
     if ref is None or not sweeps:
@@ -229,14 +233,16 @@ def _derive_volume_reflectivity_products(volume: VolumeData) -> tuple[SweepData,
 
     if not resampled:
         return None, None, None
-    return ref, resampled, np.asarray(heights, dtype=np.float32)
+    prepared = (ref, np.stack(resampled, axis=0), np.asarray(heights, dtype=np.float32))
+    volume.derived_context["reflectivity_column"] = prepared
+    return prepared
 
 
 def _derive_composite_reflectivity(volume: VolumeData) -> SweepData | None:
     ref, refl_stack, _ = _derive_volume_reflectivity_products(volume)
     if ref is None:
         return None
-    composite = np.nanmax(np.stack(refl_stack, axis=0), axis=0)
+    composite = np.nanmax(refl_stack, axis=0)
     return _make_sweep(composite, ref)
 
 
@@ -245,7 +251,7 @@ def _derive_echo_tops(volume: VolumeData) -> SweepData | None:
     if ref is None:
         return None
 
-    stack = np.stack(refl_stack, axis=0)
+    stack = refl_stack
     height_grid = np.broadcast_to(heights[:, None, :], stack.shape)
     topped = np.where(stack >= REFLECTIVITY_THRESHOLD_DBZ, height_grid, np.nan)
     echo_tops_kft = np.nanmax(topped, axis=0) * 3.28084
@@ -269,7 +275,7 @@ def _derive_vil(volume: VolumeData) -> SweepData | None:
         return _make_sweep(np.clip(liquid, 0.0, 80.0), ref)
 
     # Multiple tilts - use full vertical integration
-    stack = np.stack(refl_stack, axis=0)
+    stack = refl_stack
 
     # Sort levels by beam height and merge split cuts (two sweeps at the same
     # nominal elevation; the Doppler cut's reflectivity goes NaN beyond its

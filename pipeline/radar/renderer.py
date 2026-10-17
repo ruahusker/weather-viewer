@@ -2,6 +2,11 @@
 
 import json
 import logging
+import os
+import threading
+from functools import wraps
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -15,6 +20,39 @@ from .color_tables import FIELD_CONFIG, RADAR_PALETTE_VERSION
 from .config import RADAR_RENDERED_DIR, OUTPUT_SIZE, CC_CLUTTER_THRESHOLD, PNG_OPTIMIZE, FAST_RENDER_PRODUCTS
 
 logger = logging.getLogger(__name__)
+
+# Lossless zlib level 1: same decoded pixels as the default level, faster encode.
+PNG_COMPRESS_LEVEL = 1
+
+
+def _atomic_write_png(img, path: Path) -> None:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            img.save(fh, format="PNG", compress_level=PNG_COMPRESS_LEVEL)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 # Geometry cache: (n_gates, half_size) → (pixel_az_flat, gate_idx, valid_mask)
 # Contains the parts that depend only on grid geometry, not per-scan azimuths.
@@ -32,6 +70,56 @@ _GEOM_CACHE_MAX_ENTRIES = 8
 # (n_az, n_gates, size, az_hash, site_lat_r2, site_lon_r2, max_range_km) → (az_idx, gate_idx, valid_mask)
 _merc_lookup_cache: OrderedDict = OrderedDict()
 _MERC_LOOKUP_CACHE_MAX_ENTRIES = 16
+_merc_geometry_cache: OrderedDict = OrderedDict()
+_LOOKUP_CACHE_BYTES = max(16, int(os.getenv("RADAR_LOOKUP_CACHE_MB", "256"))) * 1024 ** 2
+_LOOKUP_LOCK = threading.RLock()
+
+
+def _serialize_lookup(function):
+    """Protect lookup construction and eviction in interactive API threads."""
+    @wraps(function)
+    def locked(*args, **kwargs):
+        with _LOOKUP_LOCK:
+            return function(*args, **kwargs)
+    return locked
+
+
+def _index_dtype(count: int):
+    """Choose an exact integer representation for valid ray/gate indices."""
+    return np.uint16 if count <= 65536 else np.uint32
+
+
+@_serialize_lookup
+def renderer_cache_bytes() -> int:
+    """Count unique array buffers, including geometry shared by lookups."""
+    seen = set()
+    total = 0
+    for cache in (_geom_cache, _full_lookup_cache, _merc_lookup_cache, _merc_geometry_cache):
+        for value in cache.values():
+            for array in value if isinstance(value, tuple) else (value,):
+                owner = array
+                while isinstance(owner.base, np.ndarray):
+                    owner = owner.base
+                if id(owner) not in seen:
+                    seen.add(id(owner))
+                    total += owner.nbytes
+    return total
+
+
+def _prune_renderer_caches() -> None:
+    """Keep cached geometry within a per-process byte budget."""
+    caches = (_geom_cache, _full_lookup_cache, _merc_lookup_cache, _merc_geometry_cache)
+    while renderer_cache_bytes() > _LOOKUP_CACHE_BYTES:
+        populated = [cache for cache in caches if cache]
+        if not populated:
+            break
+        # Evict from the largest cache first. Shared geometry is counted only
+        # once, and remains alive while a surviving lookup still uses it.
+        def size(cache):
+            return sum(sum(a.nbytes for a in v) if isinstance(v, tuple) else v.nbytes
+                       for v in cache.values())
+        cache = max(populated, key=size)
+        cache.pop(next(iter(cache)))
 
 
 def _prune_geom_cache() -> None:
@@ -64,16 +152,20 @@ def _cache_store_az_idx(full_key, az_idx: np.ndarray) -> None:
     _full_lookup_cache.move_to_end(full_key)
     while len(_full_lookup_cache) > _FULL_LOOKUP_CACHE_MAX_ENTRIES:
         _full_lookup_cache.popitem(last=False)
+    _prune_renderer_caches()
 
 
+@_serialize_lookup
 def clear_renderer_caches():
     """Clear all global geometry and lookup caches to reclaim memory."""
     _geom_cache.clear()
     _full_lookup_cache.clear()
     _merc_lookup_cache.clear()
+    _merc_geometry_cache.clear()
     logger.info("Radar renderer caches cleared")
 
 
+@_serialize_lookup
 def build_polar_lookup(n_az: int, n_gates: int, half_size: int,
                        az_array: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Precompute (y,x) → (az_index, gate_index) lookup tables.
@@ -101,6 +193,7 @@ def build_polar_lookup(n_az: int, n_gates: int, half_size: int,
         gate_idx = (r / half_size * n_gates).astype(np.int32)
         valid_mask = gate_idx < n_gates
         gate_idx[~valid_mask] = 0
+        gate_idx = gate_idx.astype(_index_dtype(n_gates))
 
         _geom_cache[geom_key] = (pixel_az_flat, gate_idx, valid_mask)
         _prune_geom_cache()
@@ -122,13 +215,14 @@ def build_polar_lookup(n_az: int, n_gates: int, half_size: int,
     d2 = np.minimum(d2, 360 - d2)
 
     best = np.where(d1 <= d2, insert_idx, prev_idx)
-    az_idx = sort_order[best].reshape(gate_idx.shape)
+    az_idx = sort_order[best].reshape(gate_idx.shape).astype(_index_dtype(n_az))
     az_idx[~valid_mask] = 0
 
     _cache_store_az_idx(full_key, az_idx)
     return az_idx, gate_idx, valid_mask
 
 
+@_serialize_lookup
 def build_polar_lookup_mercator(
     n_az: int, n_gates: int, size: int, az_array: np.ndarray,
     site_lat: float, site_lon: float, max_range_km: float,
@@ -142,15 +236,46 @@ def build_polar_lookup_mercator(
     geographic position by inverting the Mercator transform, then converts to
     radar polar coordinates.
     """
-    site_lat_r2 = round(site_lat, 2)
-    site_lon_r2 = round(site_lon, 2)
-    merc_key = (n_az, n_gates, size, _az_hash(az_array), site_lat_r2, site_lon_r2, max_range_km)
+    geom_key = (n_gates, size, site_lat, site_lon, max_range_km, north, south, west, east)
+    merc_key = (geom_key, n_az, _az_hash(az_array))
 
     cached = _merc_lookup_cache.get(merc_key)
     if cached is not None:
         _merc_lookup_cache.move_to_end(merc_key)
         return cached
 
+    geometry = _merc_geometry_cache.get(geom_key)
+    if geometry is None:
+        geometry = _build_mercator_geometry(n_gates, size, site_lat, site_lon,
+                                            max_range_km, north, south, west, east)
+        _merc_geometry_cache[geom_key] = geometry
+    _merc_geometry_cache.move_to_end(geom_key)
+    pixel_az_flat, gate_idx, valid_mask = geometry
+
+    sort_order = np.argsort(az_array)
+    sorted_az = az_array[sort_order]
+    insert_idx = np.clip(np.searchsorted(sorted_az, pixel_az_flat), 0, n_az - 1)
+    prev_idx = np.clip(insert_idx - 1, 0, n_az - 1)
+    d1 = np.abs(sorted_az[insert_idx] - pixel_az_flat)
+    d2 = np.abs(sorted_az[prev_idx] - pixel_az_flat)
+    d1 = np.minimum(d1, 360.0 - d1)
+    d2 = np.minimum(d2, 360.0 - d2)
+    best = np.where(d1 <= d2, insert_idx, prev_idx)
+    az_idx = sort_order[best].reshape(gate_idx.shape).astype(_index_dtype(n_az))
+    az_idx[~valid_mask] = 0
+    result = (az_idx, gate_idx, valid_mask)
+    _merc_lookup_cache[merc_key] = result
+    _merc_lookup_cache.move_to_end(merc_key)
+    while len(_merc_lookup_cache) > _MERC_LOOKUP_CACHE_MAX_ENTRIES:
+        _merc_lookup_cache.popitem(last=False)
+    _prune_renderer_caches()
+    return result
+
+
+def _build_mercator_geometry(n_gates: int, size: int, site_lat: float,
+                            site_lon: float, max_range_km: float, north: float,
+                            south: float, west: float, east: float):
+    """Build the site geometry independently of a scan's ray azimuths."""
     # Mercator Y at the north and south edges of the bounding box.
     # Leaflet maps row 0 → north, row size-1 → south, linearly in Mercator Y.
     merc_y_north = np.log(np.tan(np.pi / 4 + np.radians(north) / 2))
@@ -180,30 +305,7 @@ def build_polar_lookup_mercator(
     gate_idx = (r / max_range_km * n_gates).astype(np.int32)
     valid_mask = gate_idx < n_gates
     gate_idx[~valid_mask] = 0
-
-    # Nearest-neighbor azimuth matching (same logic as build_polar_lookup)
-    sort_order = np.argsort(az_array)
-    sorted_az = az_array[sort_order]
-    insert_idx = np.searchsorted(sorted_az, pixel_az_flat)
-    insert_idx = np.clip(insert_idx, 0, len(sorted_az) - 1)
-    prev_idx = np.clip(insert_idx - 1, 0, len(sorted_az) - 1)
-
-    d1 = np.abs(sorted_az[insert_idx] - pixel_az_flat)
-    d2 = np.abs(sorted_az[prev_idx] - pixel_az_flat)
-    d1 = np.minimum(d1, 360.0 - d1)
-    d2 = np.minimum(d2, 360.0 - d2)
-
-    best = np.where(d1 <= d2, insert_idx, prev_idx)
-    az_idx = sort_order[best].reshape(gate_idx.shape)
-    az_idx[~valid_mask] = 0
-
-    result = (az_idx, gate_idx, valid_mask)
-    _merc_lookup_cache[merc_key] = result
-    _merc_lookup_cache.move_to_end(merc_key)
-    while len(_merc_lookup_cache) > _MERC_LOOKUP_CACHE_MAX_ENTRIES:
-        _merc_lookup_cache.popitem(last=False)
-
-    return result
+    return pixel_az_flat, gate_idx.astype(_index_dtype(n_gates)), valid_mask
 
 
 def render_sweep_to_png(data: np.ndarray,
@@ -215,8 +317,12 @@ def render_sweep_to_png(data: np.ndarray,
                         output_size: int = 1800,
                         cc_data: Optional[np.ndarray] = None,
                         cc_threshold: float = 0.3,
-                        bounds: Optional[dict] = None) -> Image.Image:
-    """Render one sweep to a transparent RGBA PIL Image.
+                        bounds: Optional[dict] = None,
+                        indexed: bool = False) -> Image.Image:
+    """Render one sweep to a transparent PIL image, RGBA by default.
+
+    Internal PNG writers can request an exact indexed image with ``indexed``;
+    a full RGBA image is retained when no palette entry can hold missing data.
 
     When ``bounds`` is provided (a dict with north/south/east/west/max_range_km/
     center_lat/center_lon keys as returned by ``radar_bounds``), pixels are mapped
@@ -265,13 +371,41 @@ def render_sweep_to_png(data: np.ndarray,
         pixel_mask &= raw_data > mask_below
 
     normalized = np.clip((raw_data - vmin) / (vmax - vmin), 0, 1)
-    indices = (normalized * 255).astype(np.int32)
-    indices = np.clip(indices, 0, 255)
+    indices = (normalized * 255).astype(np.uint8)
+    if indexed:
+        image = _indexed_radar_image(indices, lut, pixel_mask)
+        if image is not None:
+            return image
 
     rgba = lut[indices]
     rgba[~pixel_mask] = [0, 0, 0, 0]
 
     return Image.fromarray(rgba, 'RGBA')
+
+
+def _indexed_radar_image(indices: np.ndarray, lut: np.ndarray,
+                         pixel_mask: np.ndarray) -> Optional[Image.Image]:
+    """Encode exact lookup colors and transparency in one byte per pixel.
+
+    An unused palette entry can represent missing data. If every entry is
+    needed and the LUT has no transparent black, preserve the RGBA format.
+    """
+    transparent = np.flatnonzero(np.all(lut == 0, axis=1))
+    if transparent.size:
+        transparent_index = int(transparent[0])
+    else:
+        used = np.bincount(indices[pixel_mask], minlength=256)
+        unused = np.flatnonzero(used == 0)
+        if not unused.size:
+            return None
+        transparent_index = int(unused[0])
+        lut = lut.copy()
+        lut[transparent_index] = 0
+    indices[~pixel_mask] = transparent_index
+    image = Image.fromarray(indices, 'P')
+    image.putpalette(lut[:, :3].tobytes())
+    image.info['transparency'] = lut[:, 3].tobytes()
+    return image
 
 
 def radar_bounds(site_lat: float, site_lon: float, max_range_km: float) -> dict:
@@ -323,6 +457,52 @@ class Level2Renderer:
         self.meta_dir = self.output_dir / "meta"
         self.png_dir.mkdir(parents=True, exist_ok=True)
         self.meta_dir.mkdir(parents=True, exist_ok=True)
+        self._writer = None
+        self._pending_writes = []
+        self._async_writes = False
+
+    def _get_writer(self):
+        if self._writer is None:
+            self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="radar-png")
+        return self._writer
+
+    @staticmethod
+    def _write_outputs(img, png_path, meta_path, meta_text, fname,
+                       latest_png, latest_meta) -> None:
+        """Write PNG, then metadata, then latest symlinks (each atomically)."""
+        _atomic_write_png(img, png_path)
+        _atomic_write_text(meta_path, meta_text)
+        # On-demand upper elevations must not replace the public lowest-tilt image.
+        if latest_png is not None:
+            for link, target in ((latest_png, fname),
+                                 (latest_meta, fname.replace(".png", ".json"))):
+                tmp_link = link.with_name(f".{link.name}.{os.getpid()}.tmp")
+                try:
+                    tmp_link.unlink(missing_ok=True)
+                    tmp_link.symlink_to(target)
+                    os.replace(tmp_link, link)
+                except OSError:
+                    tmp_link.unlink(missing_ok=True)
+
+    def flush_writes(self) -> int:
+        """Wait for all queued PNG writes. Returns number of failed writes (logged)."""
+        pending, self._pending_writes = self._pending_writes, []
+        return sum(0 if self._wait_write(label, fut) else 1 for label, fut in pending)
+
+    @staticmethod
+    def _wait_write(label, fut) -> bool:
+        try:
+            fut.result()
+            return True
+        except Exception as e:
+            logger.error(f"PNG write failed for {label}: {e}")
+            return False
+
+    def close(self) -> None:
+        self.flush_writes()
+        if self._writer is not None:
+            self._writer.shutdown(wait=True)
+            self._writer = None
 
     def render_product(self, sweep, site: str, field: str,
                        timestamp: str, site_lat: float, site_lon: float,
@@ -371,6 +551,7 @@ class Level2Renderer:
                 cc_data=cc_for_filter,
                 cc_threshold=CC_CLUTTER_THRESHOLD,
                 bounds=bounds,
+                indexed=True,
             )
         except Exception as e:
             logger.error(f"Render failed for {site}/{field}: {e}")
@@ -382,7 +563,6 @@ class Level2Renderer:
         png_path = self.png_dir / fname
         meta_path = self.meta_dir / fname.replace(".png", ".json")
 
-        img.save(png_path, optimize=PNG_OPTIMIZE)
         meta = {
             "site": site,
             "field": field,
@@ -398,19 +578,19 @@ class Level2Renderer:
             "gates": sweep.n_gates,
             "max_range_km": sweep.max_range_km,
         }
-        meta_path.write_text(json.dumps(meta, indent=2, cls=_NumpyEncoder))
-
-        # On-demand upper elevations must not replace the public lowest-tilt image.
+        meta_text = json.dumps(meta, indent=2, cls=_NumpyEncoder)
         latest_png = self.png_dir / f"{site}_{cfg['short']}_latest.png"
         latest_meta = self.meta_dir / f"{site}_{cfg['short']}_latest.json"
-        if update_latest:
-            latest_png.unlink(missing_ok=True)
-            latest_meta.unlink(missing_ok=True)
-            try:
-                latest_png.symlink_to(fname)
-                latest_meta.symlink_to(fname.replace(".png", ".json"))
-            except OSError:
-                pass
+        args = (img, png_path, meta_path, meta_text, fname,
+                latest_png if update_latest else None, latest_meta)
+        if self._async_writes:
+            # Bound queued images (indexed: ~6 MB; RGBA fallback: ~23 MB) to keep worker memory flat.
+            while len(self._pending_writes) >= 2:
+                self._wait_write(*self._pending_writes.pop(0))
+            self._pending_writes.append(
+                (f"{site}/{field}", self._get_writer().submit(self._write_outputs, *args)))
+        else:
+            self._write_outputs(*args)
 
         return RenderedRadar(
             png_path=png_path,
@@ -434,9 +614,17 @@ class Level2Renderer:
         Returns:
             List of RenderedRadar results
         """
-        from .derived import extract_radar_product
-
         results = []
+        self._async_writes = True
+        try:
+            results = self._render_lowest_tilt_products(volume, site, timestamp, results)
+        finally:
+            self._async_writes = False
+            self.flush_writes()
+        return [r for r in results if r.png_path.exists() and r.meta_path.exists()]
+
+    def _render_lowest_tilt_products(self, volume, site, timestamp, results):
+        from .derived import extract_radar_product
         # Filter to fast-mode subset if configured
         fields = FIELD_CONFIG
         if FAST_RENDER_PRODUCTS is not None:

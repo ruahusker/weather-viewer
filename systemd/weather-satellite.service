@@ -8,6 +8,10 @@ User=wx
 Group=wx
 WorkingDirectory=/home/main/weather-viewer
 Environment="PYTHONPATH=/home/main/weather-viewer"
+Environment="OPENBLAS_NUM_THREADS=1"
+Environment="OMP_NUM_THREADS=1"
+Environment="MKL_NUM_THREADS=1"
+Environment="NUMEXPR_NUM_THREADS=1"
 Environment="MPLBACKEND=Agg"
 Environment="MALLOC_MMAP_THRESHOLD_=131072"
 Environment="MALLOC_TRIM_THRESHOLD_=131072"

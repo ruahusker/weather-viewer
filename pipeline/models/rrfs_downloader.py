@@ -1,20 +1,12 @@
-"""
-RRFS (Rapid Refresh Forecast System) direct S3 downloader.
+"""Download deterministic RRFS CONUS fields from NOAA's current S3 feed.
 
-Herbie's RRFS template is outdated — the S3 bucket structure changed from
-``rrfs_a.{date}`` to ``rrfsens.{date}`` and filenames now include the member
-identifier and ``3km`` resolution tag.
-
-Actual S3 path (as of 2026-03):
-  s3://noaa-rrfs-pds/rrfs_a/rrfsens.{YYYYMMDD}/{HH}/m001/
-      rrfs.t{HH}z.m001.prslev.3km.f{FFF}.conus.grib2
-      rrfs.t{HH}z.m001.prslev.3km.f{FFF}.conus.grib2.idx
-
-This module downloads subsets via HTTP range requests using the .idx file,
-identical to the approach Herbie uses internally.
+The prototype ensemble-member bucket stopped updating in August 2026. The
+current feed stores pressure-level and 2D fields in separate indexed GRIBs;
+both are needed for the viewer's existing RRFS parameters.
 """
 
 import logging
+import os
 import re
 import urllib.request
 from datetime import datetime
@@ -26,36 +18,43 @@ from ..config import GRIB_CACHE_DIR
 logger = logging.getLogger(__name__)
 
 # Public HTTPS endpoint for the S3 bucket (no auth needed)
-BASE_URL = "https://noaa-rrfs-pds.s3.amazonaws.com"
+BASE_URL = "https://noaa-rrfs-ops-pds.s3.amazonaws.com"
 
-# Default ensemble member (m001 is always present; no "control" directory)
-DEFAULT_MEMBER = "m001"
+PRODUCTS = ("prslev", "2dfld")
 
 # Available run hours
 RUN_HOURS = [0, 6, 12, 18]
 
 
-def _build_url(run_dt: datetime, fxx: int, member: str = DEFAULT_MEMBER) -> str:
+def _build_url(run_dt: datetime, fxx: int, product: str = "prslev") -> str:
     """Build the HTTPS URL for an RRFS CONUS prslev GRIB file."""
     date_str = run_dt.strftime("%Y%m%d")
     hour_str = run_dt.strftime("%H")
-    filename = f"rrfs.t{hour_str}z.{member}.prslev.3km.f{fxx:03d}.conus.grib2"
-    return f"{BASE_URL}/rrfs_a/rrfsens.{date_str}/{hour_str}/{member}/{filename}"
+    filename = f"rrfs.t{hour_str}z.{product}.3km.f{fxx:03d}.conus.grib2"
+    return f"{BASE_URL}/rrfs.{date_str}/{hour_str}/{filename}"
 
 
-def _build_idx_url(run_dt: datetime, fxx: int, member: str = DEFAULT_MEMBER) -> str:
-    return _build_url(run_dt, fxx, member) + ".idx"
+def _build_idx_url(run_dt: datetime, fxx: int, product: str = "prslev") -> str:
+    return _build_url(run_dt, fxx, product) + ".idx"
 
 
 def check_availability(run_dt: datetime, fxx: int = 0) -> bool:
-    """Check if RRFS data exists for a given run/fxx via HEAD request on idx."""
-    url = _build_idx_url(run_dt, fxx)
-    try:
-        req = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
+    """Check whether both source products exist for a forecast hour."""
+    for product in PRODUCTS:
+        url = _build_idx_url(run_dt, fxx, product)
+        try:
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status != 200:
+                    return False
+        except HTTPError as exc:
+            if exc.code != 404:
+                logger.warning("[RRFS] Availability check failed for %s: %s", url, exc)
+            return False
+        except Exception as exc:
+            logger.warning("[RRFS] Availability check failed for %s: %s", url, exc)
+            return False
+    return True
 
 
 def _parse_idx(idx_text: str) -> list[tuple[int, int, str]]:
@@ -99,7 +98,7 @@ def _download_ranges(grib_url: str, ranges: list[tuple[int, int]],
     """Download specific byte ranges from a GRIB file and write to output_path."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, "wb") as f:
+    with open(output_path, "ab") as f:
         for start, end in ranges:
             if end == -1:
                 range_header = f"bytes={start}-"
@@ -117,8 +116,7 @@ def _download_ranges(grib_url: str, ranges: list[tuple[int, int]],
 
 
 def download_forecast_hour(run_dt: datetime, fxx: int,
-                           search_patterns: list[str],
-                           member: str = DEFAULT_MEMBER) -> Path | None:
+                           search_patterns: list[str]) -> Path | None:
     """Download an RRFS subset for one forecast hour using idx-based ranging.
 
     search_patterns: list of wgrib2 search strings (e.g. ":TMP:2 m above ground:")
@@ -135,33 +133,42 @@ def download_forecast_hour(run_dt: datetime, fxx: int,
     if output_path.exists() and output_path.stat().st_size > 0:
         return output_path
 
-    # Fetch the idx file
-    idx_url = _build_idx_url(run_dt, fxx, member)
+    source_ranges: list[tuple[str, list[tuple[int, int]]]] = []
+    for product in PRODUCTS:
+        idx_url = _build_idx_url(run_dt, fxx, product)
+        try:
+            with urllib.request.urlopen(idx_url, timeout=15) as resp:
+                idx_text = resp.read().decode("utf-8")
+        except HTTPError as exc:
+            if exc.code != 404:
+                logger.warning("[RRFS] idx fetch failed for %s: %s", idx_url, exc)
+            return None
+        except Exception as exc:
+            logger.warning("[RRFS] idx fetch failed for %s: %s", idx_url, exc)
+            return None
+
+        records = _parse_idx(idx_text)
+        if not records:
+            logger.warning("[RRFS] Empty %s idx for fxx=%03d", product, fxx)
+            return None
+        source_ranges.append((product, _match_records(records, search_patterns)))
+
+    if not any(ranges for _, ranges in source_ranges):
+        logger.warning("[RRFS] No matching records for fxx=%03d", fxx)
+        return None
+
+    partial_path = output_path.with_suffix(".grib2.part")
+    partial_path.unlink(missing_ok=True)
     try:
-        with urllib.request.urlopen(idx_url, timeout=15) as resp:
-            idx_text = resp.read().decode("utf-8")
-    except Exception as exc:
-        logger.debug("[RRFS] idx not available for %s fxx=%03d: %s", hour_str, fxx, exc)
-        return None
-
-    records = _parse_idx(idx_text)
-    if not records:
-        logger.warning("[RRFS] Empty idx for fxx=%03d", fxx)
-        return None
-
-    ranges = _match_records(records, search_patterns)
-    if not ranges:
-        logger.warning("[RRFS] No matching records in idx for fxx=%03d", fxx)
-        return None
-
-    grib_url = _build_url(run_dt, fxx, member)
-    logger.info("[RRFS] Downloading fxx=%03d (%d fields, %d ranges)",
-                fxx, len(search_patterns), len(ranges))
-
-    if _download_ranges(grib_url, ranges, output_path):
+        for product, ranges in source_ranges:
+            if not ranges:
+                continue
+            logger.info("[RRFS] Downloading %s fxx=%03d (%d ranges)",
+                        product, fxx, len(ranges))
+            if not _download_ranges(_build_url(run_dt, fxx, product), ranges, partial_path):
+                return None
+        os.replace(partial_path, output_path)
         logger.info("[RRFS] Downloaded fxx=%03d → %s", fxx, output_path.name)
         return output_path
-
-    # Clean up partial file
-    output_path.unlink(missing_ok=True)
-    return None
+    finally:
+        partial_path.unlink(missing_ok=True)

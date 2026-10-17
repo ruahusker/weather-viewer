@@ -12,6 +12,7 @@ import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +39,16 @@ from .goes_downloader import GOESDownloader, GOESFile
 _transformer_cache: dict = {}
 # (data.shape, sat_lon_r, target_w, target_h) -> (flat_indices np.int32, valid_mask bool)
 _regrid_index_cache: dict = {}
+_REGRID_LOCK = threading.RLock()
+
+
+def _serialize_regrid(function):
+    """Avoid concurrent cold geometry builds and eviction during regridding."""
+    @wraps(function)
+    def locked(*args, **kwargs):
+        with _REGRID_LOCK:
+            return function(*args, **kwargs)
+    return locked
 # (target_w, target_h) -> bool ndarray (True = inside USA)
 _sat_usa_mask_cache: dict = {}
 
@@ -824,6 +835,7 @@ class SatelliteRenderer:
         normalized = (data - vmin) / (vmax - vmin)
         return np.clip(normalized, 0, 1)
     
+    @_serialize_regrid
     def render_to_mercator(
         self,
         data: np.ndarray,
@@ -1169,7 +1181,7 @@ class SatelliteRenderer:
                 0,
                 1,
             )
-        rgba = (cmap_obj(normalized) * 255).astype(np.uint8)
+        rgba = cmap_obj(normalized, bytes=True)
         nan_mask = np.isnan(out)
 
         # For products that should read as full fields, softly extend colors
@@ -1287,6 +1299,7 @@ class SatelliteRenderer:
     # GOES East + West compositing
     # ------------------------------------------------------------------
 
+    @_serialize_regrid
     def reproject_to_array(
         self,
         data: np.ndarray,
@@ -1775,6 +1788,7 @@ class SatelliteRenderer:
         cold_alpha = cold_alpha[..., np.newaxis]
         return np.clip(base * (1.0 - cold_alpha) + enhanced * cold_alpha, 0, 1)
 
+    @_serialize_regrid
     def render_rgb_mercator(
         self,
         rgb: np.ndarray,
@@ -1804,69 +1818,49 @@ class SatelliteRenderer:
             sat_height = 35786023.0
             sweep = "x"
 
-        x_rad = dataset["x"].values
-        y_rad = dataset["y"].values
-        x_m = x_rad * sat_height
-        y_m = y_rad * sat_height
-
-        x_grid, y_grid = np.meshgrid(x_m, y_m)
-
-        sweep_param = f"+sweep={sweep}"
-        proj_string = (
-            f"+proj=geos +h={sat_height} +lon_0={sat_lon} "
-            f"{sweep_param} +ellps=WGS84 +units=m +no_defs"
-        )
-        transformer = Transformer.from_crs(proj_string, "EPSG:4326", always_xy=True)
-        lon_src, lat_src = transformer.transform(x_grid, y_grid)
-
-        # Target Mercator grid (same domain as model renderer)
         _DATA_SOUTH, _DATA_NORTH = 15.0, 52.0
         _DATA_WEST, _DATA_EAST = -145.0, -50.0
-
-        def _lat_to_merc(lat):
-            lat_rad = np.radians(np.clip(lat, -85, 85))
-            return np.degrees(np.log(np.tan(np.pi / 4 + lat_rad / 2)))
-
         _MERC_SOUTH = float(_lat_to_merc(_DATA_SOUTH))
         _MERC_NORTH = float(_lat_to_merc(_DATA_NORTH))
-
         target_w = 1200
         target_h = int(target_w * (_MERC_NORTH - _MERC_SOUTH) / (_DATA_EAST - _DATA_WEST))
-
-        lon_target = np.linspace(_DATA_WEST, _DATA_EAST, target_w)
-        merc_target = np.linspace(_MERC_NORTH, _MERC_SOUTH, target_h)
-        lat_target = np.degrees(2 * np.arctan(np.exp(np.radians(merc_target))) - np.pi / 2)
-        lon_grid_t, lat_grid_t = np.meshgrid(lon_target, lat_target)
-
-        # Build source validity mask: a pixel is valid only when all 3 channels finite
-        if rgb.ndim == 3:
-            valid_src = np.all(np.isfinite(rgb), axis=-1).ravel()
-        else:
-            valid_src = np.ones(lon_src.size, dtype=bool)
-
+        valid_src = np.all(np.isfinite(rgb), axis=-1).ravel()
         if valid_src.sum() < 100:
-            logger.warning("Not enough valid source pixels for RGB Mercator reprojection")
-            # Return a blank transparent image
             blank = np.zeros((target_h, target_w, 4), dtype=np.uint8)
             output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
             Image.fromarray(blank, "RGBA").save(str(output_path), compress_level=1)
             return {"west": _DATA_WEST, "east": _DATA_EAST,
                     "south": _DATA_SOUTH, "north": _DATA_NORTH}
-
-        src_coords = np.column_stack([
-            lon_src.ravel()[valid_src],
-            lat_src.ravel()[valid_src],
-        ])
-        src_rgb = rgb.reshape(-1, 3)[valid_src]  # (N, 3)
-
-        tree = cKDTree(src_coords)
-        target_coords = np.column_stack([lon_grid_t.ravel(), lat_grid_t.ravel()])
-        distances, indices = tree.query(target_coords, k=1, distance_upper_bound=0.15)
-
-        # Build reprojected RGB array (float32, 0-1)
+        x_rad, y_rad = dataset["x"].values, dataset["y"].values
+        geometry_digest = hashlib.sha1(x_rad.tobytes() + y_rad.tobytes()).hexdigest()
+        validity_digest = hashlib.sha1(np.packbits(valid_src).tobytes()).hexdigest()
+        key = ("rgb", rgb.shape[:2], sat_lon, sat_height, sweep, target_w, target_h,
+               geometry_digest, validity_digest)
+        mapping = _regrid_cache_get(key)
+        if mapping is None:
+            x_grid, y_grid = np.meshgrid(x_rad * sat_height, y_rad * sat_height)
+            transformer = Transformer.from_crs(
+                f"+proj=geos +h={sat_height} +lon_0={sat_lon} +sweep={sweep} +ellps=WGS84 +units=m +no_defs",
+                "EPSG:4326", always_xy=True,
+            )
+            lon_src, lat_src = transformer.transform(x_grid, y_grid)
+            src_coords = np.column_stack([lon_src.ravel()[valid_src], lat_src.ravel()[valid_src]])
+            lon_target = np.linspace(_DATA_WEST, _DATA_EAST, target_w)
+            merc_target = np.linspace(_MERC_NORTH, _MERC_SOUTH, target_h)
+            lat_target = np.degrees(2 * np.arctan(np.exp(np.radians(merc_target))) - np.pi / 2)
+            lon_grid_t, lat_grid_t = np.meshgrid(lon_target, lat_target)
+            tree = cKDTree(src_coords)
+            distances, indices = tree.query(np.column_stack([lon_grid_t.ravel(), lat_grid_t.ravel()]),
+                                            k=1, distance_upper_bound=0.15)
+            valid_matches = distances < np.inf
+            flat_indices = np.zeros(target_h * target_w, dtype=np.int32)
+            source_indices = np.flatnonzero(valid_src)
+            flat_indices[valid_matches] = source_indices[indices[valid_matches]]
+            _regrid_cache_put(key, flat_indices, valid_matches)
+            mapping = flat_indices, valid_matches
+        flat_indices, valid_matches = mapping
         rgb_out = np.zeros((target_h * target_w, 3), dtype=np.float32)
-        valid_matches = distances < np.inf
-        rgb_out[valid_matches] = src_rgb[indices[valid_matches]]
+        rgb_out[valid_matches] = rgb.reshape(-1, 3)[flat_indices[valid_matches]]
         rgb_out = rgb_out.reshape((target_h, target_w, 3))
 
         # No-data mask (pixels that had no nearby source)
@@ -2115,7 +2109,7 @@ class SatelliteRenderer:
         valid_mask = ~np.isnan(data)
         data_filled = np.where(valid_mask, data, vmin)
         
-        rgba = (cmap_obj(norm(data_filled)) * 255).astype(np.uint8)
+        rgba = cmap_obj(norm(data_filled), bytes=True)
         rgba[~valid_mask, 3] = 0  # Transparent for NaN
 
         # Clean inner-edge feather — no fill outside domain
@@ -2151,6 +2145,7 @@ class SatelliteRenderer:
             band=band_num,
         )
 
+    @_serialize_regrid
     def render_to_mercator_cmip(
         self,
         data: np.ndarray,
