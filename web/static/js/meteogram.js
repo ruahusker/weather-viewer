@@ -666,11 +666,11 @@
   els.button.addEventListener('click', function onMeteogramButtonClick() {
     setEnabled(!mg.enabled);
     // The panel stays closed until a map click so it never hides the map
-    // the user is about to click; re-enabling restores the last point.
-    if (mg.enabled && mg.point && mg.results.size) {
-      els.panel.classList.remove('hidden');
-      placeMarker();
-      scheduleRender();
+    // the user is about to click. Turning the probe on always starts fresh,
+    // so the next click picks a new spot instead of reopening the last one.
+    if (mg.enabled) {
+      mg.point = null;
+      mg.results = new Map();
     }
   });
   els.close.addEventListener('click', function onMeteogramClose() {
