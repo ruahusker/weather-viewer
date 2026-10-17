@@ -421,3 +421,4 @@ scoped to that attribute, so the classic styles stay intact underneath.
 - `css/mobile-v4.css` + `js/mobile-ui-v4.js` (phone): source pills, bottom dock
 - `css/monitor-v4.css` (monitor): `dashboard.html` must stay identical on the Mac host
 - Fonts: self-hosted Geist / Geist Mono in `static/fonts/` (SIL OFL)
+- Reference screenshots of every main page: `docs/ui-v4-thumbnails.png`
