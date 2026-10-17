@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE_NAME = 'wx-pwa-v57';
+const CACHE_NAME = 'wx-pwa-v58';
 const IMAGE_CACHE = `${CACHE_NAME}-images`;
 const MAX_IMAGES = 96;
 const MAX_SHELL_ENTRIES = 80;
@@ -15,7 +15,7 @@ const SHELL_ASSETS = [
   '/static/js/pressure-contours.js?v=20261008f',
   '/static/js/map-capture.js?v=20261008e',
   '/static/js/viewer-ui.js?v=20261008g',
-  '/static/js/mobile.js?v=20261017-shading1',
+  '/static/js/mobile.js?v=20261017-barbs1',
   '/static/js/mobile-sounding.js?v=43',
   '/static/js/surface-obs.js?v=20261014a',
   '/static/manifest.json',

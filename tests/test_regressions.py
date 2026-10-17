@@ -377,6 +377,69 @@ class WindRenderTests(unittest.TestCase):
         import matplotlib.pyplot as plt
         plt.close(fig)
 
+    def test_gust_barbs_point_along_10m_wind_at_gust_speed(self):
+        renderer = OverlayRenderer()
+        lat, lon = np.meshgrid(np.linspace(30, 40, 4), np.linspace(-100, -90, 4), indexing='ij')
+        gust = np.full((4, 4), 50.0)
+        u = np.full((4, 4), 18.0)
+        v = np.full((4, 4), 24.0)          # sustained 30 mph from the SW
+        u[0, 0] = v[0, 0] = 0.2            # near calm: no direction, no barb
+        field = lambda data: {'data': data, 'lat': lat, 'lon': lon}
+        with patch.object(renderer, '_render_wind_overlay', return_value=True) as wind:
+            self.assertTrue(renderer._render_barb_product(
+                'wind_gusts', field(gust), field(u), field(v), Path('/tmp/unused.png')))
+        _, speed, bu, bv, _ = wind.call_args.args
+        self.assertIs(speed['data'], gust)
+        np.testing.assert_allclose(np.hypot(bu['data'], bv['data'])[1:, 1:], 50.0, rtol=1e-5)
+        np.testing.assert_allclose((bu['data'] / bv['data'])[1:, 1:], 0.75, rtol=1e-5)
+        self.assertTrue(np.isnan(bu['data'][0, 0]) and np.isnan(bv['data'][0, 0]))
+
+    def test_max_wind_barbs_use_their_own_components_and_fall_back_to_shading(self):
+        renderer = OverlayRenderer()
+        lat, lon = np.meshgrid(np.linspace(30, 40, 4), np.linspace(-100, -90, 4), indexing='ij')
+        f = lambda data: {'data': data, 'lat': lat, 'lon': lon}
+        speed, u, v = f(np.full((4, 4), 40.0)), f(np.full((4, 4), 24.0)), f(np.full((4, 4), 32.0))
+        with patch.object(renderer, '_render_wind_overlay', return_value=True) as wind:
+            renderer._render_barb_product('max_wind', speed, u, v, Path('/tmp/unused.png'))
+        self.assertIs(wind.call_args.args[2], u)
+        with patch.object(renderer, '_render_wind_overlay', side_effect=RuntimeError('boom')), \
+             patch.object(renderer, 'render_overlay', return_value=True) as shading:
+            self.assertTrue(renderer._render_barb_product('max_wind', speed, u, v, Path('/tmp/unused.png')))
+        shading.assert_called_once()
+
+    def test_barb_products_publish_wind_svg_and_split_workers_get_components(self):
+        from pipeline.unified_scheduler import _expand_chunk_fields
+        keys = {'wind_gusts', 'ugrd_10m', 'vgrd_10m', 'max_wind', 'maxuw_10m', 'maxvw_10m', 'temp_2m'}
+        self.assertEqual(_expand_chunk_fields(['wind_gusts'], keys), {'wind_gusts', 'ugrd_10m', 'vgrd_10m'})
+        self.assertEqual(_expand_chunk_fields(['max_wind'], keys), {'max_wind', 'maxuw_10m', 'maxvw_10m'})
+        with tempfile.TemporaryDirectory() as tmp, TestClient(api.app) as client:
+            run = Path(tmp) / 'hrrr' / '2026101719'
+            for param in ('wind_gusts', 'max_wind'):
+                (run / param).mkdir(parents=True)
+                (run / param / 'f03.png').touch()
+                (run / param / 'f03.wind.svg').touch()
+            with patch.object(api, 'RENDERED_DIR', Path(tmp)):
+                response = client.get('/api/available/hrrr/2026101719/vectors')
+            self.assertEqual(response.json(), {'wind_gusts': [3], 'max_wind': [3]})
+
+
+class PrecipAccumulationTests(unittest.TestCase):
+    def test_12h_precip_is_accumulation_since_12_hours_earlier(self):
+        from pipeline.processor import FieldProcessor, SNOW_PRODUCTS
+        self.assertEqual(SNOW_PRODUCTS['precip_12h'], {'hours': 12, 'method': 'liquid'})
+        proc = FieldProcessor()
+        lat = lon = np.zeros((2, 2))
+        result = {'_precip_meta': {'lat': lat, 'lon': lon, 'valid_time': None}}
+        current = np.array([[3.0, 1.0], [0.5, 0.0]])
+        earlier = np.array([[1.0, 1.0], [0.6, 0.0]])
+        with patch.object(proc, '_load_raw_precip', return_value=earlier) as load, \
+             patch.object(proc, 'load_field', return_value=None):
+            proc._compute_snow_products(result, Path('f18.grib2'), 18, {6: Path('f06.grib2')},
+                                        accum_precip_inches=current)
+        load.assert_called_with(Path('f06.grib2'))
+        np.testing.assert_allclose(result['precip_12h']['data'], [[2.0, 0.0], [0.0, 0.0]])
+        self.assertEqual(api._RENDER_UNDER_VMIN['precip_12h'], 0.01)
+
 if __name__ == '__main__':
     unittest.main()
 

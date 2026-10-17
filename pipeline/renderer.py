@@ -155,6 +155,9 @@ MERC_NORTH = float(_lat_to_merc(DATA_NORTH))
 # Minimum output width for matplotlib params (contours/barbs need decent res)
 _MPL_MIN_WIDTH = 1800
 
+# Surface wind products: shading and barb components arrive in mph.
+_SURFACE_WIND_PARAMS = {"wind_speed", "wind_gusts", "max_wind"}
+
 _WIND_BARB_STYLE = {
     "barb_color": "#edf6ff",
     "barb_lw": 0.55,
@@ -969,7 +972,7 @@ class OverlayRenderer:
             if cfg.get("reverse"):
                 cmap = cmap.reversed()
             _UNDER_PARAMS = {
-                "precip": 0.01, "cape": 250, "mlcape": 250, "mucape": 250,
+                "precip": 0.01, "precip_12h": 0.01, "cape": 250, "mlcape": 250, "mucape": 250,
                 "cape_03km": 100,
                 "srh_01km": 25, "srh_03km": 25,
                 "shear_06km": 5, "shear_01km": 5,
@@ -1801,7 +1804,7 @@ class OverlayRenderer:
         - Barb density is tuned per level: fewer barbs at upper levels
           where flow is smoother; more at surface where detail matters.
         """
-        if param == "wind_speed":
+        if param in _SURFACE_WIND_PARAMS:
             return {
                 "fill_floor": 5.0,
                 "barb_floor": 10.0,  # surface speed shading is in mph
@@ -1931,6 +1934,35 @@ class OverlayRenderer:
         result[~valid & (smooth_weights < 0.05)] = np.nan
         return result
 
+    def _render_barb_product(self, param, speed_dict, u_dict, v_dict, output_path):
+        """Shade a scalar wind product and add barbs (BARB_COMPONENTS).
+
+        Wind Gusts take their direction from the 10 m wind and are scaled to the
+        gust speed, so a barb reads "gusts to N kt from this direction". Where
+        the sustained wind is near calm the direction is undefined and no barb
+        is drawn.
+        """
+        speed = np.asarray(speed_dict["data"])
+        if np.shape(u_dict["data"]) != speed.shape or np.shape(v_dict["data"]) != speed.shape:
+            logger.warning("%s barbs skipped: component grid differs from speed grid", param)
+            return self.render_overlay(param, speed_dict, output_path)
+        try:
+            if param == "wind_gusts":
+                u = np.asarray(u_dict["data"], dtype=np.float32)
+                v = np.asarray(v_dict["data"], dtype=np.float32)
+                sustained = np.hypot(u, v)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    scale = np.where(sustained >= 1.0, speed.astype(np.float32) / sustained, np.nan)
+                u_dict = {**u_dict, "data": u * scale}
+                v_dict = {**v_dict, "data": v * scale}
+            return self._render_wind_overlay(param, speed_dict, u_dict, v_dict, output_path)
+        except Exception as exc:
+            # Never lose the product over its barbs: fall back to plain shading.
+            logger.warning("%s barb overlay failed, rendering shading only: %s", param, exc)
+            for leftover in (output_path, output_path.with_suffix(".wind.svg")):
+                Path(leftover).unlink(missing_ok=True)
+            return self.render_overlay(param, speed_dict, output_path)
+
     def _render_wind_overlay(self, param, speed_dict, u_dict, v_dict, output_path, contour_param=None, contour_dict=None):
         """Render a professional-style wind analysis overlay."""
         speed = speed_dict["data"]
@@ -2050,8 +2082,8 @@ class OverlayRenderer:
 
         # -- Wind barbs with outline for contrast on any background --------
         # Surface shading uses mph, while meteorological barbs use knots.
-        barb_u = grid_u / 1.15078 if param == "wind_speed" else grid_u
-        barb_v = grid_v / 1.15078 if param == "wind_speed" else grid_v
+        barb_u = grid_u / 1.15078 if param in _SURFACE_WIND_PARAMS else grid_u
+        barb_v = grid_v / 1.15078 if param in _SURFACE_WIND_PARAMS else grid_v
         u_earth, v_earth = self._rotate_to_earth_relative(lon, lat, tg, barb_u, barb_v)
 
         target_cols = style.get("target_cols", 24)
@@ -2139,6 +2171,7 @@ class OverlayRenderer:
         fxx_str = f"f{fxx:02d}"
         self._current_model_name = (model_name or "").lower()
 
+        from .processor import BARB_COMPONENTS
         from .processor import DERIVED_PARAMS as ALL_DERIVED
 
         wind_vector_params = {
@@ -2148,9 +2181,11 @@ class OverlayRenderer:
         vector_component_params = {
             key for pair in ALL_DERIVED.values() for key in pair if key is not None
         }
+        barb_component_params = {key for pair in BARB_COMPONENTS.values() for key in pair}
         _SKIP_PARAMS = {
             *wind_vector_params,
             *vector_component_params,
+            *barb_component_params,
             "ushear_06km", "vshear_06km", "ushear_01km", "vshear_01km",
         }
 
@@ -2176,6 +2211,10 @@ class OverlayRenderer:
                     _needed_later.add(_cp)
             elif not _wp.startswith("wind_") and _wp in processed:
                 _needed_later.add(_wp)
+        # Barb products need their direction components until they render.
+        for _bp, _comps in BARB_COMPONENTS.items():
+            if _bp in processed and set(_comps) <= set(processed):
+                _needed_later.update(_comps)
         # Height contour params used by scalar fills are also needed later
         for _p in list(processed):
             _cp = _SCALAR_HEIGHT_OVERLAYS.get(_p)
@@ -2197,7 +2236,12 @@ class OverlayRenderer:
                     del processed[param]
                 continue
             contour_param = _SCALAR_HEIGHT_OVERLAYS.get(param)
-            if contour_param and contour_param in processed:
+            barb_components = BARB_COMPONENTS.get(param)
+            if barb_components and set(barb_components) <= set(processed):
+                u_key, v_key = barb_components
+                ok = self._timed_render(param, self._render_barb_product,
+                    param, field, processed[u_key], processed[v_key], out_path)
+            elif contour_param and contour_param in processed:
                 ok = self._timed_render(param, self._render_fill_with_height_contours,
                     param,
                     field,

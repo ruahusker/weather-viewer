@@ -7251,7 +7251,8 @@ async function loadRadarTilt() {
 function overlayUrl(runId, param, fxx) {
   const fxxStr = typeof fxx === 'number' ? String(fxx).padStart(2, '0') : fxx;
   const vector = window.PressureContours && state.vectorAvailableByParam?.[param]?.some((frame) => String(frame) === String(fxx));
-  const extension = vector ? (param.startsWith('wind_') ? 'wind.svg' : 'contours.json') : 'png';
+  // Wind products with barbs (wind_*, max_wind) publish a vector .wind.svg beside the PNG.
+  const extension = vector ? (param.startsWith('wind_') || param === 'max_wind' ? 'wind.svg' : 'contours.json') : 'png';
   return `${BASE}/rendered/${state.model}/${runId}/${param}/f${fxxStr}.${extension}?v=${MODEL_IMAGE_VERSION}`;
 }
 

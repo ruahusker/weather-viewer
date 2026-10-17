@@ -175,11 +175,24 @@ SPECIAL_MATCH_CRITERIA = {
 # each returned as a separate handle by codes_grib_new_from_file.
 eccodes.codes_grib_multi_support_on()
 
+# Scalar wind products drawn with barbs: product -> (u, v) giving direction.
+# Not DERIVED_PARAMS: the product keeps its own speed field (gust / hourly max)
+# instead of being replaced by the components' magnitude. Wind Gusts borrow
+# the 10 m wind direction and the renderer scales the barbs to the gust speed;
+# Max 10m Wind uses the components of the max wind itself (HRRR MAXUW/MAXVW).
+# Models without the components keep plain shading.
+BARB_COMPONENTS = {
+    "wind_gusts": ("ugrd_10m", "vgrd_10m"),
+    "max_wind": ("maxuw_10m", "maxvw_10m"),
+}
+
 # Snow accumulation products that need lookback GRIBs
 SNOW_PRODUCTS = {
     "kuchera_6hr":  {"hours": 6, "method": "kuchera"},
     "kuchera_12hr": {"hours": 12, "method": "kuchera"},
     "snow10_12hr":  {"hours": 12, "method": "10:1"},
+    # Liquid total for the same window (not snow, but the same lookback math).
+    "precip_12h":   {"hours": 12, "method": "liquid"},
 }
 
 
@@ -389,7 +402,7 @@ class FieldProcessor:
             data *= 1.8
             data += 32.0
             return data
-        if param in ("ugrd_10m", "vgrd_10m", "wind_u_10m", "wind_v_10m"):
+        if param in ("ugrd_10m", "vgrd_10m", "wind_u_10m", "wind_v_10m", "maxuw_10m", "maxvw_10m"):
             data *= 2.237
             return data
         if param in ("wind_speed", "wind_speed_10m", "wind_gust_10m", "wind_gusts"):
@@ -511,7 +524,9 @@ class FieldProcessor:
                 continue
 
             qpf = np.maximum(current_apcp - prev_apcp, 0.0)
-            if cfg["method"] == "kuchera":
+            if cfg["method"] == "liquid":
+                snow_inches = qpf
+            elif cfg["method"] == "kuchera":
                 if t850_c is None or t2m_c is None:
                     continue
                 slr = _kuchera_slr(t2m_c, t850_c)
@@ -557,6 +572,12 @@ class FieldProcessor:
                 for comp in components:
                     if comp is None:
                         continue
+                    if comp not in fetch_params:
+                        fetch_params.append(comp)
+
+        for barb_param, components in BARB_COMPONENTS.items():
+            if barb_param in fetch_params:
+                for comp in components:
                     if comp not in fetch_params:
                         fetch_params.append(comp)
 

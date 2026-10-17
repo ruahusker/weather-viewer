@@ -1029,7 +1029,7 @@ MODELS = [
         derived=HRRR_DERIVED, composites=HRRR_COMPOSITES,
         rendered_params=[
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
-            "reflectivity", "precip",
+            "reflectivity", "precip", "precip_12h",
             "cape", "cin", "lifted_index", "stp", "scp", "cti",
             "msi", "smi", "ship", "dcp", "citi", "cvi", "llmt", "ascent", "hp_risk",
             "vil", "uh_25km", "uh_03km",
@@ -1933,6 +1933,7 @@ def _render_cost_profile():
 
 
 def _expand_chunk_fields(chunk_params: list[str], processed_keys: set[str]) -> set[str]:
+    from .processor import BARB_COMPONENTS as _BARB_COMPONENTS
     from .processor import DERIVED_PARAMS as _ALL_DERIVED
 
     needed = set(chunk_params)
@@ -1940,7 +1941,8 @@ def _expand_chunk_fields(chunk_params: list[str], processed_keys: set[str]) -> s
         contour_param = _HEIGHT_OVERLAY_DEPENDENCIES.get(param)
         if contour_param and contour_param in processed_keys:
             needed.add(contour_param)
-        components = _ALL_DERIVED.get(param)
+        # Both tables can name a product (GDPS aliases wind_gusts in DERIVED).
+        components = (*(_ALL_DERIVED.get(param) or ()), *(_BARB_COMPONENTS.get(param) or ()))
         if components:
             for comp in components:
                 if comp is not None and comp in processed_keys:

@@ -1351,6 +1351,16 @@ COLOR_SCALES = {
         "unit": "in",
         "label": "6h Precipitation (in)",
     },
+    "precip_12h": {
+        "cmap": "discrete",
+        "bounds": QPF_BOUNDS,
+        "colors": QPF_COLORS,
+        "tick_vals": [0.01, 0.10, 0.25, 0.50, 1.00, 2.00, 3.00],
+        "vmin": 0.01,
+        "vmax": 3.0,
+        "unit": "in",
+        "label": "12h Precipitation (in)",
+    },
     "snowfall_6h": {
         "cmap": "discrete",
         "bounds": SNOW_BOUNDS,

@@ -503,6 +503,7 @@ const PARAMS = [
     {"id": "precip", "label": "Precip", "models": ["ecmwf", "gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
     {"id": "lightning", "label": "Lightning", "models": ["hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
     {"id": "echo_tops", "label": "Echo Tops", "models": ["hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
+    {"id": "precip_12h", "label": "12hr Precip", "models": ["hrrr"]},
     {"id": "precip_6h", "label": "6hr Precip", "models": ["gefs"]},
   ]},
   { id: 'instability', group: 'Instability', items: [
@@ -1538,7 +1539,7 @@ function mobileForecastMinutes(fxx) {
 /** Choose vector pressure/wind frames when available; older frames use PNG. */
 function mobileModelFrameUrl(fxx) {
   const vector = window.PressureContours && S.vectorAvailability?.[S.param]?.some((frame) => String(frame) === String(fxx));
-  const extension = vector ? (S.param.startsWith('wind_') ? 'wind.svg' : 'contours.json') : 'png';
+  const extension = vector ? (S.param.startsWith('wind_') || S.param === 'max_wind' ? 'wind.svg' : 'contours.json') : 'png';
   return `${BASE}/rendered/${S.model}/${S.runId}/${S.param}/f${String(fxx).padStart(2,'0')}.${extension}?v=${MODEL_IMAGE_VERSION}`;
 }
 

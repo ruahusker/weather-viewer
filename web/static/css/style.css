@@ -3620,10 +3620,12 @@ html[data-capture-mode="1"] .leaflet-container {
 
 /* Wind symbols carry their own contrasting keyline. Whole-image shadows
    blur those thin strokes and add unnecessary compositing during playback. */
-.model-overlay[class*="model-overlay-wind_"] {
+.model-overlay[class*="model-overlay-wind_"],
+.model-overlay.model-overlay-max_wind {
   image-rendering: auto;
 }
-.is-playing .model-overlay[class*="model-overlay-wind_"] {
+.is-playing .model-overlay[class*="model-overlay-wind_"],
+.is-playing .model-overlay.model-overlay-max_wind {
   filter: none;
   outline: none;
 }

@@ -385,9 +385,10 @@ async def get_available_vectors(model: str, run_id: str):
     if not run_dir.is_relative_to(root):
         raise HTTPException(status_code=400, detail="Invalid run path")
     result = {}
-    for parameter in ("mslp", "psfc", "wind_speed", "wind_925mb", "wind_850mb",
-                      "wind_700mb", "wind_500mb", "wind_300mb", "wind_250mb", "wind_200mb"):
-        suffix = "wind.svg" if parameter.startswith("wind_") else "contours.json"
+    for parameter in ("mslp", "psfc", "wind_speed", "wind_gusts", "max_wind", "wind_925mb",
+                      "wind_850mb", "wind_700mb", "wind_500mb", "wind_300mb", "wind_250mb",
+                      "wind_200mb"):
+        suffix = "contours.json" if parameter in ("mslp", "psfc") else "wind.svg"
         frames = [int(path.name.split(".")[0][1:])
                   for path in (run_dir / parameter).glob(f"f*.{suffix}")
                   if path.name.split(".")[0][1:].isdigit()]
@@ -1318,7 +1319,7 @@ _CMAP_CACHE: dict[str, dict] = {}
 # raised normalization floor (values below it are transparent).
 # tests/test_regressions.py asserts the reverse lookup matches the renderer.
 _RENDER_UNDER_VMIN = {
-    "precip": 0.01, "cape": 250, "mlcape": 250, "mucape": 250,
+    "precip": 0.01, "precip_12h": 0.01, "cape": 250, "mlcape": 250, "mucape": 250,
     "cape_03km": 100,
     "srh_01km": 25, "srh_03km": 25,
     "shear_06km": 5, "shear_01km": 5,
@@ -1858,7 +1859,9 @@ async def get_legend(
             "Pressure contours (mb)" if parameter in ("mslp", "psfc") else
             "Height contours (m) · Wind barbs (kt)" if re.fullmatch(r"wind_\d+mb", parameter) else
             "Height contours (m)" if re.fullmatch(r"(?:temp|dewpoint|rh|omega|vort)_\d+mb", parameter) else
-            "Wind barbs (kt)" if parameter == "wind_speed" else ""
+            "Wind barbs (kt)" if parameter == "wind_speed" else
+            "Gust barbs (kt) · direction from 10 m wind" if parameter == "wind_gusts" else
+            "Max wind barbs (kt)" if parameter == "max_wind" else ""
         ),
         "contour_only": parameter in ("mslp", "psfc") or scale.get("render") == "contour",
         "vmin": vmin, "vmax": vmax,

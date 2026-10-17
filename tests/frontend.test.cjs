@@ -304,6 +304,13 @@ test('desktop and phone prefer scalable wind images and retain PNG fallback',()=
  vm.runInContext(code,desktop);
  assert.match(vm.runInContext("overlayUrl('2026101719','wind_speed',0)",desktop),/f00\.wind\.svg/);
  assert.match(vm.runInContext("overlayUrl('2026101719','wind_speed',1)",desktop),/f01\.png/);
+ // Gusts and max wind carry barbs too, published as the same vector sidecar.
+ vm.runInContext("state.vectorAvailableByParam={wind_gusts:[0],max_wind:[0],mslp:[0]}",desktop);
+ assert.match(vm.runInContext("overlayUrl('2026101719','wind_gusts',0)",desktop),/wind_gusts\/f00\.wind\.svg/);
+ assert.match(vm.runInContext("overlayUrl('2026101719','max_wind',0)",desktop),/max_wind\/f00\.wind\.svg/);
+ assert.match(vm.runInContext("overlayUrl('2026101719','mslp',0)",desktop),/mslp\/f00\.contours\.json/);
+ vm.runInContext("S.param='max_wind';S.vectorAvailability={max_wind:[0]};",mobile);
+ assert.match(vm.runInContext('mobileModelFrameUrl(0)',mobile),/max_wind\/f00\.wind\.svg/);
 });
 
 function captureMetadataContext() {

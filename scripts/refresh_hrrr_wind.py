@@ -1,4 +1,4 @@
-"""Refresh existing HRRR wind frames using cached GRIBs, one hour at a time.
+"""Refresh existing HRRR wind frames (incl. gusts / max wind barbs) from cached GRIBs.
 
 No downloads or scheduler metadata changes. Run with scientific-library threads
 limited to one and a low CPU priority while the normal weather services run.
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pipeline.config import GRIB_CACHE_DIR, RENDERED_DIR
-from pipeline.processor import DERIVED_PARAMS, FieldProcessor
+from pipeline.processor import BARB_COMPONENTS, DERIVED_PARAMS, FieldProcessor
 from pipeline.renderer import OverlayRenderer, _SCALAR_HEIGHT_OVERLAYS
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,9 @@ def refresh(run_id: str, parameters: list[str], limit: int | None = None) -> int
     """Publish new wind imagery only for already available forecast hours."""
     if not re.fullmatch(r"\d{10}", run_id):
         raise ValueError("Expected a YYYYMMDDHH run")
-    if not parameters or any(not p.startswith("wind_") or p not in DERIVED_PARAMS for p in parameters):
+    def supported(p: str) -> bool:
+        return p in BARB_COMPONENTS or (p.startswith("wind_") and p in DERIVED_PARAMS)
+    if not parameters or not all(supported(p) for p in parameters):
         raise ValueError("Expected supported wind parameters")
     run_dir = RENDERED_DIR / "hrrr" / run_id
     bounds = json.loads((run_dir / "bounds.json").read_text())
@@ -52,7 +54,7 @@ def refresh(run_id: str, parameters: list[str], limit: int | None = None) -> int
                 break
         renderer.clear_hour_cache()
         for parameter in parameters:
-            u_key, v_key = DERIVED_PARAMS[parameter]
+            u_key, v_key = BARB_COMPONENTS.get(parameter) or DERIVED_PARAMS[parameter]
             if not {parameter, u_key, v_key} <= set(fields):
                 logger.warning("f%02d: missing fields for %s", hour, parameter)
                 continue
@@ -64,10 +66,14 @@ def refresh(run_id: str, parameters: list[str], limit: int | None = None) -> int
             output = run_dir / parameter / f"f{hour:02d}.png"
             if not output.exists():
                 continue
-            height = _SCALAR_HEIGHT_OVERLAYS.get(parameter)
-            renderer._render_wind_overlay(parameter, field, fields[u_key], fields[v_key],
-                                          output, contour_param=height,
-                                          contour_dict=fields.get(height))
+            if parameter in BARB_COMPONENTS:
+                # Gusts / max wind: shading plus barbs (gusts scaled to gust speed).
+                renderer._render_barb_product(parameter, field, fields[u_key], fields[v_key], output)
+            else:
+                height = _SCALAR_HEIGHT_OVERLAYS.get(parameter)
+                renderer._render_wind_overlay(parameter, field, fields[u_key], fields[v_key],
+                                              output, contour_param=height,
+                                              contour_dict=fields.get(height))
             count += 1
             logger.info("Refreshed HRRR %s f%02d %s", run_id, hour, parameter)
         del fields
