@@ -384,7 +384,10 @@ guards and container restart policies enforce the hold. The protected manifest,
 verification, and restore tool are in
 `data/performance/vibe-project-hold-20261014/`; do not run the restore tool as
 part of routine weather maintenance. Weather, management, and OS services stay
-available.
+available. Partial releases (recorded under `partial_releases` in the manifest):
+`bitcoind.service` and the `public-pool` container (2026-10-14), and the Nexus
+terminal, `nexus-terminal.service` (2026-10-18, user request; only its guard was
+removed). Everything else remains held.
 
 Both hosts use identical `web/static/dashboard.html` at `/wx/monitor`. It includes
 all 106 radar cards (including KTWX), radar refresh and logs, night status,
