@@ -38,6 +38,9 @@ PARAM_SEARCH_STRINGS = {
     "lifted_index": ":4LFTX:180-0 mb above ground:",
     "frzlvl":       ":HGT:0C isotherm:",
     "snow_depth":   ":SNOD:surface:",
+    "frozen_pct":   ":CPOFP:surface:",
+    # Snowpack SWE (instantaneous); the file also has a bucketed WEASD accumulation
+    "weasd":        ":WEASD:surface:(?:anl|[0-9]+ hour fcst):",
     "cloud_cover":  ":TCDC:entire atmosphere",
     "lightning":    ":LTNG:surface:",
     "srh_01km":     ":HLCY:1000-0 m above ground:",

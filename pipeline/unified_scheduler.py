@@ -902,6 +902,7 @@ class ModelConfig:
     run_hours: list[int]
     hourly_precip: bool = False  # subtract prev fxx for hourly precip
     snow_products: bool = False  # compute Kuchera / 10:1 snow
+    precip_bucket_hours: int = 0  # APCP resets every N hours (NAM: 3); 0 = run total
     herbie_kwargs: dict = field(default_factory=dict)  # extra Herbie args (domain, member)
     sounding_cache: bool = False
 
@@ -1110,9 +1111,12 @@ MODELS = [
             "wind_850mb", "wind_700mb", "wind_500mb", "wind_250mb",
             "rh_850mb", "rh_700mb",
             "cti", "stp", "scp", "smi", "ship", "dcp", "citi", "cvi", "llmt", "ascent", "hp_risk",
+            "precip_12h", "weasd", "frozen_pct",
+            "kuchera_6hr", "kuchera_12hr", "snow10_12hr",
         ],
         sources=NAM3KM_SOURCES, get_fxx=_nam3km_fxx,
         run_hours=[0, 6, 12, 18],
+        hourly_precip=True, snow_products=True, precip_bucket_hours=3,
         sounding_cache=True,
     ),
     ModelConfig(
@@ -3344,14 +3348,23 @@ def _build_render_item(
     lookback_strs = None
     if model.snow_products:
         lb: dict[str, str] = {}
-        for product, cfg in SNOW_PRODUCTS.items():
-            lb_fxx = fxx - cfg["hours"]
-            if lb_fxx > 0:
-                lb_path = downloaded.get(lb_fxx)
-                if lb_path is None:
-                    lb_path = _find_cached_grib(model, run_dt, lb_fxx)
-                if lb_path is not None:
-                    lb[str(lb_fxx)] = str(lb_path)
+        needed: set[int] = set()
+        bucket = model.precip_bucket_hours
+        for cfg in SNOW_PRODUCTS.values():
+            window_start = fxx - cfg["hours"]
+            needed.add(window_start)
+            if bucket:
+                # Bucket ends inside (and just before) the window
+                needed.update(
+                    k for k in range(max(window_start - bucket, 1), fxx)
+                    if k % bucket == 0
+                )
+        for lb_fxx in sorted(k for k in needed if k > 0):
+            lb_path = downloaded.get(lb_fxx)
+            if lb_path is None:
+                lb_path = _find_cached_grib(model, run_dt, lb_fxx)
+            if lb_path is not None:
+                lb[str(lb_fxx)] = str(lb_path)
         lookback_strs = lb
 
     return {
