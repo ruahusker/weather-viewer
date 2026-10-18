@@ -235,14 +235,12 @@ html[data-ui="v4"] .favorite-toggle {
   background: transparent;
   font: 500 12px var(--font-ui);
 }
-html[data-ui="v4"] .favorite-products,
-html[data-ui="v4"] .ops-pick-grid {
+html[data-ui="v4"] .favorite-products {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-html[data-ui="v4"] .favorite-product,
-html[data-ui="v4"] .ops-pick-grid .param-btn {
+html[data-ui="v4"] .favorite-product {
   width: auto;
   min-height: 32px;
   padding: 0 12px;
@@ -252,13 +250,11 @@ html[data-ui="v4"] .ops-pick-grid .param-btn {
   color: #c3c9d1;
   font: 400 13px var(--font-ui);
 }
-html[data-ui="v4"] .ops-pick-grid .param-btn .param-icon,
-html[data-ui="v4"] .ops-pick-grid .param-btn::before { display: none; }
-html[data-ui="v4"] :is(.favorite-product, .ops-pick-grid .param-btn):hover {
+html[data-ui="v4"] .favorite-product:hover {
   background: var(--v4-hover);
   color: var(--text);
 }
-html[data-ui="v4"] :is(.favorite-product, .ops-pick-grid .param-btn).active {
+html[data-ui="v4"] .favorite-product.active {
   background: var(--accent-bg);
   border-color: var(--accent-dim);
   color: var(--accent-bright);

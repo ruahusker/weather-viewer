@@ -47,7 +47,7 @@
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css?v=1.9.4" />
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260930e" />
   <link rel="stylesheet" href="/static/css/surface-obs.css?v=20260329d" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20261017-barbs1" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20261018-noops1" />
   <link rel="stylesheet" href="/static/css/pressure-contours.css?v=20261008d" />
   <!-- v4 interface is the default; ?ui=classic switches back (remembered), ?ui=v4 returns. -->
   <script>
@@ -59,7 +59,7 @@
       } catch (e) { document.documentElement.dataset.ui = 'v4'; }
     })();
   </script>
-  <link rel="stylesheet" href="/static/css/theme-v4.css?v=20261017k" />
+  <link rel="stylesheet" href="/static/css/theme-v4.css?v=20261018-noops1" />
 </head>
 <body>
 
@@ -228,29 +228,6 @@
         </div>
         <div id="favoriteProducts" class="favorite-products"></div>
         <p id="favoriteProductsNote" class="favorites-note">Select a product, then save it here.</p>
-      </div>
-      <div class="sidebar-section sidebar-section--ops-picks">
-        <div class="section-label">Ops Quick Picks</div>
-        <div class="ops-pick-grid">
-          <button class="param-btn" data-param="reflectivity" data-models="gfs,hrrr,nam12km,nam3km,rap,rrfs">
-            <span class="param-icon"></span>Reflectivity
-          </button>
-          <button class="param-btn" data-param="stp" data-models="hrrr,nam3km">
-            <span class="param-icon"></span>STP
-          </button>
-          <button class="param-btn" data-param="uh_25km" data-models="hrrr,nam3km,rrfs">
-            <span class="param-icon"></span>2-5km UH
-          </button>
-          <button class="param-btn" data-param="srh_01km" data-models="hrrr,nam12km,nam3km,rap,rrfs">
-            <span class="param-icon"></span>0-1km SRH
-          </button>
-          <button class="param-btn" data-param="shear_06km" data-models="hrrr,nam3km,rap,nam12km,rrfs">
-            <span class="param-icon"></span>Deep Shear
-          </button>
-          <button class="param-btn" data-param="refl_probability_40dbz" data-models="href">
-            <span class="param-icon"></span>40dBZ Prob
-          </button>
-        </div>
       </div>
       <div class="sidebar-section">
         <div class="section-label">Parameters</div>

@@ -4223,27 +4223,6 @@ body {
   padding: 2px 2px 10px;
 }
 
-.ops-pick-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-
-.ops-pick-grid .param-btn {
-  min-height: 34px;
-  padding: 8px 9px;
-  border: 1px solid rgba(255, 255, 255, 0.075);
-}
-
-.ops-pick-grid .param-btn:hover {
-  border-color: rgba(82, 215, 255, 0.38);
-  background: rgba(82, 215, 255, 0.08);
-}
-
-.ops-pick-grid .param-btn.active {
-  border-color: rgba(82, 215, 255, 0.5);
-}
-
 /* Param group collapsible header */
 
 .param-group-toggle {
@@ -4824,10 +4803,6 @@ input {
   border-bottom-color: rgba(154, 221, 255, 0.16);
 }
 
-.sidebar-section--ops-picks {
-  background: linear-gradient(180deg, rgba(20, 38, 65, 0.94), rgba(8, 18, 34, 0.94));
-}
-
 .sidebar-label,
 .section-label,
 .home-panel-header,
@@ -4866,18 +4841,6 @@ input {
 .param-btn.active::before {
   background: linear-gradient(180deg, #72a9ff, #72a9ff);
   box-shadow: 0 0 12px rgba(114, 169, 255, 0.62);
-}
-
-.ops-pick-grid .param-btn {
-  border-radius: 9px;
-  border-color: rgba(226, 242, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.ops-pick-grid .param-btn:hover,
-.ops-pick-grid .param-btn.active {
-  border-color: rgba(114, 169, 255, 0.46);
-  background: rgba(114, 169, 255, 0.1);
 }
 
 .sidebar-action-btn {
@@ -5583,7 +5546,7 @@ html, body { background: var(--bg-deep); }
 .source-tab[data-source="chase"]:hover { background: var(--accent-bg); color: var(--text); }
 .param-sidebar { background: var(--bg); border-right: 1px solid var(--border); box-shadow: none; }
 .sidebar-section { padding-inline: 16px; }
-.sidebar-section--model-picker, .sidebar-section--ops-picks { background: transparent; }
+.sidebar-section--model-picker { background: transparent; }
 .sidebar-section--model-picker { padding-top: 20px; padding-bottom: 16px; }
 .sidebar-label, .section-label, .radar-control-label {
   font-family: var(--font-ui); font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--text-mid);
@@ -5601,8 +5564,6 @@ html, body { background: var(--bg-deep); }
 }
 .sidebar-action-btn { min-height: 38px; border-radius: 8px; font-family: var(--font-ui); font-weight: 500; }
 .capture-btn:hover, .sidebar-action-btn:hover { background: var(--bg3); border-color: var(--accent-dim); box-shadow: none; }
-.ops-pick-grid .param-btn { background: var(--bg2); border-color: var(--border); min-height: 38px; }
-.ops-pick-grid .param-btn.active { background: var(--accent-bg); border-color: var(--accent-dim); }
 .sat-info-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
 .sat-info-title { font-family: var(--font-ui); font-size: 14px; color: var(--text); letter-spacing: 0; }
 .sat-info-text { font-family: var(--font-ui); color: var(--text-mid); font-size: 12px; line-height: 1.65; }
