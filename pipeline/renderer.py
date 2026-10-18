@@ -172,7 +172,7 @@ _SPARSE_OVERLAY_ALPHA = {
 # Params that should skip outside-domain color diffusion — they render
 # opaque data on a black backing layer so edge bleed looks wrong.
 _NO_DIFFUSION_PARAMS = {
-    "reflectivity", "precip",
+    "reflectivity", "precip", "precip_type",
     "snow_depth", "snowfall", "snowfall_6h", "weasd",
     "kuchera_6hr", "kuchera_12hr", "snow10_12hr",
     "lightning", "echo_tops", "hail",
@@ -2154,6 +2154,31 @@ class OverlayRenderer:
         west = float(np.nanmin(lon_n))
         east = float(np.nanmax(lon_n))
         return south, north, west, east
+
+    def build_ptype_grid(self, processed, width: int = 2400):
+        """Surface precip-type codes on a Web Mercator grid, for radar coloring.
+
+        Codes: 0 rain, 1 snow, 2 sleet, 3 freezing rain, 255 outside the model.
+        Uses the model's categorical type where it flags one (precip_type) and
+        2 m temperature elsewhere (<= 33 F snow, else rain), so radar echoes the
+        model missed still get a type. Returns (codes uint8, bounds) or None.
+        """
+        from .config import PTYPE_BINS
+
+        ptype, temp = processed.get("precip_type"), processed.get("temp_2m")
+        if ptype is None or temp is None:
+            return None
+        lat, lon = ptype["lat"], ptype["lon"]
+        kind = np.floor(np.asarray(ptype["data"], dtype=np.float32) / PTYPE_BINS)
+        t2m = np.asarray(temp["data"], dtype=np.float32)
+        codes = np.where(np.isfinite(kind), kind, np.where(t2m <= 33.0, 1.0, 0.0)).astype(np.float32)
+        codes[~np.isfinite(kind) & ~np.isfinite(t2m)] = np.nan
+        bounds = self.get_data_bounds(lat, lon)
+        south, north, west, east = bounds
+        height = int(round(width * (float(_lat_to_merc(north)) - float(_lat_to_merc(south)))
+                           / (east - west)))
+        grid = self._regrid(lon, lat, codes, bounds, width, height)   # nearest neighbour
+        return np.where(np.isfinite(grid), grid, 255).astype(np.uint8), bounds
 
     def render_all_params(self, processed, output_dir, fxx,
                           run_time=None, model_name: str = "",

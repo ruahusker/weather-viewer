@@ -437,7 +437,46 @@ SEVERE_INDEX_COLORS = [
 ]
 
 # Color scale definitions for each rendered parameter
+# Precipitation type: composite reflectivity colored by surface type.
+# One value encodes both: type_index * PTYPE_BINS + intensity bin, where the
+# intensity bins are PTYPE_DBZ_STEP-dBZ wide from PTYPE_DBZ_MIN. Ramps run
+# light -> intense and sit back to back, so the legend is one continuous bar.
+PTYPE_CATEGORIES = ("Rain", "Snow", "Sleet", "Freezing Rain")
+PTYPE_BINS = 12
+PTYPE_DBZ_MIN = 5.0
+PTYPE_DBZ_STEP = 5.0
+PTYPE_COLORS = [
+    # Rain: greens -> yellow -> red
+    "#a6e9a6", "#76d876", "#45c145", "#22a522", "#11891a", "#f3e94a",
+    "#f4c431", "#f39924", "#ed651e", "#d82b1e", "#b2161f", "#e21fbb",
+    # Snow: light -> deep blue
+    "#d3eaff", "#acd6ff", "#84c1ff", "#5eaaf6", "#3f92ea", "#2878d8",
+    "#1b61c2", "#124caa", "#0b3a92", "#082c7a", "#062064", "#04174e",
+    # Sleet / ice pellets: pinks
+    "#ffd3ea", "#ffb5da", "#ff96ca", "#fa79b9", "#f05ca7", "#e14394",
+    "#cd2d81", "#b61c6e", "#9d115c", "#840a4c", "#6c073e", "#550531",
+    # Freezing rain: purples
+    "#e8d3ff", "#d6b5ff", "#c396ff", "#af79fa", "#9a5ef0", "#8546e1",
+    "#7132cd", "#5e22b6", "#4d169d", "#3e0e84", "#30086c", "#240556",
+]
+
 COLOR_SCALES = {
+    "precip_type": {
+        "cmap": "discrete",
+        "bounds": list(range(len(PTYPE_CATEGORIES) * PTYPE_BINS + 1)),
+        "colors": PTYPE_COLORS,
+        "tick_vals": [PTYPE_BINS * (i + 0.5) for i in range(len(PTYPE_CATEGORIES))],
+        "tick_labels": list(PTYPE_CATEGORIES),
+        "categories": [
+            {"name": name, "start": i * PTYPE_BINS, "end": (i + 1) * PTYPE_BINS,
+             "dbz_min": PTYPE_DBZ_MIN, "dbz_step": PTYPE_DBZ_STEP}
+            for i, name in enumerate(PTYPE_CATEGORIES)
+        ],
+        "vmin": 0,
+        "vmax": len(PTYPE_CATEGORIES) * PTYPE_BINS,
+        "unit": "dBZ",
+        "label": "Precip Type",
+    },
     # -- Surface --
     "temp_2m": {
         "cmap": "wx_temp",
@@ -1901,6 +1940,19 @@ COLOR_SCALES = {
         "vmax": 8,
         "unit": "in/hr",
         "label": "Rainfall Rate (in/hr)",
+    },
+    "radar_ptype": {
+        "cmap": "radar_ptype",
+        "vmin": 0,
+        "vmax": len(PTYPE_CATEGORIES) * PTYPE_BINS,
+        "unit": "dBZ",
+        "label": "Precip Type",
+        "tick_labels": list(PTYPE_CATEGORIES),
+        "categories": [
+            {"name": name, "start": i * PTYPE_BINS, "end": (i + 1) * PTYPE_BINS,
+             "dbz_min": PTYPE_DBZ_MIN, "dbz_step": PTYPE_DBZ_STEP}
+            for i, name in enumerate(PTYPE_CATEGORIES)
+        ],
     },
 }
 

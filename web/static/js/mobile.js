@@ -543,6 +543,7 @@ const PARAMS = [
     {"id": "shear_01km", "label": "0-1km Shear", "models": ["hrrr", "nam12km", "rrfs"]},
   ]},
   { id: 'winter', group: 'Winter', items: [
+    {"id": "precip_type", "label": "Precip Type", "models": ["gfs", "hrrr", "nam3km", "rap"]},
     {"id": "visibility", "label": "Visibility", "models": ["gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs", "rtma"]},
     {"id": "ceil", "label": "Ceiling Height", "models": ["rrfs"]},
     {"id": "snow_depth", "label": "Snow Depth", "models": ["ecmwf", "gdps", "gfs", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
@@ -706,6 +707,7 @@ const RADAR_PRODUCTS = [
   { id: 'VIL',  label: 'VIL', legend: 'radar_vil' },
   { id: 'HAIL', label: 'Hail Prob.', legend: 'radar_hail' },
   { id: 'RAIN', label: 'Rainfall Rate', legend: 'radar_rain' },
+  { id: 'PTYPE', label: 'Precip Type', legend: 'radar_ptype' },
   { id: 'TDS',  label: 'Debris Sig.', legend: 'radar_tds' },
 ];
 
@@ -2179,12 +2181,12 @@ async function updateLegend(param) {
     legendTicks.innerHTML = '';
     const ticks = data.tick_vals?.length ? data.tick_vals
       : Array.from({length: 5}, (_, i) => data.vmin + (data.vmax - data.vmin) * i / 4);
-    for (const v of ticks) {
+    ticks.forEach((v, i) => {
       const sp = document.createElement('span');
       sp.style.left = `${(v - data.vmin) / (data.vmax - data.vmin) * 100}%`;
-      sp.textContent = Number(v.toFixed(Math.abs(data.vmax - data.vmin) < 5 ? 2 : 0));
+      sp.textContent = data.tick_labels?.[i] ?? Number(v.toFixed(Math.abs(data.vmax - data.vmin) < 5 ? 2 : 0));
       legendTicks.appendChild(sp);
-    }
+    });
   } catch { if (requestId === mobileLegendRequestId) legendBar.classList.add('hidden'); }
 }
 
@@ -2206,7 +2208,7 @@ async function onMapTap(e) {
     );
     if (!r.ok) { topValue.textContent = ''; return; }
     const d = await r.json();
-    topValue.textContent = d.value != null ? `${d.value.toFixed(1)}${d.unit||''}` : '';
+    topValue.textContent = d.text || (d.value != null ? `${d.value.toFixed(1)}${d.unit||''}` : '');
   } catch { /* abort or network error */ }
 }
 

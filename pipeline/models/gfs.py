@@ -60,6 +60,11 @@ PARAM_SEARCH_STRINGS = {
     # GFS only has 0-3km SRH, not 0-1km
     "srh_03km":     ":HLCY:3000-0 m above ground:",
     "reflectivity": ":REFC:entire atmosphere:",
+    # Categorical precipitation type (instantaneous only; GFS also has 0-6h averages).
+    "crain":        ":CRAIN:surface:(?:anl|[0-9]+ hour fcst):",
+    "csnow":        ":CSNOW:surface:(?:anl|[0-9]+ hour fcst):",
+    "cicep":        ":CICEP:surface:(?:anl|[0-9]+ hour fcst):",
+    "cfrzr":        ":CFRZR:surface:(?:anl|[0-9]+ hour fcst):",
     "mucin":        ":CIN:180-0 mb above ground:",
     "frzlvl":       ":HGT:0C isotherm:",
     "pbl_height":   ":HPBL:surface:",

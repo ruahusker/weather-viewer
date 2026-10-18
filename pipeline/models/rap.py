@@ -57,6 +57,11 @@ PARAM_SEARCH_STRINGS = {
 
     # -- Reflectivity --
     "reflectivity": ":REFC:entire atmosphere:",
+    # Categorical precipitation type (instantaneous only; GFS also has 0-6h averages).
+    "crain":        ":CRAIN:surface:(?:anl|[0-9]+ hour fcst):",
+    "csnow":        ":CSNOW:surface:(?:anl|[0-9]+ hour fcst):",
+    "cicep":        ":CICEP:surface:(?:anl|[0-9]+ hour fcst):",
+    "cfrzr":        ":CFRZR:surface:(?:anl|[0-9]+ hour fcst):",
 
     # -- Pressure levels --
     "temp_850mb":   ":TMP:850 mb:",

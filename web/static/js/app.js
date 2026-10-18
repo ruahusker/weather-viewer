@@ -1543,7 +1543,7 @@ async function getValueFromOverlayImage(lat, lon, parameter) {
           lookup[`${r},${g},${b}`] = value;
         }
       }
-      scaleInfo = { vmin: data.vmin, vmax: data.vmax, label: data.label, unit: data.unit, lookup: lookup };
+      scaleInfo = { vmin: data.vmin, vmax: data.vmax, label: data.label, unit: data.unit, lookup: lookup, categories: data.categories || null };
       _paramColorScaleCache[scaleCacheKey] = scaleInfo;
     } catch (e) { return null; }
   }
@@ -1593,7 +1593,23 @@ async function getValueFromOverlayImage(lat, lon, parameter) {
     if (bestDist < 20000) value = bestVal;
   }
   if (value === undefined) return null;
+  const text = describeCategoryValue(scaleInfo.categories, value, scaleInfo.unit);
+  if (text) return { value, text, unit: '', label: scaleInfo.label || parameter };
   return { value, unit: scaleInfo.unit || '', label: scaleInfo.label || parameter };
+}
+
+/**
+ * Name a value from a categorical scale (e.g. precip type: category start +
+ * intensity step) as "Snow · 25–30 dBZ". Returns null for ordinary scales.
+ */
+function describeCategoryValue(categories, value, unit) {
+  if (!Array.isArray(categories) || !Number.isFinite(value)) return null;
+  const category = categories.find((c) => value >= c.start && value < c.end);
+  if (!category) return null;
+  const step = Math.floor(value - category.start);
+  const low = category.dbz_min + step * category.dbz_step;
+  const span = step === 0 ? `≤${low + category.dbz_step}` : `${low}–${low + category.dbz_step}`;
+  return `${category.name} · ${span}${unit ? ` ${unit}` : ''}`;
 }
 
 
@@ -1614,7 +1630,7 @@ async function handleMapValueQuery(lat, lon, source) {
     const result = await getValueFromOverlayImage(lat, lon, state.parameter);
     if (result) {
       const label = escapeHtml(result.label || state.parameter);
-      const value = Number.isFinite(result.value) ? result.value.toFixed(1) : '--';
+      const value = result.text || (Number.isFinite(result.value) ? result.value.toFixed(1) : '--');
       const unit = escapeHtml(result.unit || '');
       setHoverValueHtml(`<span class="value">${escapeHtml(value)}${unit ? ` ${unit}` : ''}</span><br><span>${label}</span>`, true);
     }
@@ -1633,7 +1649,8 @@ async function handleMapValueQuery(lat, lon, source) {
       } else {
         const unit = escapeHtml(data.unit || '');
         const label = escapeHtml(data.label || state.radarProduct);
-        setHoverValueHtml(`<span class="value">${data.value.toFixed(1)}${unit ? ` ${unit}` : ''}</span><br><span>${label}</span>`, true);
+        const shown = data.text ? escapeHtml(data.text) : `${data.value.toFixed(1)}${unit ? ` ${unit}` : ''}`;
+        setHoverValueHtml(`<span class="value">${shown}</span><br><span>${label}</span>`, true);
       }
     } catch (e) {
       if (e.name !== 'AbortError') {
@@ -8216,6 +8233,7 @@ async function updateLegend() {
       'VXT': 'radar_vxt',
       'HAIL': 'radar_hail',
       'RAIN': 'radar_rain',
+      'PTYPE': 'radar_ptype',
     };
     const homeRadarProduct = state.dataSource === 'home' ? 'REF' : state.radarProduct;
     param = radarLegendKeys[homeRadarProduct];
@@ -8275,13 +8293,15 @@ async function updateLegend() {
       const min = Number(data.bounds?.[0] ?? data.vmin);
       const max = Number(data.bounds?.at(-1) ?? data.vmax);
       const range = Math.max(max - min, 1e-6);
-      for (const rawValue of ticks) {
+      ticks.forEach((rawValue, index) => {
         const value = Number(rawValue);
         const tick = document.createElement('span');
         tick.style.left = `${Math.max(0, Math.min(1, (value - min) / range)) * 100}%`;
-        tick.textContent = Math.abs(value) < 10 && !Number.isInteger(value) ? value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') : Math.round(value);
+        const text = data.tick_labels?.[index];
+        tick.textContent = text != null ? text
+          : Math.abs(value) < 10 && !Number.isInteger(value) ? value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') : Math.round(value);
         legendTicks.appendChild(tick);
-      }
+      });
     } else if (data.vmin !== undefined && data.vmax !== undefined) {
       const steps = 5;
       for (let i = 0; i <= steps; i++) {

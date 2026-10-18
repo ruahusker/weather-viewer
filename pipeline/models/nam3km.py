@@ -23,6 +23,11 @@ PARAM_SEARCH_STRINGS = {
     "mslp":         ":PRMSL:mean sea level:",
     "precip":       ":APCP:surface:",
     "reflectivity": ":REFC:entire atmosphere (considered as a single layer):",
+    # Categorical precipitation type (instantaneous only; GFS also has 0-6h averages).
+    "crain":        ":CRAIN:surface:(?:anl|[0-9]+ hour fcst):",
+    "csnow":        ":CSNOW:surface:(?:anl|[0-9]+ hour fcst):",
+    "cicep":        ":CICEP:surface:(?:anl|[0-9]+ hour fcst):",
+    "cfrzr":        ":CFRZR:surface:(?:anl|[0-9]+ hour fcst):",
     "mucape":       ":CAPE:180-0 mb above ground:",
     "mucin":        ":CIN:180-0 mb above ground:",
     "mlcape":       ":CAPE:90-0 mb above ground:",

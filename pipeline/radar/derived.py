@@ -423,7 +423,38 @@ def _derive_rainfall_rate(volume: VolumeData, target_tilt: float) -> SweepData |
     return _make_sweep(np.clip(rate_refl, 0.0, 8.0), refl)
 
 
+def _derive_precip_type(volume: VolumeData, target_tilt: float) -> SweepData | None:
+    """Low-level reflectivity colored by HRRR surface precip type.
+
+    Encoded like the model product: type_index * PTYPE_BINS + intensity bin
+    (+0.5 so values sit mid-bin). Echoes below PTYPE_DBZ_MIN are dropped;
+    without a recent HRRR type grid the product is skipped for this scan.
+    """
+    from pipeline.config import PTYPE_BINS, PTYPE_DBZ_MIN, PTYPE_DBZ_STEP
+    from .ptype import find_grid, gate_types, load_grid
+
+    refl = extract_sweep(volume, "reflectivity", target_tilt=target_tilt, prefer_long_range=True)
+    if refl is None:
+        return None
+    grid_path = find_grid(volume.timestamp)
+    if grid_path is None:
+        return None
+    codes, bounds = load_grid(grid_path)
+    kind = gate_types(volume.site_lat, volume.site_lon, refl.azimuth, refl.n_gates,
+                      refl.max_range_km, refl.tilt_angle, codes, bounds)
+    ref = _to_float(refl.data)
+    steps = np.floor(np.clip((ref - PTYPE_DBZ_MIN) / PTYPE_DBZ_STEP, 0.0, PTYPE_BINS - 1))
+    value = kind * PTYPE_BINS + steps + 0.5
+    value[~np.isfinite(ref) | (ref < PTYPE_DBZ_MIN) | ~np.isfinite(kind)] = np.nan
+    sweep = _make_sweep(value, refl)
+    # Keep the correlation data so the renderer removes clutter and noise
+    # exactly as it does for plain reflectivity.
+    sweep.cc_data = refl.cc_data
+    return sweep
+
+
 DERIVED_PRODUCT_FUNCS = {
+    "precip_type": lambda volume, tilt: _derive_precip_type(volume, tilt),
     "specific_differential_phase": lambda volume, tilt: _derive_kdp(volume, tilt),
     "storm_relative_velocity": lambda volume, tilt: _derive_srm(volume, tilt),
     "azimuthal_shear": lambda volume, tilt: _derive_azimuthal_shear(volume, tilt),

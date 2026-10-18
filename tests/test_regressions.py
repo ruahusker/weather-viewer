@@ -440,6 +440,56 @@ class PrecipAccumulationTests(unittest.TestCase):
         np.testing.assert_allclose(result['precip_12h']['data'], [[2.0, 0.0], [0.0, 0.0]])
         self.assertEqual(api._RENDER_UNDER_VMIN['precip_12h'], 0.01)
 
+
+class PrecipTypeTests(unittest.TestCase):
+    def test_encoding_priority_light_precip_and_virga(self):
+        from pipeline.processor import encode_precip_type
+        refl = np.array([[30.0, 30.0, 2.0, 40.0, 30.0]])
+        rain = np.array([[1, 1, 1, 0, 0]])
+        snow = np.array([[0, 1, 0, 0, 0]])
+        sleet = np.array([[0, 0, 0, 0, 0]])
+        fzra = np.array([[0, 0, 0, 1, 0]])
+        out = encode_precip_type(refl, rain, snow, sleet, fzra)
+        # rain 30 dBZ -> step 5; rain+snow -> snow; 2 dBZ rain -> lightest rain step;
+        # freezing rain 40 dBZ -> 36 + 7; reflectivity without a type -> hidden
+        np.testing.assert_allclose(out[0, :4], [5.5, 17.5, 0.5, 43.5])
+        self.assertTrue(np.isnan(out[0, 4]))
+
+    def test_legend_labels_and_hover_text(self):
+        with TestClient(api.app) as client:
+            data = client.get('/api/legend/precip_type').json()
+        self.assertEqual(data['tick_labels'], ['Rain', 'Snow', 'Sleet', 'Freezing Rain'])
+        self.assertEqual(len(data['colors']), 48)
+        self.assertEqual(len({tuple(c[:3]) for c in data['color_lookup']}), 48)
+        cats = data['categories']
+        self.assertEqual(api._describe_category_value(cats, 17.5, 'dBZ'), 'Snow · 30–35 dBZ')
+        self.assertEqual(api._describe_category_value(cats, 0.5, 'dBZ'), 'Rain · ≤10 dBZ')
+        self.assertEqual(api._describe_category_value(cats, 47.9, ''), 'Freezing Rain · 60–65')
+        self.assertIsNone(api._describe_category_value(None, 5.0))
+
+    def test_radar_uses_newest_hrrr_grid_and_maps_gates(self):
+        from datetime import datetime, timezone
+        from pipeline.radar import ptype
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Snow north of 40N, rain south of it, on the grid's Mercator rows.
+            merc = lambda lat: np.log(np.tan(np.pi / 4 + np.radians(lat) / 2))
+            rows = (np.arange(100) + 0.5) / 100
+            row_lat = np.degrees(2 * np.arctan(np.exp(merc(50) - rows * (merc(50) - merc(30)))) - np.pi / 2)
+            codes = np.repeat((row_lat > 40.0)[:, None], 100, axis=1).astype(np.uint8)
+            for run, lead in (('2026121810', 2), ('2026121811', 1)):
+                path = root / 'hrrr' / run / 'ptype_grid' / f'f{lead:02d}.npz'
+                path.parent.mkdir(parents=True)
+                np.savez_compressed(path, codes=codes, bounds=np.array([30.0, 50.0, -110.0, -90.0]))
+            scan = datetime(2026, 12, 18, 12, 10, tzinfo=timezone.utc)
+            found = ptype.find_grid(scan, root)
+            self.assertEqual(found.parent.parent.name, '2026121811')
+            grid, bounds = ptype.load_grid(found)
+            kinds = ptype.gate_types(40.0, -100.0, np.array([0.0, 180.0]), 10, 200.0, 0.5, grid, bounds)
+            self.assertTrue(np.all(kinds[0, 2:] == 1))   # due north of a mid-grid radar: snow
+            self.assertTrue(np.all(kinds[1, 2:] == 0))   # due south: rain
+            self.assertIsNone(ptype.find_grid(datetime(2026, 12, 19, 12, 0, tzinfo=timezone.utc), root))
+
 if __name__ == '__main__':
     unittest.main()
 

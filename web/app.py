@@ -1537,6 +1537,23 @@ def _rgb_to_value(
 
     return _nearest_lut_value(rgb, keys, vals)
 
+def _describe_category_value(categories, value, unit: str = "") -> str | None:
+    """Name a categorical-scale value, e.g. precip type -> "Snow · 25–30 dBZ".
+
+    Mirrors describeCategoryValue in static/js/app.js.
+    """
+    if not categories or value is None:
+        return None
+    for category in categories:
+        if category["start"] <= value < category["end"]:
+            step = int(value - category["start"])
+            low = category["dbz_min"] + step * category["dbz_step"]
+            high = low + category["dbz_step"]
+            span = f"≤{high:g}" if step == 0 else f"{low:g}–{high:g}"
+            return f"{category['name']} · {span}{' ' + unit if unit else ''}"
+    return None
+
+
 @app.get("/api/value-png/{model}/{run_id}/{fxx}/{parameter}")
 async def get_value_from_png(
     model: str, run_id: str, fxx: int, parameter: str,
@@ -1622,6 +1639,7 @@ async def get_value_from_png(
             if value is None:
                 raise HTTPException(status_code=404, detail="Could not determine value from pixel color")
             
+            text = _describe_category_value(COLOR_SCALES.get(parameter, {}).get("categories"), value, unit)
             return JSONResponse({
                 "value": round(value, 2),
                 "unit": unit,
@@ -1629,6 +1647,7 @@ async def get_value_from_png(
                 "lat": round(lat, 4),
                 "lon": round(lon, 4),
                 "source": "png",
+                **({"text": text} if text else {}),
             })
     
     except HTTPException:
@@ -1786,6 +1805,7 @@ async def get_legend(
             "radar_vxt": "velocity_texture",
             "radar_hail": "hail_probability",
             "radar_rain": "rainfall_rate",
+            "radar_ptype": "precip_type",
         }
         field = _radar_param_field.get(parameter, "")
         field_cfg = RADAR_FIELD_CONFIG.get(field)
@@ -1867,6 +1887,10 @@ async def get_legend(
         "vmin": vmin, "vmax": vmax,
         "stops": stops, "discrete": discrete,
         "tick_vals": tick_vals,
+        # Optional text for ticks, and named value ranges (e.g. precip type:
+        # value = category start + intensity step) for legends and hover.
+        "tick_labels": scale.get("tick_labels"),
+        "categories": scale.get("categories"),
         "bounds": bounds,
         "colors": colors,
         "color_lookup": color_lookup,
@@ -5388,12 +5412,15 @@ async def get_radar_value(
 
     unit = field_cfg.get("unit", "")
     label = field_cfg.get("label", short)
+    text = _describe_category_value(
+        COLOR_SCALES.get(f"radar_{short.lower()}", {}).get("categories"), value, unit)
     return JSONResponse({
         "value": round(value, 1),
         "unit": unit,
         "label": label,
         "lat": round(lat, 4),
         "lon": round(lon, 4),
+        **({"text": text} if text else {}),
     })
 
 

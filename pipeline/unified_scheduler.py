@@ -985,6 +985,34 @@ def _write_native_sounding_cache(processed: dict, out_dir: Path, fxx: int, model
     Path(str(tmp_path) + ".npz").replace(out_path)
 
 
+def _write_ptype_grid(renderer, processed: dict, out_dir: Path, fxx: int, model_name: str) -> None:
+    """Publish HRRR surface precip-type codes for the radar Precip Type product.
+
+    Written atomically as <run>/ptype_grid/fXX.npz; removed with the run.
+    Failures are logged and never affect the model render.
+    """
+    if model_name != "hrrr" or "precip_type" not in processed:
+        return
+    previous = renderer._current_model_name
+    try:
+        renderer._current_model_name = model_name
+        built = renderer.build_ptype_grid(processed)
+        if built is None:
+            return
+        codes, bounds = built
+        target = out_dir / "ptype_grid" / f"f{fxx:02d}.npz"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        valid = processed["precip_type"].get("valid_time")
+        temporary = target.with_name(f".{target.stem}.tmp.npz")
+        np.savez_compressed(temporary, codes=codes, bounds=np.asarray(bounds, dtype=np.float64),
+                            valid_time=np.asarray(str(valid or "")))
+        temporary.replace(target)
+    except Exception as exc:
+        logger.warning("[HRRR] fxx=%02d precip-type grid not written: %s", fxx, exc)
+    finally:
+        renderer._current_model_name = previous
+
+
 def _write_sounding_cache(processed: dict, out_dir: Path, fxx: int, model_name: str):
     cache_params = _get_sounding_cache_params(model_name)
     if not cache_params:
@@ -1029,7 +1057,7 @@ MODELS = [
         derived=HRRR_DERIVED, composites=HRRR_COMPOSITES,
         rendered_params=[
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
-            "reflectivity", "precip", "precip_12h",
+            "reflectivity", "precip_type", "precip", "precip_12h",
             "cape", "cin", "lifted_index", "stp", "scp", "cti",
             "msi", "smi", "ship", "dcp", "citi", "cvi", "llmt", "ascent", "hp_risk",
             "vil", "uh_25km", "uh_03km",
@@ -1069,7 +1097,7 @@ MODELS = [
         derived=NAM3KM_DERIVED, composites=NAM3KM_COMPOSITES,
         rendered_params=[
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
-            "reflectivity", "precip",
+            "reflectivity", "precip_type", "precip",
             "mucape", "mucin", "mlcape", "mlcin", "lifted_index",
             "vil", "lightning", "cloud_cover",
             "srh_01km", "srh_03km", "shear_06km", "shear_01km",
@@ -1094,7 +1122,7 @@ MODELS = [
         derived=RAP_DERIVED, composites={},
         rendered_params=[
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
-            "reflectivity", "precip",
+            "reflectivity", "precip_type", "precip",
             "cape", "cin", "mucape", "mucin", "mlcape", "mlcin",
             "lifted_index", "pwat", "cape_03km", "lcl",
             "cloud_cover", "visibility", "snow_depth",
@@ -1162,7 +1190,7 @@ MODELS = [
             # Helicity (GFS only has 0-3km)
             "srh_03km",
             # Pressure levels
-            "reflectivity",
+            "reflectivity", "precip_type",
             "temp_850mb", "temp_700mb", "temp_500mb", "temp_925mb",
             "rh_700mb", "rh_850mb",
             "wind_850mb", "wind_500mb", "wind_300mb", "wind_250mb",
@@ -2198,6 +2226,7 @@ def _render_single_fxx_impl(
         logger.info("[%s] fxx=%02d processed fields (RSS %.0f -> %.0f MB)",
                     model_name.upper(), fxx, rss_before, rss_after_process)
         _write_sounding_cache(processed, out_dir, fxx, model_name)
+        _write_ptype_grid(renderer, processed, out_dir, fxx, model_name)
         # Keep u/v components needed by wind overlays even if they came
         # in via extra_param_names (sounding cache).  Without them,
         # render_all_params cannot produce wind barb overlays.

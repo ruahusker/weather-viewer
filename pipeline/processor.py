@@ -186,6 +186,27 @@ BARB_COMPONENTS = {
     "max_wind": ("maxuw_10m", "maxvw_10m"),
 }
 
+def encode_precip_type(refl, rain, snow, sleet, freezing_rain):
+    """Encode composite reflectivity + categorical type flags (see config).
+
+    Priority where several flags are set: freezing rain > sleet > snow > rain.
+    Only points with a type flag are shown (echoes without a surface type,
+    e.g. virga, stay transparent); intensity comes from reflectivity, with
+    light precipitation below PTYPE_DBZ_MIN drawn in the lightest step.
+    """
+    from .config import PTYPE_BINS, PTYPE_DBZ_MIN, PTYPE_DBZ_STEP
+
+    kind = np.full(np.shape(refl), -1, dtype=np.int8)
+    for index, flag in enumerate((rain, snow, sleet, freezing_rain)):
+        kind[np.asarray(flag) >= 0.5] = index
+    with np.errstate(invalid="ignore"):
+        steps = np.clip((np.nan_to_num(refl, nan=0.0) - PTYPE_DBZ_MIN) / PTYPE_DBZ_STEP,
+                        0.0, PTYPE_BINS - 0.5)
+    encoded = (kind.astype(np.float32) * PTYPE_BINS + np.floor(steps) + 0.5).astype(np.float32)
+    encoded[kind < 0] = np.nan
+    return encoded
+
+
 # Snow accumulation products that need lookback GRIBs
 SNOW_PRODUCTS = {
     "kuchera_6hr":  {"hours": 6, "method": "kuchera"},
@@ -635,6 +656,16 @@ class FieldProcessor:
                 }
 
         # Composite indices (STP, SCP)
+        if "precip_type" in composite_requested:
+            fields = ("reflectivity", "crain", "csnow", "cicep", "cfrzr")
+            if all(k in result for k in fields):
+                ref = result["reflectivity"]
+                result["precip_type"] = {
+                    "data": encode_precip_type(*(result[k]["data"] for k in fields)),
+                    "lat": ref["lat"], "lon": ref["lon"], "valid_time": ref["valid_time"],
+                }
+            for flag in fields[1:]:
+                result.pop(flag, None)   # flags are inputs only, never rendered
         if composite_requested:
             self._compute_composites(result, composite_requested)
 

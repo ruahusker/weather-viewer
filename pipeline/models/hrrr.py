@@ -26,6 +26,11 @@ PARAM_SEARCH_STRINGS = {
     "mslp":         ":MSLMA:mean sea level:",
     "precip":       ":APCP:surface:",
     "reflectivity": ":REFC:entire atmosphere:",
+    # Categorical precipitation type (instantaneous only; GFS also has 0-6h averages).
+    "crain":        ":CRAIN:surface:(?:anl|[0-9]+ hour fcst):",
+    "csnow":        ":CSNOW:surface:(?:anl|[0-9]+ hour fcst):",
+    "cicep":        ":CICEP:surface:(?:anl|[0-9]+ hour fcst):",
+    "cfrzr":        ":CFRZR:surface:(?:anl|[0-9]+ hour fcst):",
     "cape":         ":CAPE:surface:",
     "cin":          ":CIN:surface:",
     "wind_gusts":   ":GUST:surface:",
@@ -132,6 +137,10 @@ GRIB_SHORTNAMES = {
     "mslp":         "mslma",
     "precip":       "tp",
     "reflectivity": "refc",
+    "crain":        "crain",
+    "csnow":        "csnow",
+    "cicep":        "cicep",
+    "cfrzr":        "cfrzr",
     "cape":         "cape",
     "cin":          "cin",
     "wind_gusts":   "gust",
@@ -223,6 +232,10 @@ LEVEL_TYPES = {
     "mslp":         {"typeOfLevel": "meanSea"},
     "precip":       {"typeOfLevel": "surface"},
     "reflectivity": {"typeOfLevel": "atmosphere"},
+    "crain":        {"typeOfLevel": "surface", "stepType": "instant"},
+    "csnow":        {"typeOfLevel": "surface", "stepType": "instant"},
+    "cicep":        {"typeOfLevel": "surface", "stepType": "instant"},
+    "cfrzr":        {"typeOfLevel": "surface", "stepType": "instant"},
     "cape":         {"typeOfLevel": "surface", "level": 0},
     "cin":          {"typeOfLevel": "surface", "level": 0},
     "wind_gusts":   {"typeOfLevel": "surface"},
@@ -343,6 +356,12 @@ DERIVED_PARAMS = {
 
 # Composite indices derived from multiple already-processed fields
 COMPOSITE_PARAMS = {
+    # Composite reflectivity colored by categorical surface precip type.
+    # Shared by every model that publishes CRAIN/CSNOW/CICEP/CFRZR.
+    "precip_type": {
+        "requires": ["reflectivity", "crain", "csnow", "cicep", "cfrzr"],
+        "label": "Precip Type",
+    },
     "stp": {
         "requires": ["cape", "cin", "srh_01km", "shear_06km"],
         "label": "Sig Tornado Param",

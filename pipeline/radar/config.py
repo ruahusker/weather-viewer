@@ -54,6 +54,7 @@ FAST_RENDER_PRODUCTS = [
     "vertically_integrated_liquid",
     "hail_probability",
     "rainfall_rate",
+    "precip_type",
 ]
 
 # Processing strategy used by scheduler_pipeline:
@@ -206,6 +207,7 @@ LEVEL2_PRODUCTS = {
     "velocity_texture": {"label": "Velocity Texture", "short": "VXT", "unit": "MPH"},
     "hail_probability": {"label": "Hail Probability", "short": "HAIL", "unit": "%"},
     "rainfall_rate": {"label": "Rainfall Rate", "short": "RAIN", "unit": "in/hr"},
+    "precip_type": {"label": "Precip Type", "short": "PTYPE", "unit": "dBZ"},
 }
 
 # Radar configuration

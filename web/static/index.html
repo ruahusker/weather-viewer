@@ -517,6 +517,9 @@
             Winter
           </button>
           <div class="param-group-items">
+            <button class="param-btn" data-param="precip_type" data-models="gfs,hrrr,nam3km,rap">
+              <span class="param-icon"></span>Precip Type
+            </button>
             <button class="param-btn" data-param="visibility" data-models="gfs,href,hrrr,nam12km,nam3km,rap,rrfs,rtma">
               <span class="param-icon"></span>Visibility
             </button>
@@ -1056,6 +1059,9 @@
             </button>
             <button class="param-btn" data-radar-product="RAIN">
               <span class="param-icon"></span>Rainfall Rate
+            </button>
+            <button class="param-btn" data-radar-product="PTYPE">
+              <span class="param-icon"></span>Precip Type
             </button>
           </div>
         </div>
@@ -1673,7 +1679,7 @@
        module scripts and deferred scripts run in document order. -->
   <script type="module" src="/static/js/main.js?v=20260709a"></script>
   <script defer src="/static/js/surface-obs.js?v=20261014a"></script>
-  <script defer src="/static/js/app.js?v=20261017-barbs1"></script>
+  <script defer src="/static/js/app.js?v=20261018-ptype2"></script>
   <script defer src="/static/js/ui-v4.js?v=20261017e"></script>
   <script defer src="/static/js/meteogram.js?v=20261017d"></script>
   <script defer src="/static/js/storm3d-modal.js?v=20261017a"></script>

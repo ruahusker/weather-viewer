@@ -368,8 +368,35 @@ def rainfall_rate_lut() -> tuple[np.ndarray, float, float]:
     return _lerp_colors(bp, vmin, vmax), vmin, vmax
 
 
+def precip_type_lut() -> tuple[np.ndarray, float, float]:
+    """Precip type: the model palette's four 12-step ramps, back to back."""
+    from pipeline.config import PTYPE_BINS, PTYPE_CATEGORIES, PTYPE_COLORS
+
+    vmin, vmax = 0.0, float(len(PTYPE_CATEGORIES) * PTYPE_BINS)
+    # Weakest steps are partly transparent, like low reflectivity, so radar
+    # noise and very light echoes recede instead of standing out in pastel.
+    step_alpha = {0: 120, 1: 190}
+    lut = np.zeros((256, 4), dtype=np.uint8)
+    for index in range(256):
+        value = vmin + (vmax - vmin) * index / 255.0
+        bin_index = min(int(value), len(PTYPE_COLORS) - 1)
+        color = PTYPE_COLORS[bin_index].lstrip("#")
+        alpha = step_alpha.get(bin_index % PTYPE_BINS, 255)
+        lut[index] = (int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16), alpha)
+    return lut, vmin, vmax
+
+
 # Field name → LUT builder + rendering metadata
 FIELD_CONFIG = {
+    "precip_type": {
+        "lut_fn": precip_type_lut,
+        "label": "Precip Type",
+        "short": "PTYPE",
+        "unit": "dBZ",
+        "mask_below": 0.25,
+        "prefer_long_range": True,
+        "legend_ticks": [6.0, 18.0, 30.0, 42.0],
+    },
     "reflectivity": {
         "lut_fn": reflectivity_lut,
         "label": "Reflectivity",

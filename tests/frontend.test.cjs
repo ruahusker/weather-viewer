@@ -385,3 +385,12 @@ test('reference-layer refreshes retain the viewport unless fitting is requested'
  vm.runInContext("setReferenceOverlayMode('models',{fitViewport:true});",ctx);
  assert.equal(fits,1);
 });
+
+test('categorical scales describe precip type by name and dBZ range',()=>{
+ const ctx=vm.createContext({});
+ vm.runInContext(source('web/static/js/app.js').match(/function describeCategoryValue\([\s\S]*?^\}/m)[0],ctx);
+ const cats=JSON.stringify([0,1,2,3].map((i)=>({name:['Rain','Snow','Sleet','Freezing Rain'][i],start:i*12,end:(i+1)*12,dbz_min:5,dbz_step:5})));
+ assert.equal(vm.runInContext(`describeCategoryValue(${cats},17.5,'dBZ')`,ctx),'Snow · 30–35 dBZ');
+ assert.equal(vm.runInContext(`describeCategoryValue(${cats},0.4,'dBZ')`,ctx),'Rain · ≤10 dBZ');
+ assert.equal(vm.runInContext(`describeCategoryValue(null,3,'dBZ')`,ctx),null);
+});
