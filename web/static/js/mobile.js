@@ -2179,6 +2179,9 @@ async function updateLegend(param) {
     }
 
     legendTicks.innerHTML = '';
+    // Category names sit mid-band, so none of them is pinned to a bar edge.
+    legendTicks.classList.toggle('centered', Boolean(data.categories?.length));
+    legendTicks.style.minHeight = '';
     const ticks = data.tick_vals?.length ? data.tick_vals
       : Array.from({length: 5}, (_, i) => data.vmin + (data.vmax - data.vmin) * i / 4);
     ticks.forEach((v, i) => {
@@ -2187,7 +2190,37 @@ async function updateLegend(param) {
       sp.textContent = data.tick_labels?.[i] ?? Number(v.toFixed(Math.abs(data.vmax - data.vmin) < 5 ? 2 : 0));
       legendTicks.appendChild(sp);
     });
+    keepCenteredTicksInside(legendTicks);
   } catch { if (requestId === mobileLegendRequestId) legendBar.classList.add('hidden'); }
+}
+
+/**
+ * Keep centred category labels inside the bar and apart: a label that would
+ * crowd its neighbour wraps within its own band, and one that would run past
+ * either end of the bar is nudged back inside it.
+ */
+function keepCenteredTicksInside(container) {
+  if (!container.classList.contains('centered')) return;
+  const box = container.getBoundingClientRect();
+  if (!box.width) return;
+  const band = box.width / container.children.length;
+  let prevRight = -Infinity;
+  const inside = (r) => (r.right > box.right ? box.right - r.right : r.left < box.left ? box.left - r.left : 0);
+  for (const span of container.children) {
+    let r = span.getBoundingClientRect();
+    let shift = inside(r);
+    if (r.left + shift < prevRight + 8) {
+      span.style.whiteSpace = 'normal';
+      span.style.width = `${band - 8}px`;
+      span.style.textAlign = 'center';
+      r = span.getBoundingClientRect();
+      shift = inside(r);
+      // Labels are absolutely positioned, so make room for the extra line.
+      container.style.minHeight = `${Math.ceil(r.bottom - box.top)}px`;
+    }
+    if (shift) span.style.transform = `translateX(calc(-50% + ${shift}px))`;
+    prevRight = r.right + shift;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
