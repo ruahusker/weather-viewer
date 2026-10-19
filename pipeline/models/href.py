@@ -48,23 +48,20 @@ MEAN_PARAM_SEARCH_STRINGS = {
     # Surface parameters (from mean/probability products)
     "temp_2m": ":TMP:2 m above ground:",
     "dewpoint_2m": ":DPT:2 m above ground:",
-    "ugrd_10m": ":UGRD:10 m above ground:",
-    "vgrd_10m": ":VGRD:10 m above ground:",
+    # The mean product has 10 m wind speed (WIND) but no 10 m components or gusts
+    "wind_speed": ":WIND:10 m above ground:",
     "mslp": ":MSLET:mean sea level:",
-    "wind_gusts": ":GUST:10 m above ground:",
     
     # Precipitation (6-hourly accumulated)
     "precip": ":APCP:surface:",
     
-    # Reflectivity (composite)
-    "reflectivity": ":REFC:entire atmosphere:",
+    # Composite reflectivity and echo tops come from the pmmn product below.
     
     # Convective parameters
     "cape": ":CAPE:surface:",
     "cin": ":CIN:surface:",
     
-    # Helicity
-    "srh_01km": ":HLCY:1000-0 m above ground:",
+    # Helicity (0-3 km only)
     "srh_03km": ":HLCY:3000-0 m above ground:",
     
     # Pressure levels
@@ -85,22 +82,19 @@ MEAN_PARAM_SEARCH_STRINGS = {
     "vgrd_500mb": ":VGRD:500 mb:",
     "ugrd_925mb": ":UGRD:925 mb:",
     "vgrd_925mb": ":VGRD:925 mb:",
-    "rh_850mb": ":RH:850 mb:",
-    "rh_700mb": ":RH:700 mb:",
+    "rh_700mb": ":RH:700 mb:",  # no 850 mb RH
     
     # Winter
-    "snow_depth": ":SNOD:surface:",
-    "snowfall_probability_1in": ":WEASD:surface:probability of >25.4:",
-    "frozen_pct": ":CPOFP:surface:",
+    # No SNOD, CPOFP or WEASD probabilities in the mean product
     
     # Visibility
     "visibility": ":VIS:surface:",
     
     # Cloud
-    "cloud_cover": ":TCDC:entire atmosphere:",
+    "cloud_cover": ":TCDC:entire atmosphere",
     
     # PWAT
-    "pwat": ":PWAT:entire atmosphere:",
+    "pwat": ":PWAT:entire atmosphere",
 }
 
 # HREF probability product uses different fields and thresholds than the mean product.
@@ -112,9 +106,17 @@ PROB_PARAM_SEARCH_STRINGS = {
     "uh_25km_probability": r":MXUPHL:5000-2000 m above ground:.*prob >75:",
 }
 
+# Probability-matched mean (pmmn) product. It also has REFD 1 km, MAXREF,
+# MXUPHL 2-5 km and APCP; APCP is left out so "precip" stays the mean field.
+PMMN_PARAM_SEARCH_STRINGS = {
+    "reflectivity": ":REFC:entire atmosphere",
+    "echo_tops": ":RETOP:entire atmosphere",
+}
+
 PARAM_SEARCH_STRINGS = {
     **MEAN_PARAM_SEARCH_STRINGS,
     **PROB_PARAM_SEARCH_STRINGS,
+    **PMMN_PARAM_SEARCH_STRINGS,
 }
 
 # GRIB short names for eccodes
@@ -128,6 +130,7 @@ GRIB_SHORTNAMES = {
     "precip": "tp",
     "precip_probability": "tp",
     "reflectivity": "refc",
+    "echo_tops": "unknown",  # NCEP-local 0.16.197
     "refl_probability_40dbz": "refd",
     "cape": "cape",
     "cin": "cin",
@@ -177,7 +180,8 @@ LEVEL_TYPES = {
         "scaledValueOfUpperLimit": 12700,
         "scaleFactorOfUpperLimit": 3,
     },
-    "reflectivity": {"typeOfLevel": "atmosphere"},
+    "reflectivity": {"typeOfLevel": "atmosphereSingleLayer"},
+    "echo_tops": {"typeOfLevel": "atmosphereSingleLayer"},
     "refl_probability_40dbz": {
         "typeOfLevel": "heightAboveGround",
         "level": 1000,

@@ -102,7 +102,7 @@ PARAM_SEARCH_STRINGS = {
     "echo_tops":    ":RETOP:cloud top:",
     "hail":         ":HAIL:entire atmosphere:",
     "pbl_height":   ":HPBL:surface:",
-    "weasd":        ":WEASD:surface:",
+    "weasd":        ":WEASD:surface:(?:anl|[0-9]+ hour fcst):",  # snowpack SWE, not the accumulations
     "uh_03km":      ":MXUPHL:3000-0 m above ground:",
 }
 
@@ -206,7 +206,7 @@ GRIB_SHORTNAMES = {
     "echo_tops":    "retop",
     "hail":         "hail",
     "pbl_height":   "hpbl",
-    "weasd":        "weasd",
+    "weasd":        "sdwe",
     "uh_03km":      "unknown",
     # IFS-specific (shared lookup)
     "snowfall":     "sf",
@@ -315,7 +315,7 @@ LEVEL_TYPES = {
     "echo_tops":    {"typeOfLevel": "cloudTop"},
     "hail":         {"typeOfLevel": "atmosphere"},
     "pbl_height":   {"typeOfLevel": "surface"},
-    "weasd":        {"typeOfLevel": "surface"},
+    "weasd":        {"typeOfLevel": "surface", "stepType": "instant"},
     "uh_03km":      {
         "typeOfLevel": "heightAboveGroundLayer",
         "topLevel": 3000,

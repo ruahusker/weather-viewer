@@ -58,87 +58,27 @@ def get_run_fxx(run_hour: int) -> range:
 
 
 # Parameter search strings for GEFS
-# Note: GEFS provides both control and mean/spread products
+# The pgrb2s.0p25 control-member file (gec00) carries surface fields only:
+# no pressure levels, cloud layers, lifted index, ensemble spread/anomaly or
+# exceedance probabilities (those live in the 0.5 degree pgrb2ap5 products).
+_SIX_HOUR_WINDOWS = "|".join(f"{hour - 6}-{hour}" for hour in range(6, 241, 6))
+
 PARAM_SEARCH_STRINGS = {
-    # Surface — ensemble mean
+    # Surface (control member)
     "temp_2m": ":TMP:2 m above ground:",
     "dewpoint_2m": ":DPT:2 m above ground:",
     "ugrd_10m": ":UGRD:10 m above ground:",
     "vgrd_10m": ":VGRD:10 m above ground:",
-    "mslp": ":MSLMA:mean sea level:",
+    "mslp": ":PRMSL:mean sea level:",
     "psfc": ":PRES:surface:",
     "wind_gusts": ":GUST:surface:",
-    
-    # Precipitation (6-hour accumulations)
-    "precip_6h": ":APCP:surface:6 hour acc:",
-    "precip_probability_6h_05in": ":APCP:surface:6 hour acc:probability of >12.7:",
-    "precip_probability_6h_1in": ":APCP:surface:6 hour acc:probability of >25.4:",
-    
-    # Snowfall
-    "snowfall_6h": ":WEASD:surface:6 hour acc:",
-    "snowfall_probability_6h_1in": ":WEASD:surface:6 hour acc:probability of >25.4:",
-    
-    # Pressure levels — temperatures
-    "temp_925mb": ":TMP:925 mb:",
-    "temp_850mb": ":TMP:850 mb:",
-    "temp_700mb": ":TMP:700 mb:",
-    "omega_700mb": ":VVEL:700 mb:",
-    "temp_500mb": ":TMP:500 mb:",
-    "temp_300mb": ":TMP:300 mb:",
-    "temp_250mb": ":TMP:250 mb:",
-    "temp_200mb": ":TMP:200 mb:",
-    
-    # Heights — critical for pattern recognition
-    "gh_1000mb": ":HGT:1000 mb:",
-    "gh_925mb": ":HGT:925 mb:",
-    "gh_850mb": ":HGT:850 mb:",
-    "gh_700mb": ":HGT:700 mb:",
-    "gh_500mb": ":HGT:500 mb:",
-    "gh_300mb": ":HGT:300 mb:",
-    "gh_250mb": ":HGT:250 mb:",
-    "gh_200mb": ":HGT:200 mb:",
-    
-    # Winds at pressure levels
-    "ugrd_925mb": ":UGRD:925 mb:",
-    "vgrd_925mb": ":VGRD:925 mb:",
-    "ugrd_850mb": ":UGRD:850 mb:",
-    "vgrd_850mb": ":VGRD:850 mb:",
-    "ugrd_700mb": ":UGRD:700 mb:",
-    "vgrd_700mb": ":VGRD:700 mb:",
-    "ugrd_500mb": ":UGRD:500 mb:",
-    "vgrd_500mb": ":VGRD:500 mb:",
-    "ugrd_300mb": ":UGRD:300 mb:",
-    "vgrd_300mb": ":VGRD:300 mb:",
-    "ugrd_250mb": ":UGRD:250 mb:",
-    "vgrd_250mb": ":VGRD:250 mb:",
-    "ugrd_200mb": ":UGRD:200 mb:",
-    "vgrd_200mb": ":VGRD:200 mb:",
-    
-    # Humidity
-    "rh_850mb": ":RH:850 mb:",
-    "rh_700mb": ":RH:700 mb:",
-    "rh_500mb": ":RH:500 mb:",
-    
-    # PWAT
-    "pwat": ":PWAT:entire atmosphere:",
-    "pwat_probability_1in": ":PWAT:entire atmosphere:probability of >25.4:",
-    
-    # Cloud cover
+
+    # APCP buckets reset every 6 h; hours 3, 9, 15... hold 3 h buckets and are skipped
+    "precip_6h": f":APCP:surface:(?:{_SIX_HOUR_WINDOWS}) hour acc fcst:",
+
+    "pwat": ":PWAT:entire atmosphere",
     "cloud_cover": ":TCDC:entire atmosphere:",
-    "cloud_cover_low": ":LCDC:low cloud layer:",
-    "cloud_cover_mid": ":MCDC:middle cloud layer:",
-    "cloud_cover_high": ":HCDC:high cloud layer:",
-    
-    # 500mb height spread (for uncertainty)
-    "gh_500mb_spread": ":HGT:500 mb:ensemble spread:",
-    "gh_500mb_anomaly": ":HGT:500 mb:ensemble mean anomaly:",
-    
-    # CAPE (often limited in GEFS)
     "cape": ":CAPE:surface:",
-    "cape_probability_1000": ":CAPE:surface:probability of >1000:",
-    
-    # Lifted index
-    "lifted_index": ":LFTX:surface:",
 }
 
 # GRIB short names
@@ -147,7 +87,7 @@ GRIB_SHORTNAMES = {
     "dewpoint_2m": "2d",
     "ugrd_10m": "10u",
     "vgrd_10m": "10v",
-    "mslp": "mslma",
+    "mslp": "prmsl",
     "psfc": "sp",
     "wind_gusts": "gust",
     "precip_6h": "tp",

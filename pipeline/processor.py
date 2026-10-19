@@ -87,11 +87,6 @@ try:
     _NAM_LEVELS = {
         "mslp":         {"typeOfLevel": "meanSea"},
         "mucin":        {"typeOfLevel": "pressureFromGroundLayer", "topLevel": 18000},
-        # NAM uses atmosphereSingleLayer where HRRR uses atmosphere/cloudTop
-        "reflectivity": {"typeOfLevel": "atmosphereSingleLayer"},
-        "vil":          {"typeOfLevel": "atmosphereSingleLayer"},
-        "echo_tops":    {"typeOfLevel": "atmosphereSingleLayer"},
-        "cloud_cover":  {"typeOfLevel": "atmosphereSingleLayer"},
         # NAM lightning is on the surface level, not atmosphere
         "lightning":    {"typeOfLevel": "surface"},
     }
@@ -126,11 +121,47 @@ SPECIAL_MATCH_CRITERIA = {
         {"discipline": 0, "parameterCategory": 1, "parameterNumber": 8,
          "typeOfLevel": "surface", "stepType": "accum"},
     ],
+    # ECMWF IFS publishes 10fg3 instead of 10fg after 90 h.
+    "wind_gusts": [
+        {"shortName": "10fg3", "typeOfLevel": "heightAboveGround", "level": 10},
+    ],
     "reflectivity": [
         {
             "shortName": "refc",
             "typeOfLevel": "atmosphereSingleLayer",
         },
+        # RRFS encodes REFC as WMO 0.16.5 (composite reflectivity), no shortName
+        {
+            "discipline": 0,
+            "parameterCategory": 16,
+            "parameterNumber": 5,
+            "typeOfLevel": "atmosphereSingleLayer",
+        },
+    ],
+    # NAM, RAP, RTMA and RRFS put column fields on atmosphereSingleLayer
+    # where HRRR uses atmosphere.
+    "vil": [
+        {"shortName": "veril", "typeOfLevel": "atmosphereSingleLayer"},
+    ],
+    "cloud_cover": [
+        {"shortName": "tcc", "typeOfLevel": "atmosphereSingleLayer", "stepType": "instant"},
+        # ECCC (GDPS) total cloud: unknown shortName, surface level
+        {"discipline": 0, "parameterCategory": 6, "parameterNumber": 1,
+         "typeOfLevel": "surface"},
+    ],
+    # GDPS surface CAPE/CIN have unknown shortNames in eccodes.
+    "cape_surface": [
+        {"discipline": 0, "parameterCategory": 7, "parameterNumber": 6,
+         "typeOfLevel": "surface"},
+    ],
+    "cin_surface": [
+        {"discipline": 0, "parameterCategory": 7, "parameterNumber": 7,
+         "typeOfLevel": "surface"},
+    ],
+    # NCEP-local HPBL (0.3.196) has no eccodes shortName (NAM, RAP, GFS).
+    "pbl_height": [
+        {"discipline": 0, "parameterCategory": 3, "parameterNumber": 196,
+         "typeOfLevel": "surface"},
     ],
     "omega_700mb": [
         {
@@ -149,6 +180,19 @@ SPECIAL_MATCH_CRITERIA = {
             "typeOfLevel": "cloudTop",
             "parameterCategory": 16,
             "parameterNumber": 3,
+        },
+        # RETOP on the column level: WMO 0.16.3 (RAP) or NCEP-local 0.16.197 (NAM)
+        {
+            "discipline": 0,
+            "typeOfLevel": "atmosphereSingleLayer",
+            "parameterCategory": 16,
+            "parameterNumber": 3,
+        },
+        {
+            "discipline": 0,
+            "typeOfLevel": "atmosphereSingleLayer",
+            "parameterCategory": 16,
+            "parameterNumber": 197,
         },
     ],
     "snowfall": [
@@ -440,6 +484,9 @@ class FieldProcessor:
             data[data >= 9990.0] = np.nan  # bitmap-masked points (NAM nest edges)
             data /= 25.4
             return data
+        if param in ("cape_surface", "cin_surface"):
+            data[data >= 9990.0] = np.nan  # GDPS bitmap-masks points without a parcel
+            return data
         if param == "mslp":
             data /= 100.0
             return data
@@ -617,7 +664,10 @@ class FieldProcessor:
 
         for derived, components in DERIVED_PARAMS.items():
             if derived in fetch_params and components[1] is not None:
-                fetch_params.remove(derived)
+                # A directly published magnitude (RTMA/HREF 10 m WIND) is kept
+                # as the fallback; the u/v magnitude replaces it when present.
+                if derived not in GRIB_SHORTNAMES:
+                    fetch_params.remove(derived)
                 for comp in components:
                     if comp is None:
                         continue

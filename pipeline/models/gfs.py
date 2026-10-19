@@ -52,7 +52,7 @@ PARAM_SEARCH_STRINGS = {
     "mucape":       ":CAPE:180-0 mb above ground:",
     "mlcape":       ":CAPE:90-0 mb above ground:",
     "mlcin":        ":CIN:90-0 mb above ground:",
-    "cape_03km":    ":CAPE:0-3000 m above ground:",
+    # pgrb2.0p25 has no 0-3 km CAPE
     "lifted_index": ":LFTX:surface:",  # GFS uses LFTX not 4LFTX
     "pwat":         ":PWAT:entire atmosphere",
     
@@ -122,7 +122,7 @@ GRIB_SHORTNAMES = {
     "mucin":        "cin",
     "frzlvl":       "gh",
     "pbl_height":   "hpbl",
-    "weasd":        "weasd",
+    "weasd":        "sdwe",
     "ugrd_250mb":   "u",
     "vgrd_250mb":   "v",
     "temp_925mb":   "t",
@@ -191,7 +191,7 @@ LEVEL_TYPES = {
     "mucin":        {"typeOfLevel": "pressureFromGroundLayer", "topLevel": 18000},
     "frzlvl":       {"typeOfLevel": "isothermZero"},
     "pbl_height":   {"typeOfLevel": "surface"},
-    "weasd":        {"typeOfLevel": "surface"},
+    "weasd":        {"typeOfLevel": "surface", "stepType": "instant"},
 }
 
 # Source priority: NOMADS first (files appear sooner), AWS fallback

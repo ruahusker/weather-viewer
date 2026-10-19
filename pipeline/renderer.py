@@ -2250,7 +2250,10 @@ class OverlayRenderer:
             field = processed[param]
             if selected is not None and param not in selected:
                 continue
-            if param in _SKIP_PARAMS:
+            # A wind product published only as speed (HREF 10 m WIND) has no
+            # components for the vector overlay below; shade it as a scalar.
+            speed_only = param in wind_vector_params and param not in _needed_later
+            if param in _SKIP_PARAMS and not speed_only:
                 if param not in _needed_later:
                     del processed[param]
                 continue

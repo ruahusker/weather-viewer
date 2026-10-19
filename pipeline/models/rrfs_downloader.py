@@ -83,14 +83,10 @@ def _parse_idx(idx_text: str) -> list[tuple[int, int, str]]:
 
 def _match_records(records: list[tuple[int, int, str]],
                    patterns: list[str]) -> list[tuple[int, int]]:
-    """Return (start, end) byte ranges for idx records matching any pattern."""
-    ranges = []
-    for start, end, line in records:
-        for pat in patterns:
-            if pat in line:
-                ranges.append((start, end))
-                break
-    return ranges
+    """Return (start, end) byte ranges for idx records matching any regex pattern."""
+    compiled = [re.compile(pat) for pat in patterns if pat]
+    return [(start, end) for start, end, line in records
+            if any(regex.search(line) for regex in compiled)]
 
 
 def _download_ranges(grib_url: str, ranges: list[tuple[int, int]],
@@ -119,7 +115,7 @@ def download_forecast_hour(run_dt: datetime, fxx: int,
                            search_patterns: list[str]) -> Path | None:
     """Download an RRFS subset for one forecast hour using idx-based ranging.
 
-    search_patterns: list of wgrib2 search strings (e.g. ":TMP:2 m above ground:")
+    search_patterns: list of wgrib2 search regexes (e.g. ":TMP:2 m above ground:")
     Returns local Path to the subset GRIB, or None on failure.
     """
     date_str = run_dt.strftime("%Y%m%d")

@@ -177,6 +177,7 @@ from .models.href import (
     PARAM_SEARCH_STRINGS as HREF_SEARCH,
     MEAN_PARAM_SEARCH_STRINGS as HREF_MEAN_SEARCH,
     PROB_PARAM_SEARCH_STRINGS as HREF_PROB_SEARCH,
+    PMMN_PARAM_SEARCH_STRINGS as HREF_PMMN_SEARCH,
     SOURCES_PRIORITY as HREF_SOURCES,
     get_run_fxx as _href_fxx,
 )
@@ -744,6 +745,17 @@ def _download_subset_via_idx(herbie_obj: Herbie, patterns: list[str]) -> Path:
         raise ValueError("No search patterns provided")
 
     records = _parse_wgrib2_idx(_read_text(str(herbie_obj.idx)))
+    if not records:
+        # ECMWF's JSON-lines index: use Herbie's parsed inventory, matched on
+        # the same search_this text as Herbie.download. Herbie's own subset
+        # download appends each byte range straight to its final file, so a
+        # failed range left truncated subsets that later scans reused.
+        inventory = herbie_obj.inventory()
+        records = [
+            (int(start), None if end != end else int(end), line)
+            for start, end, line in zip(
+                inventory["start_byte"], inventory["end_byte"], inventory["search_this"])
+        ]
     matched_ranges = [
         (start, end)
         for start, end, line in records
@@ -1085,7 +1097,7 @@ MODELS = [
         param_search=RTMA_SEARCH, prs_search={},
         derived=RTMA_DERIVED, composites={},
         rendered_params=[
-            "temp_2m", "dewpoint_2m", "rh_2m", "wind_speed", "wind_gusts", "psfc",
+            "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "psfc",
             "visibility", "cloud_cover",
         ],
         sources=RTMA_SOURCES, get_fxx=_rtma_fxx,
@@ -1101,7 +1113,7 @@ MODELS = [
             "reflectivity", "precip_type", "precip",
             "mucape", "mucin", "mlcape", "mlcin", "lifted_index",
             "vil", "lightning", "cloud_cover",
-            "srh_01km", "srh_03km", "shear_06km", "shear_01km",
+            "srh_01km", "srh_03km", "shear_06km",
             "uh_25km", "uh_03km",
             "lcl", "visibility", "snow_depth", "frzlvl",
             "pwat", "pbl_height", "echo_tops",
@@ -1110,7 +1122,7 @@ MODELS = [
             "omega_700mb", "vort_500mb",
             "wind_850mb", "wind_700mb", "wind_500mb", "wind_250mb",
             "rh_850mb", "rh_700mb",
-            "cti", "stp", "scp", "smi", "ship", "dcp", "citi", "cvi", "llmt", "ascent", "hp_risk",
+            "cti", "stp", "scp", "ship", "dcp", "citi", "cvi", "llmt", "ascent", "hp_risk",
             "precip_12h", "weasd", "frozen_pct",
             "kuchera_6hr", "kuchera_12hr", "snow10_12hr",
         ],
@@ -1128,15 +1140,14 @@ MODELS = [
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
             "reflectivity", "precip_type", "precip",
             "cape", "cin", "mucape", "mucin", "mlcape", "mlcin",
-            "lifted_index", "pwat", "cape_03km", "lcl",
+            "lifted_index", "pwat", "cape_03km",
             "cloud_cover", "visibility", "snow_depth",
             "echo_tops", "pbl_height", "weasd",
             "srh_01km", "srh_03km", "shear_06km",
             "temp_850mb", "temp_700mb", "temp_500mb", "temp_925mb",
-            "dewpoint_850mb",
             "omega_700mb", "vort_500mb", "lightning",
             "wind_850mb", "wind_500mb", "wind_300mb", "wind_250mb",
-            "rh_700mb", "rh_850mb", "frzlvl", "frozen_pct",
+            "rh_700mb", "rh_850mb", "frzlvl",
         ],
         sources=RAP_SOURCES, get_fxx=_rap_fxx,
         run_hours=list(range(24)),
@@ -1150,10 +1161,10 @@ MODELS = [
         rendered_params=[
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
             "reflectivity", "precip",
-            "cape", "cin", "mucape", "mucin", "mlcape", "mlcin",
-            "lifted_index", "pwat", "cape_03km", "lcl",
-            "vil", "cloud_cover", "visibility",
-            "srh_01km", "srh_03km", "shear_06km", "shear_01km",
+            "cape", "cin", "mucape", "mucin",
+            "lifted_index", "pwat",
+            "cloud_cover", "visibility",
+            "srh_03km", "shear_06km",
             "echo_tops", "lightning",
             "snow_depth", "frzlvl",
             "temp_850mb", "temp_700mb", "temp_500mb", "temp_925mb",
@@ -1188,7 +1199,7 @@ MODELS = [
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
             "precip", "visibility",
             # Instability
-            "cape", "cin", "mucape", "mucin", "mlcape", "mlcin", "cape_03km",
+            "cape", "cin", "mucape", "mucin", "mlcape", "mlcin",
             "lifted_index", "pwat",
             "pbl_height", "weasd", "frzlvl",
             # Helicity (GFS only has 0-3km)
@@ -1234,19 +1245,18 @@ MODELS = [
         derived=HREF_DERIVED, composites={},
         rendered_params=[
             # Surface
-            "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
-            # Reflectivity and probabilities
-            "reflectivity", "refl_probability_40dbz",
+            "temp_2m", "dewpoint_2m", "wind_speed", "mslp",
+            # Reflectivity (pmmn product) and probability
+            "reflectivity", "echo_tops", "refl_probability_40dbz",
             # Convective
             "cape", "cin", "cape_probability",
-            "srh_01km", "srh_03km", "uh_25km_probability",
+            "srh_03km", "uh_25km_probability",
             # Pressure levels
             "temp_850mb", "temp_700mb", "temp_500mb",
             "wind_850mb", "wind_500mb",
-            "rh_700mb", "rh_850mb",
+            "rh_700mb",
             # Precip
             "precip", "precip_probability",
-            "frozen_pct",
             # Other
             "visibility", "cloud_cover", "pwat",
         ],
@@ -1266,7 +1276,7 @@ MODELS = [
             "precip", "reflectivity", "refl_1km",
             # Convective
             "cape", "cin", "cape_ml", "cin_ml",
-            "srh_01km", "srh_03km", "uh_25km", "uh_02km",
+            "srh_01km", "srh_03km", "uh_25km",
             "shear_01km", "shear_06km",
             # Pressure levels
             "temp_925mb", "temp_850mb", "temp_700mb", "temp_500mb", "temp_300mb", "temp_250mb",
@@ -1290,22 +1300,9 @@ MODELS = [
         param_search=GEFS_SEARCH, prs_search={},
         derived=GEFS_DERIVED, composites={},
         rendered_params=[
-            # Surface
+            # pgrb2s.0p25 control member: surface fields only (see models/gefs.py)
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
-            # Precip (6-hourly accumulations)
-            "precip_6h", "precip_probability_6h_05in", "precip_probability_6h_1in",
-            "snowfall_6h", "snowfall_probability_6h_1in",
-            # Pressure levels — comprehensive
-            "temp_925mb", "temp_850mb", "temp_700mb", "temp_500mb", "temp_300mb", "temp_250mb", "temp_200mb",
-            "wind_925mb", "wind_850mb", "wind_700mb", "wind_500mb", "wind_300mb", "wind_250mb", "wind_200mb",
-            "rh_850mb", "rh_700mb", "rh_500mb",
-            # Ensemble-specific
-            "gh_500mb_spread", "gh_500mb_anomaly",
-            "pwat", "pwat_probability_1in",
-            "cape", "cape_probability_1000",
-            # Cloud
-            "cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high",
-            "lifted_index",
+            "precip_6h", "pwat", "cape", "cloud_cover",
         ],
         sources=GEFS_SOURCES, get_fxx=_gefs_fxx,
         run_hours=[0, 6, 12, 18],
@@ -1562,7 +1559,7 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
         search_patterns = list(model.param_search.values())
         return rrfs_download(run_dt, fxx, search_patterns)
 
-    # HREF uses separate mean/prob products. Download both and concatenate
+    # HREF uses separate mean/prob/pmmn products. Download all three and concatenate
     # so the render worker sees one GRIB containing deterministic + probability fields.
     if model.name == "href":
         def _download_href_product(product: str, search_map: dict[str, str], priority: list[str]) -> Path | None:
@@ -1593,11 +1590,15 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
                 prob_path = _download_href_product("prob", HREF_PROB_SEARCH, priority)
                 if prob_path is not None:
                     part_paths.append(Path(prob_path))
+                pmmn_path = _download_href_product("pmmn", HREF_PMMN_SEARCH, priority)
+                if pmmn_path is not None:
+                    part_paths.append(Path(pmmn_path))
                 if not part_paths:
                     continue
                 combined = _combine_grib_parts(
                     part_paths[0],
-                    list(HREF_MEAN_SEARCH.values()) + list(HREF_PROB_SEARCH.values()),
+                    list(HREF_MEAN_SEARCH.values()) + list(HREF_PROB_SEARCH.values())
+                    + list(HREF_PMMN_SEARCH.values()),
                     part_paths,
                 )
                 logger.info("[%s] [DL] Downloaded fxx=%02d", model.name.upper(), fxx)
