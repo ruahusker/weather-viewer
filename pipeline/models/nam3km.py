@@ -22,7 +22,7 @@ PARAM_SEARCH_STRINGS = {
     "vgrd_10m":     ":VGRD:10 m above ground:",
     "mslp":         ":PRMSL:mean sea level:",
     "precip":       ":APCP:surface:",
-    "reflectivity": ":REFC:entire atmosphere (considered as a single layer):",
+    "reflectivity": ":REFC:entire atmosphere",
     # Categorical precipitation type (instantaneous only; GFS also has 0-6h averages).
     "crain":        ":CRAIN:surface:(?:anl|[0-9]+ hour fcst):",
     "csnow":        ":CSNOW:surface:(?:anl|[0-9]+ hour fcst):",

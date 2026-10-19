@@ -59,7 +59,7 @@ PARAM_SEARCH_STRINGS = {
     "srh_03km":     ":HLCY:3000-0 m above ground:",
     
     # -- Reflectivity --
-    "reflectivity": ":REFC:entire atmosphere (considered as a single layer):",
+    "reflectivity": ":REFC:entire atmosphere",
     "vil":          ":VIL:entire atmosphere",
     
     # -- Pressure levels --
