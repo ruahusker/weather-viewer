@@ -188,8 +188,13 @@ from .models.rrfs import (
 )
 from .models.gefs import (
     DERIVED_PARAMS as GEFS_DERIVED,
-    PARAM_SEARCH_STRINGS as GEFS_SEARCH,
     SOURCES_PRIORITY as GEFS_SOURCES,
+    SPREAD_MEMBER as GEFS_SPREAD_MEMBER,
+    SPREAD_SEARCH_STRINGS as GEFS_SPREAD_SEARCH,
+    SURFACE_SEARCH_STRINGS as GEFS_SEARCH,
+    UPPER_AIR_MEMBER as GEFS_UPPER_AIR_MEMBER,
+    UPPER_AIR_PRODUCT as GEFS_UPPER_AIR_PRODUCT,
+    UPPER_AIR_SEARCH_STRINGS as GEFS_UPPER_AIR_SEARCH,
     get_run_fxx as _gefs_fxx,
 )
 
@@ -778,10 +783,14 @@ def _combine_grib_parts(base_path: Path, patterns: list[str], part_paths: list[P
     if combined_path.exists() and combined_path.stat().st_size > 0:
         return combined_path
 
-    with open(combined_path, "wb") as combined_f:
+    # Write then rename: the cache lookup prefers the largest subset, so a
+    # half-written combined file must never appear under its final name.
+    tmp_path = combined_path.with_suffix(combined_path.suffix + ".tmp")
+    with open(tmp_path, "wb") as combined_f:
         for part_path in part_paths:
             with open(part_path, "rb") as part_f:
                 combined_f.write(part_f.read())
+    tmp_path.replace(combined_path)
     return combined_path
 
 
@@ -1290,22 +1299,15 @@ MODELS = [
         param_search=GEFS_SEARCH, prs_search={},
         derived=GEFS_DERIVED, composites={},
         rendered_params=[
-            # Surface
+            # Surface: 0.25 degree pgrb2s control member
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
-            # Precip (6-hourly accumulations)
-            "precip_6h", "precip_probability_6h_05in", "precip_probability_6h_1in",
-            "snowfall_6h", "snowfall_probability_6h_1in",
-            # Pressure levels — comprehensive
-            "temp_925mb", "temp_850mb", "temp_700mb", "temp_500mb", "temp_300mb", "temp_250mb", "temp_200mb",
+            "precip_6h", "pwat", "cape", "cloud_cover",
+            # Pressure levels: 0.5 degree pgrb2ap5, appended per hour (no 300 mb TMP)
+            "temp_925mb", "temp_850mb", "temp_700mb", "temp_500mb", "temp_250mb", "temp_200mb",
             "wind_925mb", "wind_850mb", "wind_700mb", "wind_500mb", "wind_300mb", "wind_250mb", "wind_200mb",
             "rh_850mb", "rh_700mb", "rh_500mb",
-            # Ensemble-specific
-            "gh_500mb_spread", "gh_500mb_anomaly",
-            "pwat", "pwat_probability_1in",
-            "cape", "cape_probability_1000",
-            # Cloud
-            "cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high",
-            "lifted_index",
+            # Ensemble spread (gespr)
+            "gh_500mb_spread",
         ],
         sources=GEFS_SOURCES, get_fxx=_gefs_fxx,
         run_hours=[0, 6, 12, 18],
@@ -1390,6 +1392,60 @@ def _get_herbie_cached(priority: list[str], **kwargs) -> Herbie:
     if len(_herbie_init_cache) > 200:
         _herbie_init_cache.clear()
     return H
+
+
+def _append_gefs_upper_air(model: ModelConfig, run_dt: datetime, fxx: int,
+                           surface_path: Path, priority: list[str]) -> Path | None:
+    """Append GEFS 0.5 degree pressure levels and 500 mb spread to a surface subset.
+
+    The 0.25 degree pgrb2s file has surface fields only. The member's
+    pgrb2ap5 fields are required (both products are published together, so
+    a miss means "retry later"); the spread is optional. The combined file
+    keeps the surface file's canonical name so the cache lookup finds it.
+    The two grids differ (1440x721 vs 720x361); every GEFS overlay is
+    rendered on fixed CONUS bounds and each field keeps its own lat/lon.
+    """
+    sources = list(dict.fromkeys(
+        [*priority, *(s for s in model.sources if SOURCE_CIRCUIT.available(model.name, s)), "aws"]
+    ))
+    part_paths = [Path(surface_path)]
+    patterns = list(model.param_search.values())
+    for member, search_map, required in (
+        (GEFS_UPPER_AIR_MEMBER, GEFS_UPPER_AIR_SEARCH, True),
+        (GEFS_SPREAD_MEMBER, GEFS_SPREAD_SEARCH, False),
+    ):
+        part = None
+        for source in sources:
+            try:
+                herbie_obj = _get_herbie_cached(
+                    priority=[source],
+                    date=run_dt.strftime("%Y-%m-%d %H:%M"),
+                    model=model.herbie_model,
+                    product=GEFS_UPPER_AIR_PRODUCT,
+                    fxx=fxx,
+                    member=member,
+                    save_dir=str(GRIB_CACHE_DIR),
+                    overwrite=False,
+                    verbose=False,
+                )
+                if herbie_obj.grib is None:
+                    continue
+                part = Path(_download_subset_chunked(herbie_obj, list(search_map.values())))
+                break
+            except Exception as exc:
+                logger.debug("[GEFS] fxx=%02d %s %s from %s failed: %s",
+                             fxx, GEFS_UPPER_AIR_PRODUCT, member, source, str(exc)[:200])
+        if part is None or not part.exists() or part.stat().st_size == 0:
+            if required:
+                logger.info("[GEFS] fxx=%02d 0.5 degree %s fields not available yet",
+                            fxx, member)
+                return None
+            logger.warning("[GEFS] fxx=%02d 0.5 degree %s fields unavailable, skipping",
+                           fxx, member)
+            continue
+        part_paths.append(part)
+        patterns.extend(search_map.values())
+    return _combine_grib_parts(Path(surface_path), patterns, part_paths)
 
 
 def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
@@ -1701,6 +1757,9 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
                     logger.warning("[%s] prs append failed fxx=%02d: %s",
                                    model.name.upper(), fxx, exc)
 
+            if model.name == "gefs":
+                return _append_gefs_upper_air(
+                    model, run_dt, fxx, Path(local_path), selected_priority)
             return Path(local_path)
         except Exception as exc:
             if "503" in str(exc) and attempt < _max_retries:
@@ -1733,6 +1792,9 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
                     local_path = _download_from_herbie(
                         _build_herbie(fallback_sources), fallback_sources,
                     )
+                    if local_path is not None and model.name == "gefs":
+                        return _append_gefs_upper_air(
+                            model, run_dt, fxx, Path(local_path), fallback_sources)
                     if local_path is not None:
                         return local_path
                 except Exception as fallback_exc:

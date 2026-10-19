@@ -1443,7 +1443,7 @@ COLOR_SCALES = {
     "gh_500mb_spread": {
         "cmap": "YlOrRd",
         "vmin": 0,
-        "vmax": 1000,
+        "vmax": 160,  # GEFS gespr over CONUS: ~10 m at f000, ~150 m (p99) by f240
         "unit": "m",
         "label": "500mb Height Spread (m)",
     },
