@@ -694,7 +694,7 @@ const RADAR_PRODUCTS = [
   { id: 'REF',  label: 'Reflectivity', legend: 'radar_reflectivity' },
   { id: 'VEL',  label: 'Velocity', legend: 'radar_velocity' },
   { id: 'SRM',  label: 'Storm-Rel Vel', legend: 'radar_srm' },
-  { id: 'SW',   label: 'Spectrum Width', legend: 'radar_sw' },
+  { id: 'PTYPE', label: 'Precip Type', legend: 'radar_ptype' },
   // Dual-pol
   { id: 'CC',   label: 'Corr. Coeff.', legend: 'radar_cc' },
   { id: 'ZDR',  label: 'Diff. Refl.', legend: 'radar_zdr' },
@@ -707,7 +707,7 @@ const RADAR_PRODUCTS = [
   { id: 'VIL',  label: 'VIL', legend: 'radar_vil' },
   { id: 'HAIL', label: 'Hail Prob.', legend: 'radar_hail' },
   { id: 'RAIN', label: 'Rainfall Rate', legend: 'radar_rain' },
-  { id: 'PTYPE', label: 'Precip Type', legend: 'radar_ptype' },
+  { id: 'SW',   label: 'Spectrum Width', legend: 'radar_sw' },
   { id: 'TDS',  label: 'Debris Sig.', legend: 'radar_tds' },
 ];
 
