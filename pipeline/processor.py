@@ -303,6 +303,10 @@ def _extract_field(msgid) -> GribField:
     nj = eccodes.codes_get(msgid, "Nj")
     # Use in-place conversion if possible
     vals = eccodes.codes_get_values(msgid).reshape(nj, ni).astype(np.float32, copy=False)
+    # Bitmap-masked points (HREF's frame around CONUS, NAM nest edges) come
+    # back as missingValue; make them NaN so they render transparent.
+    if _safe_get(msgid, "bitmapPresent", 0) == 1:
+        vals[vals == np.float32(eccodes.codes_get_double(msgid, "missingValue"))] = np.nan
     if _safe_get(msgid, "alternativeRowScanning", 0) == 1:
         if _safe_get(msgid, "jPointsAreConsecutive", 0) == 0:
             vals[1::2] = vals[1::2, ::-1]
