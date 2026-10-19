@@ -58,12 +58,14 @@ def get_run_fxx(run_hour: int) -> range:
 
 
 # Parameter search strings for GEFS
-# The pgrb2s.0p25 control-member file (gec00) carries surface fields only:
-# no pressure levels, cloud layers, lifted index, ensemble spread/anomaly or
-# exceedance probabilities (those live in the 0.5 degree pgrb2ap5 products).
+# The pgrb2s.0p25 control-member file (gec00) carries surface fields only.
+# Pressure levels come from the 0.5 degree pgrb2ap5 product (UPPER_AIR_*
+# below) and are appended to the same GRIB. Neither product has cloud layers,
+# lifted index, 6 h snowfall, 500 mb anomaly or exceedance probabilities.
 _SIX_HOUR_WINDOWS = "|".join(f"{hour - 6}-{hour}" for hour in range(6, 241, 6))
 
-PARAM_SEARCH_STRINGS = {
+# Fields in the 0.25 degree pgrb2s file (the scheduler's primary download)
+SURFACE_SEARCH_STRINGS = {
     # Surface (control member)
     "temp_2m": ":TMP:2 m above ground:",
     "dewpoint_2m": ":DPT:2 m above ground:",
@@ -79,6 +81,37 @@ PARAM_SEARCH_STRINGS = {
     "pwat": ":PWAT:entire atmosphere",
     "cloud_cover": ":TCDC:entire atmosphere:",
     "cape": ":CAPE:surface:",
+}
+
+# 0.5 degree pgrb2ap5 product (Herbie "atmos.5"), appended to each forecast
+# hour's surface subset. Member "c00" keeps the pressure levels on the same
+# control run as the surface fields; "avg" would use the ensemble mean.
+UPPER_AIR_PRODUCT = "atmos.5"
+UPPER_AIR_MEMBER = "c00"
+
+# pgrb2ap5 has TMP/RH on 1000-200 mb except 300 mb, HGT/UGRD/VGRD on every
+# level, and VVEL only at 850 mb.
+_UPPER_AIR_LEVELS = (925, 850, 700, 500, 300, 250, 200)
+UPPER_AIR_SEARCH_STRINGS = {
+    **{f"temp_{lev}mb": f":TMP:{lev} mb:" for lev in _UPPER_AIR_LEVELS if lev != 300},
+    **{f"gh_{lev}mb": f":HGT:{lev} mb:" for lev in _UPPER_AIR_LEVELS},
+    **{f"ugrd_{lev}mb": f":UGRD:{lev} mb:" for lev in _UPPER_AIR_LEVELS},
+    **{f"vgrd_{lev}mb": f":VGRD:{lev} mb:" for lev in _UPPER_AIR_LEVELS},
+    **{f"rh_{lev}mb": f":RH:{lev} mb:" for lev in (850, 700, 500)},
+}
+
+# Ensemble spread (gespr), appended after the member fields so gh_500mb
+# still matches the member's height first.
+SPREAD_MEMBER = "spr"
+SPREAD_SEARCH_STRINGS = {
+    "gh_500mb_spread": ":HGT:500 mb:",
+}
+
+# Every field the GEFS download provides, across all three files
+PARAM_SEARCH_STRINGS = {
+    **SURFACE_SEARCH_STRINGS,
+    **UPPER_AIR_SEARCH_STRINGS,
+    **SPREAD_SEARCH_STRINGS,
 }
 
 # GRIB short names
@@ -194,7 +227,8 @@ LEVEL_TYPES = {
     "cloud_cover_low": {"typeOfLevel": "lowCloudLayer"},
     "cloud_cover_mid": {"typeOfLevel": "middleCloudLayer"},
     "cloud_cover_high": {"typeOfLevel": "highCloudLayer"},
-    "gh_500mb_spread": {"typeOfLevel": "isobaricInhPa", "level": 500},
+    # derivedForecast 2 = ensemble standard deviation (gespr)
+    "gh_500mb_spread": {"typeOfLevel": "isobaricInhPa", "level": 500, "derivedForecast": 2},
     "gh_500mb_anomaly": {"typeOfLevel": "isobaricInhPa", "level": 500},
     "cape": {"typeOfLevel": "surface", "level": 0},
     "cape_probability_1000": {"typeOfLevel": "surface", "level": 0},

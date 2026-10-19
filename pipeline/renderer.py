@@ -419,6 +419,11 @@ class OverlayRenderer:
             w = data_w
             h = int(data_w * merc_h / merc_w)
 
+        # Enlarge coarse grids (0.5 degree is ~190 columns) as a whole, so the
+        # minimum size keeps the Mercator aspect instead of clamping each side.
+        if 0 < w < 200 or 0 < h < 150:
+            scale = max(200 / max(w, 1), 150 / max(h, 1))
+            w, h = int(round(w * scale)), int(round(h * scale))
         w = max(200, min(w, 2400))
         h = max(150, min(h, 1600))
         return w, h
