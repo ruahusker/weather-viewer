@@ -17,6 +17,7 @@ import ctypes
 import fcntl
 import gc
 import hashlib
+import http.client
 import json
 import logging
 import logging.handlers
@@ -360,9 +361,10 @@ DOWNLOAD_SCAN_PAUSE_SECONDS = 0.1
 DOWNLOAD_ACTIVE_SCAN_INTERVAL_SECONDS = _env_int("PIPELINE_DOWNLOAD_ACTIVE_SCAN_INTERVAL", 5)
 DOWNLOAD_IDLE_SCAN_INTERVAL_SECONDS = _env_int("PIPELINE_DOWNLOAD_IDLE_SCAN_INTERVAL", 15)
 DOWNLOAD_RETRY_BACKOFF_SECONDS = _env_int("PIPELINE_DOWNLOAD_RETRY_BACKOFF_SECONDS", 20)
-# How long an hour waits for its prs (pressure-level) fields before it is
-# rendered from the surface file alone.
-PRS_APPEND_GRACE_SECONDS = _env_int("PIPELINE_PRS_APPEND_GRACE_SECONDS", 900)
+# How long an hour waits for parts appended to its surface subset (HRRR
+# wrfprs, GEFS 0.5 degree member and spread) before rendering without them.
+# GEFS spread trailed the control member by up to 16.5 min on 2026-10-20.
+APPEND_GRACE_SECONDS = _env_int("PIPELINE_APPEND_GRACE_SECONDS", 1200)
 DOWNLOAD_PROGRESSIVE_WINDOW_SIZE = _env_int(
     "PIPELINE_DOWNLOAD_PROGRESSIVE_WINDOW_SIZE", 7
 )
@@ -566,7 +568,7 @@ class DownloadManager:
                             break
 
                     # Check local cache first
-                    cached = _find_cached_grib(model, run_dt, fxx, require_prs=True)
+                    cached = _find_cached_grib(model, run_dt, fxx, require_complete=True)
                     if cached is not None:
                         with self._lock:
                             self._active[model_name][2][fxx] = cached
@@ -821,6 +823,11 @@ def _download_subset_chunked(herbie_obj: Herbie, patterns: list[str]) -> Path:
 
     try:
         return _download_subset_via_idx(herbie_obj, patterns)
+    except (OSError, http.client.HTTPException):
+        # Network failure: let the caller try another source or the next
+        # scan. Herbie's subset download skips byte ranges that fail and
+        # keeps the rest, which left GEFS subsets missing 2t/2d/tp.
+        raise
     except Exception as exc:
         logger.debug("Direct idx subset failed for %s f%02d, falling back to Herbie: %s",
                      herbie_obj.model, herbie_obj.fxx, exc)
@@ -835,15 +842,7 @@ def _download_subset_chunked(herbie_obj: Herbie, patterns: list[str]) -> Path:
             raise FileNotFoundError(chunk_path)
         chunk_paths.append(chunk_path)
 
-    combined_path = _combined_subset_path(chunk_paths[0], patterns)
-    if combined_path.exists() and combined_path.stat().st_size > 0:
-        return combined_path
-
-    with open(combined_path, "wb") as combined_f:
-        for chunk_path in chunk_paths:
-            with open(chunk_path, "rb") as chunk_f:
-                combined_f.write(chunk_f.read())
-    return combined_path
+    return _combine_grib_parts(chunk_paths[0], patterns, chunk_paths)
 
 # Suppress Herbie's verbose internal logging (index errors, "remake" warnings)
 logging.getLogger("herbie").setLevel(logging.CRITICAL)
@@ -1420,8 +1419,10 @@ def _append_gefs_upper_air(model: ModelConfig, run_dt: datetime, fxx: int,
     """Append GEFS 0.5 degree pressure levels and 500 mb spread to a surface subset.
 
     The 0.25 degree pgrb2s file has surface fields only. The member's
-    pgrb2ap5 fields are required (both products are published together, so
-    a miss means "retry later"); the spread is optional. The combined file
+    pgrb2ap5 fields and the spread are both waited for (a miss returns None,
+    retried next scan; gespr is computed after all members, so it trails by
+    minutes). Past APPEND_GRACE_SECONDS a missing member part renders the
+    surface file alone and a missing spread is skipped. The combined file
     keeps the surface file's canonical name so the cache lookup finds it.
     The two grids differ (1440x721 vs 720x361); every GEFS overlay is
     rendered on fixed CONUS bounds and each field keeps its own lat/lon.
@@ -1455,17 +1456,23 @@ def _append_gefs_upper_air(model: ModelConfig, run_dt: datetime, fxx: int,
                 break
             except Exception as exc:
                 logger.debug("[GEFS] fxx=%02d %s %s from %s failed: %s",
-                             fxx, GEFS_UPPER_AIR_PRODUCT, member, source, str(exc)[:200])
+                             fxx, GEFS_UPPER_AIR_PRODUCT, member, source, _exc_text(exc))
         if part is None or not part.exists() or part.stat().st_size == 0:
-            if required:
+            expired, waited = _append_wait_expired(model, run_dt, fxx)
+            if not expired:
                 logger.info("[GEFS] fxx=%02d 0.5 degree %s fields not available yet",
                             fxx, member)
                 return None
-            logger.warning("[GEFS] fxx=%02d 0.5 degree %s fields unavailable, skipping",
-                           fxx, member)
+            if required:
+                logger.warning("[GEFS] fxx=%02d 0.5 degree %s fields unavailable after %ds, "
+                               "rendering surface fields only", fxx, member, waited)
+                return Path(surface_path)
+            logger.warning("[GEFS] fxx=%02d 0.5 degree %s fields unavailable after %ds, skipping",
+                           fxx, member, waited)
             continue
         part_paths.append(part)
         patterns.extend(search_map.values())
+    _append_found(model, run_dt, fxx)
     return _combine_grib_parts(Path(surface_path), patterns, part_paths)
 
 
@@ -1480,7 +1487,46 @@ def _exc_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {text[0][:200]}" if text else type(exc).__name__
 
 
-_prs_missing_since: dict[tuple[str, str, int], float] = {}
+_append_missing_since: dict[tuple[str, str, int], float] = {}
+
+
+def _append_wait_expired(model: ModelConfig, run_dt: datetime, fxx: int) -> tuple[bool, int]:
+    """Record a missing appended part; return (grace expired, seconds waited)."""
+    key = (model.name, run_dt.strftime("%Y%m%d%H"), fxx)
+    now = time.time()
+    first_miss = _append_missing_since.setdefault(key, now)
+    if len(_append_missing_since) > 256:
+        for stale in [k for k, t in _append_missing_since.items()
+                      if now - t > 4 * APPEND_GRACE_SECONDS]:
+            _append_missing_since.pop(stale, None)
+    waited = int(now - first_miss)
+    if waited < APPEND_GRACE_SECONDS:
+        return False, waited
+    _append_missing_since.pop(key, None)
+    return True, waited
+
+
+def _append_found(model: ModelConfig, run_dt: datetime, fxx: int) -> None:
+    _append_missing_since.pop((model.name, run_dt.strftime("%Y%m%d%H"), fxx), None)
+
+
+def _complete_subset_names(model: ModelConfig, canonical: str) -> list[str] | None:
+    """Names of the combined files that hold every field an hour renders from.
+
+    None for models whose download is a single subset. The scan only
+    registers these, so an hour whose appended part is still pending is
+    retried instead of rendered from its surface subset.
+    """
+    base = Path(canonical)
+    if model.prs_search:
+        return [_combined_subset_path(base, _prs_patterns(model)).name]
+    if model.name == "gefs":
+        upper = list(model.param_search.values()) + list(GEFS_UPPER_AIR_SEARCH.values())
+        return [
+            _combined_subset_path(base, upper + list(GEFS_SPREAD_SEARCH.values())).name,
+            _combined_subset_path(base, upper).name,
+        ]
+    return None
 
 
 def _append_prs_fields(model: ModelConfig, run_dt: datetime, fxx: int,
@@ -1492,15 +1538,14 @@ def _append_prs_fields(model: ModelConfig, run_dt: datetime, fxx: int,
     retries; the surface subset stays cached, so only the prs part is fetched
     again. Rendering waits rather than re-rendering later: an hour rendered
     without prs counts as complete (80% of its maps exist) and is never
-    revisited. After PRS_APPEND_GRACE_SECONDS of misses the hour falls back
+    revisited. After APPEND_GRACE_SECONDS of misses the hour falls back
     to the surface file so a missing wrfprs cannot stall the run.
 
     The prs part is fetched by idx byte ranges (written to a temp file first;
     Herbie's own subset download left truncated files after IncompleteRead),
     and the combined file gets its own name, so the surface subset is never
-    modified and _find_cached_grib(require_prs=True) only finds whole hours.
+    modified and _find_cached_grib(require_complete=True) only finds whole hours.
     """
-    key = (model.name, run_dt.strftime("%Y%m%d%H"), fxx)
     sources = list(dict.fromkeys(
         [*priority, *(s for s in model.sources if SOURCE_CIRCUIT.available(model.name, s)), "aws"]
     ))
@@ -1531,22 +1576,16 @@ def _append_prs_fields(model: ModelConfig, run_dt: datetime, fxx: int,
             misses.append(f"{source}: {_exc_text(exc)}")
 
     if prs_path is None:
-        now = time.time()
-        first_miss = _prs_missing_since.setdefault(key, now)
-        if len(_prs_missing_since) > 256:
-            for stale in [k for k, t in _prs_missing_since.items()
-                          if now - t > 4 * PRS_APPEND_GRACE_SECONDS]:
-                _prs_missing_since.pop(stale, None)
-        if now - first_miss < PRS_APPEND_GRACE_SECONDS:
+        expired, waited = _append_wait_expired(model, run_dt, fxx)
+        if not expired:
             logger.info("[%s] fxx=%02d prs fields not available yet, retrying next scan (%s)",
                         model.name.upper(), fxx, "; ".join(misses))
             return None
-        _prs_missing_since.pop(key, None)
         logger.warning("[%s] fxx=%02d prs fields unavailable after %ds, rendering surface fields only (%s)",
-                       model.name.upper(), fxx, int(now - first_miss), "; ".join(misses))
+                       model.name.upper(), fxx, waited, "; ".join(misses))
         return Path(surface_path)
 
-    _prs_missing_since.pop(key, None)
+    _append_found(model, run_dt, fxx)
     return _combine_grib_parts(Path(surface_path), _prs_patterns(model),
                                [Path(surface_path), Path(prs_path)])
 
@@ -3342,17 +3381,17 @@ def _detect_pending(model: ModelConfig) -> datetime | None:
 
 
 def _find_cached_grib(model: ModelConfig, run_dt: datetime, fxx: int,
-                      require_prs: bool = False) -> Path | None:
+                      require_complete: bool = False) -> Path | None:
     """Resolve an already-downloaded GRIB subset from local cache.
 
     This avoids rebuilding Herbie state and re-checking remote sources for
     prerequisite files (previous precip hour, snow lookback hours) that are
-    usually already present on disk. With require_prs, a model with prs
-    fields only matches the combined surface+prs file, so an hour whose prs
-    append is still pending is downloaded (retried) instead of rendered.
+    usually already present on disk. With require_complete, a model that
+    appends parts to its surface subset (HRRR prs, GEFS upper air) only
+    matches the combined file, so an hour whose append is still pending is
+    downloaded (retried) instead of rendered.
     """
-    require_prs = require_prs and bool(model.prs_search)
-    cache_key = (model.name, run_dt.strftime("%Y%m%d%H"), fxx, require_prs)
+    cache_key = (model.name, run_dt.strftime("%Y%m%d%H"), fxx, require_complete)
     now = time.time()
     cached = _grib_lookup_cache.get(cache_key)
     if cached is not None and cached[0] > now:
@@ -3392,14 +3431,18 @@ def _find_cached_grib(model: ModelConfig, run_dt: datetime, fxx: int,
 
     dir_index = _grib_dir_index(cache_dir)
     for suffix in suffixes:
-        if require_prs:
-            combined = _combined_subset_path(cache_dir / suffix, _prs_patterns(model))
-            try:
-                match = combined if combined.stat().st_size > 0 else None
-            except OSError:
-                match = None
-        else:
+        complete_names = _complete_subset_names(model, suffix) if require_complete else None
+        if complete_names is None:
             match = dir_index.get(suffix)
+        else:
+            match = None
+            for name in complete_names:
+                try:
+                    if (cache_dir / name).stat().st_size > 0:
+                        match = cache_dir / name
+                        break
+                except OSError:
+                    continue
         if match is not None:
             _grib_lookup_cache[cache_key] = (now + _GRIB_CACHE_HIT_TTL, match)
             return match
