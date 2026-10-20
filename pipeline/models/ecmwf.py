@@ -22,7 +22,7 @@ PARAM_SEARCH_STRINGS = {
     "vgrd_10m":     ":10v:sfc:",
     "mslp":         ":msl:sfc:",
     "precip":       ":tp:sfc:",
-    "wind_gusts":   ":10fg:sfc:",
+    "wind_gusts":   ":10fg3?:sfc:",  # 10fg through 90 h, then 10fg3 (3-hourly max)
     "mucape":       ":mucape:sfc:",
     "cloud_cover":  ":tcc:sfc:",
     "pwat":         ":tcwv:sfc:",

@@ -56,7 +56,7 @@ PARAM_SEARCH_STRINGS = {
     # Surface / 2m parameters
     "temp_2m": ":TMP:2 m above ground:",
     "dewpoint_2m": ":DPT:2 m above ground:",
-    "rh_2m": ":RH:2 m above ground:",
+    # RTMA 2.5 km publishes no RH (SPFH, TMP and DPT only)
     "q_2m": ":SPFH:2 m above ground:",  # Specific humidity
     "mslp": ":MSLMA:surface:",  # MSL pressure (RTMA uses MSLMA)
     "psfc": ":PRES:surface:",  # Surface pressure (use this instead of mslp)

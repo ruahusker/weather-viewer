@@ -22,7 +22,7 @@ PARAM_SEARCH_STRINGS = {
     "vgrd_10m":     ":VGRD:10 m above ground:",
     "mslp":         ":PRMSL:mean sea level:",
     "precip":       ":APCP:surface:",
-    "reflectivity": ":REFC:entire atmosphere (considered as a single layer):",
+    "reflectivity": ":REFC:entire atmosphere",
     # Categorical precipitation type (instantaneous only; GFS also has 0-6h averages).
     "crain":        ":CRAIN:surface:(?:anl|[0-9]+ hour fcst):",
     "csnow":        ":CSNOW:surface:(?:anl|[0-9]+ hour fcst):",
@@ -33,11 +33,14 @@ PARAM_SEARCH_STRINGS = {
     "mlcape":       ":CAPE:90-0 mb above ground:",
     "mlcin":        ":CIN:90-0 mb above ground:",
     "wind_gusts":   ":GUST:surface:",
-    "visibility":   ":VIS:surface:1 hour fcst:",
+    "visibility":   ":VIS:surface:",
     "vil":          ":VIL:entire atmosphere",
     "lifted_index": ":4LFTX:180-0 mb above ground:",
     "frzlvl":       ":HGT:0C isotherm:",
     "snow_depth":   ":SNOD:surface:",
+    "frozen_pct":   ":CPOFP:surface:",
+    # Snowpack SWE (instantaneous); the file also has a bucketed WEASD accumulation
+    "weasd":        ":WEASD:surface:(?:anl|[0-9]+ hour fcst):",
     "cloud_cover":  ":TCDC:entire atmosphere",
     "lightning":    ":LTNG:surface:",
     "srh_01km":     ":HLCY:1000-0 m above ground:",
@@ -46,8 +49,7 @@ PARAM_SEARCH_STRINGS = {
     "uh_03km":      ":MXUPHL:3000-0 m above ground:",
     "ushear_06km":  ":VUCSH:0-6000 m above ground:",
     "vshear_06km":  ":VVCSH:0-6000 m above ground:",
-    "ushear_01km":  ":VUCSH:0-1000 m above ground:",
-    "vshear_01km":  ":VVCSH:0-1000 m above ground:",
+    # The nest publishes VUCSH/VVCSH for 0-6000 m only (no 0-1 km shear or SMI)
     "lcl":          ":HGT:level of adiabatic condensation from sfc:",
     # Additional fields for storm chasing composites
     "pwat":         ":PWAT:entire atmosphere",
@@ -106,7 +108,6 @@ SOURCES_PRIORITY = ["nomads", "aws"]
 DERIVED_PARAMS = {
     "wind_speed":   ("ugrd_10m", "vgrd_10m"),
     "shear_06km":   ("ushear_06km", "vshear_06km"),
-    "shear_01km":   ("ushear_01km", "vshear_01km"),
     "wind_925mb":   ("ugrd_925mb", "vgrd_925mb"),
     "wind_850mb":   ("ugrd_850mb", "vgrd_850mb"),
     "wind_700mb":   ("ugrd_700mb", "vgrd_700mb"),
@@ -128,10 +129,6 @@ COMPOSITE_PARAMS = {
     "scp": {
         "requires": ["mucape", "srh_03km", "shear_06km"],
         "label": "Supercell Composite",
-    },
-    "smi": {
-        "requires": ["mlcape", "shear_01km", "shear_06km", "lcl"],
-        "label": "Storm Mode Index",
     },
     "ship": {
         "requires": ["mucape", "temp_700mb", "temp_500mb", "frzlvl", "shear_06km"],

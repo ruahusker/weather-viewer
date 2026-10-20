@@ -312,38 +312,38 @@ html[data-ui="v4"] .legend-ticks span {
 /* ── Time dock ──────────────────────────────────────────── */
 html[data-ui="v4"] .scrubber-bar {
   /* Fixed time column: a label that changes width every frame would shove the slider. */
-  grid-template-columns: auto 250px minmax(0, 1fr) auto;
+  grid-template-columns: auto 210px minmax(0, 1fr) auto;
   grid-template-areas: "play info track speed";
   align-items: center;
-  column-gap: 18px;
-  padding: 14px 20px;
+  column-gap: 14px;
+  padding: 8px 10px 8px 8px;
 }
 /* app.js toggles an inline display (flex/none); win over flex only. */
 html[data-ui="v4"] .scrubber-bar:not([style*="none"]) { display: grid !important; }
 html[data-ui="v4"] .scrubber-controls { display: contents; }
 html[data-ui="v4"] .play-btn {
   grid-area: play;
-  width: 48px; height: 48px;
+  width: 36px; height: 36px;
   border-radius: 50%;
   background: var(--text);
   color: var(--bg-deep);
 }
-html[data-ui="v4"] .play-btn svg { width: 18px; height: 18px; }
+html[data-ui="v4"] .play-btn svg { width: 14px; height: 14px; }
 html[data-ui="v4"] .play-btn:hover { background: #ffffff; color: var(--bg-deep); }
 html[data-ui="v4"] .scrubber-speed-group {
   grid-area: speed;
   gap: 2px;
   padding: 3px;
   background: rgba(255, 255, 255, 0.04);
-  border-radius: 9px;
+  border-radius: 8px;
 }
 html[data-ui="v4"] .speed-btn {
-  min-width: 34px; height: 30px;
+  min-width: 30px; height: 24px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--text-mid);
-  font: 500 12px var(--font-data);
+  font: 500 11px var(--font-data);
 }
 html[data-ui="v4"] .speed-btn:hover { background: var(--v4-hover); color: var(--text); border: 0; }
 html[data-ui="v4"] .speed-btn.active {
@@ -359,41 +359,43 @@ html[data-ui="v4"] .scrubber-info {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
+  gap: 1px;
 }
 html[data-ui="v4"] .valid-time {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  font: 600 16px var(--font-ui);
+  font: 600 14px var(--font-ui);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
   color: var(--text);
   white-space: nowrap;
 }
 html[data-ui="v4"] .frame-counter {
-  font: 400 12px var(--font-data);
+  font: 400 11px var(--font-data);
   font-variant-numeric: tabular-nums;
   color: var(--text-dim);
 }
 html[data-ui="v4"] .frame-counter.loading { color: var(--accent); }
 html[data-ui="v4"] .scrubber-hint { display: none; }
+html[data-ui="v4"] .scrubber-ticks { padding-top: 4px; }
+html[data-ui="v4"] .scrubber-tick { height: 5px; }
 
 html[data-ui="v4"] .scrubber {
-  height: 6px;
-  border-radius: 3px;
+  height: 4px;
+  border-radius: 2px;
   background: rgba(108, 182, 255, 0.28);
 }
 html[data-ui="v4"] .scrubber::-webkit-slider-thumb {
-  width: 18px; height: 18px;
+  width: 14px; height: 14px;
   background: var(--text);
-  border: 3px solid var(--v4-panel-solid);
+  border: 2px solid var(--v4-panel-solid);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4);
 }
 html[data-ui="v4"] .scrubber::-moz-range-thumb {
-  width: 14px; height: 14px;
+  width: 10px; height: 10px;
   background: var(--text);
-  border: 3px solid var(--v4-panel-solid);
+  border: 2px solid var(--v4-panel-solid);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4);
 }
 
@@ -445,13 +447,15 @@ html[data-ui="v4"] .leaflet-bar a:hover { background: var(--bg3); color: var(--t
   html[data-ui="v4"] .map-section > .home-dashboard { top: calc(var(--v4-top) - var(--v4-gap)); }
   html[data-ui="v4"] .map-section > .satellite-image-viewer { top: var(--v4-top); }
 
-  /* Time dock spans the map; it starts after the side panel when one is open. */
+  /* Time dock centres over the map, clear of the side panel when one is open,
+     and stops at a compact width instead of spanning the whole window. */
   html[data-ui="v4"] .scrubber-bar {
     left: var(--v4-gap);
     right: var(--v4-gap);
     bottom: 30px;
     width: auto;
-    max-width: none;
+    max-width: 760px;
+    margin-inline: auto;
     transform: none;
   }
   html[data-ui="v4"] .main-content:has(> .param-sidebar:not(.hidden)) .scrubber-bar {

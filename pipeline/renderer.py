@@ -419,6 +419,11 @@ class OverlayRenderer:
             w = data_w
             h = int(data_w * merc_h / merc_w)
 
+        # Enlarge coarse grids (0.5 degree is ~190 columns) as a whole, so the
+        # minimum size keeps the Mercator aspect instead of clamping each side.
+        if 0 < w < 200 or 0 < h < 150:
+            scale = max(200 / max(w, 1), 150 / max(h, 1))
+            w, h = int(round(w * scale)), int(round(h * scale))
         w = max(200, min(w, 2400))
         h = max(150, min(h, 1600))
         return w, h
@@ -2250,7 +2255,10 @@ class OverlayRenderer:
             field = processed[param]
             if selected is not None and param not in selected:
                 continue
-            if param in _SKIP_PARAMS:
+            # A wind product published only as speed (HREF 10 m WIND) has no
+            # components for the vector overlay below; shade it as a scalar.
+            speed_only = param in wind_vector_params and param not in _needed_later
+            if param in _SKIP_PARAMS and not speed_only:
                 if param not in _needed_later:
                     del processed[param]
                 continue

@@ -62,7 +62,7 @@ PARAM_SEARCH_STRINGS = {
     "dewpoint_2m": ":DPT:2 m above ground:",
     "ugrd_10m": ":UGRD:10 m above ground:",
     "vgrd_10m": ":VGRD:10 m above ground:",
-    "mslp": ":MSLMA:mean sea level:",
+    "mslp": ":MSLET:mean sea level:",
     "psfc": ":PRES:surface:",
     "wind_gusts": ":GUST:surface:",
     
@@ -71,7 +71,7 @@ PARAM_SEARCH_STRINGS = {
     "precip_rate": ":PRATE:surface:",
     
     # Radar reflectivity
-    "reflectivity": ":REFC:entire atmosphere:",
+    "reflectivity": ":REFC:entire atmosphere",
     "refl_1km": ":REFD:1000 m above ground:",
     
     # Convective parameters
@@ -84,7 +84,7 @@ PARAM_SEARCH_STRINGS = {
     "srh_01km": ":HLCY:1000-0 m above ground:",
     "srh_03km": ":HLCY:3000-0 m above ground:",
     "uh_25km": ":UPHL:5000-2000 m above ground:",
-    "uh_02km": ":UPHL:2000-0 m above ground:",
+    # No 0-2 km updraft helicity in the ops feed (MXUPHL 0-3 km / 2-5 km only)
     
     # Shear
     "ushear_01km": ":VUCSH:0-1000 m above ground:",
@@ -126,33 +126,33 @@ PARAM_SEARCH_STRINGS = {
     "vort_500mb": ":ABSV:500 mb:",
     
     # Cloud / visibility
-    "cloud_cover": ":TCDC:entire atmosphere:",
+    "cloud_cover": r":TCDC:entire atmosphere \(considered as a single layer\):[0-9]+ hour fcst:",
     "visibility": ":VIS:surface:",
     "ceil": ":HGT:cloud ceiling:",
     
     # Moisture
-    "pwat": ":PWAT:entire atmosphere:",
+    "pwat": ":PWAT:entire atmosphere",
     
     # Winter
     "snow_depth": ":SNOD:surface:",
-    "weasd": ":WEASD:surface:",  # Water equivalent
+    "weasd": ":WEASD:surface:(?:anl|[0-9]+ hour fcst):",  # Snowpack water equivalent
     "frozen_pct": ":CPOFP:surface:",
     "frzlvl": ":HGT:0C isotherm:",
     
     # Storm chasing
-    "vil": ":VIL:entire atmosphere:",
-    "echo_tops": ":RETOP:cloud top:",
+    "vil": ":VIL:entire atmosphere",
+    "echo_tops": ":RETOP:entire atmosphere",
     "pbl_height": ":HPBL:surface:",
     "lcl": ":HGT:level of adiabatic condensation from sfc:",
     "lfc": ":HGT:level of free convection:",
     
     # Lightning
-    "lightning": ":LTNG:surface:",
+    "lightning": ":LTNG:entire atmosphere:",
     
     # Max/min
-    "max_wind": ":WIND:10 m above ground:maximum:",
-    "max_temp_1h": ":TMAX:2 m above ground:maximum:",
-    "min_temp_1h": ":TMIN:2 m above ground:minimum:",
+    "max_wind": ":WIND:10 m above ground:[0-9]+-[0-9]+ hour max fcst:",
+    "max_temp_1h": ":TMAX:2 m above ground:",
+    "min_temp_1h": ":TMIN:2 m above ground:",
     
     # Soil
     "soil_temp_0_10cm": ":TMP:0-0.1 m below ground:",
@@ -165,7 +165,7 @@ GRIB_SHORTNAMES = {
     "dewpoint_2m": "2d",
     "ugrd_10m": "10u",
     "vgrd_10m": "10v",
-    "mslp": "mslma",
+    "mslp": "mslet",
     "psfc": "sp",
     "wind_gusts": "gust",
     "precip": "tp",
@@ -218,7 +218,7 @@ GRIB_SHORTNAMES = {
     "ceil": "gh",
     "pwat": "pwat",
     "snow_depth": "sde",
-    "weasd": "weasd",
+    "weasd": "sdwe",
     "frozen_pct": "cpofp",
     "frzlvl": "gh",
     "vil": "veril",
@@ -293,7 +293,7 @@ LEVEL_TYPES = {
     "ceil": {"typeOfLevel": "cloudCeiling"},
     "pwat": {"typeOfLevel": "atmosphereSingleLayer"},
     "snow_depth": {"typeOfLevel": "surface"},
-    "weasd": {"typeOfLevel": "surface"},
+    "weasd": {"typeOfLevel": "surface", "stepType": "instant"},
     "frozen_pct": {"typeOfLevel": "surface"},
     "frzlvl": {"typeOfLevel": "isothermZero"},
     "vil": {"typeOfLevel": "atmosphere"},

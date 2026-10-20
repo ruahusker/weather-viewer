@@ -2414,6 +2414,7 @@ html[data-capture-mode="1"] .leaflet-container {
 }
 .legend-ticks span:first-child { transform: translateX(0); }
 .legend-ticks span:last-child  { transform: translateX(-100%); }
+.legend-ticks.centered span { transform: translateX(-50%); }
 
 /* ── Scrubber bar (overlay on map) ──────────────────────── */
 .scrubber-bar {

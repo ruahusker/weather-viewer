@@ -493,7 +493,7 @@ const PARAMS = [
     {"id": "llmt", "label": "Low-Level Moisture Transport", "models": ["hrrr", "nam3km"]},
     {"id": "ascent", "label": "Forcing for Ascent", "models": ["hrrr", "nam3km"]},
     {"id": "hp_risk", "label": "Storm Obscuration / HP Risk", "models": ["hrrr", "nam3km"]},
-    {"id": "weasd", "label": "Snow Water Eq.", "models": ["gfs", "hrrr", "rap", "rrfs"]},
+    {"id": "weasd", "label": "Snow Water Eq.", "models": ["gfs", "hrrr", "nam3km", "rap", "rrfs"]},
     {"id": "cloud_cover_low", "label": "Low Cloud Cover", "models": ["gefs"]},
     {"id": "cloud_cover_mid", "label": "Mid Cloud Cover", "models": ["gefs"]},
     {"id": "cloud_cover_high", "label": "High Cloud Cover", "models": ["gefs"]},
@@ -503,7 +503,7 @@ const PARAMS = [
     {"id": "precip", "label": "Precip", "models": ["ecmwf", "gfs", "href", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
     {"id": "lightning", "label": "Lightning", "models": ["hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
     {"id": "echo_tops", "label": "Echo Tops", "models": ["hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
-    {"id": "precip_12h", "label": "12hr Precip", "models": ["hrrr"]},
+    {"id": "precip_12h", "label": "12hr Precip", "models": ["hrrr", "nam3km"]},
     {"id": "precip_6h", "label": "6hr Precip", "models": ["gefs"]},
   ]},
   { id: 'instability', group: 'Instability', items: [
@@ -548,11 +548,11 @@ const PARAMS = [
     {"id": "ceil", "label": "Ceiling Height", "models": ["rrfs"]},
     {"id": "snow_depth", "label": "Snow Depth", "models": ["ecmwf", "gdps", "gfs", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
     {"id": "snowfall", "label": "Snowfall", "models": ["ecmwf"]},
-    {"id": "frozen_pct", "label": "Frozen Precip %", "models": ["hrrr", "rrfs"]},
+    {"id": "frozen_pct", "label": "Frozen Precip %", "models": ["hrrr", "nam3km", "rrfs"]},
     {"id": "frzlvl", "label": "Freezing Level", "models": ["gfs", "hrrr", "nam12km", "nam3km", "rap", "rrfs"]},
-    {"id": "kuchera_6hr", "label": "6hr Kuchera Snow", "models": ["hrrr"]},
-    {"id": "kuchera_12hr", "label": "12hr Kuchera Snow", "models": ["hrrr"]},
-    {"id": "snow10_12hr", "label": "12hr 10:1 Snow", "models": ["hrrr"]},
+    {"id": "kuchera_6hr", "label": "6hr Kuchera Snow", "models": ["hrrr", "nam3km"]},
+    {"id": "kuchera_12hr", "label": "12hr Kuchera Snow", "models": ["hrrr", "nam3km"]},
+    {"id": "snow10_12hr", "label": "12hr 10:1 Snow", "models": ["hrrr", "nam3km"]},
     {"id": "snowfall_6h", "label": "6hr Snowfall", "models": ["gefs"]},
   ]},
   { id: 'pressure', group: 'Pressure Levels', items: [
@@ -694,7 +694,7 @@ const RADAR_PRODUCTS = [
   { id: 'REF',  label: 'Reflectivity', legend: 'radar_reflectivity' },
   { id: 'VEL',  label: 'Velocity', legend: 'radar_velocity' },
   { id: 'SRM',  label: 'Storm-Rel Vel', legend: 'radar_srm' },
-  { id: 'SW',   label: 'Spectrum Width', legend: 'radar_sw' },
+  { id: 'PTYPE', label: 'Precip Type', legend: 'radar_ptype' },
   // Dual-pol
   { id: 'CC',   label: 'Corr. Coeff.', legend: 'radar_cc' },
   { id: 'ZDR',  label: 'Diff. Refl.', legend: 'radar_zdr' },
@@ -707,7 +707,7 @@ const RADAR_PRODUCTS = [
   { id: 'VIL',  label: 'VIL', legend: 'radar_vil' },
   { id: 'HAIL', label: 'Hail Prob.', legend: 'radar_hail' },
   { id: 'RAIN', label: 'Rainfall Rate', legend: 'radar_rain' },
-  { id: 'PTYPE', label: 'Precip Type', legend: 'radar_ptype' },
+  { id: 'SW',   label: 'Spectrum Width', legend: 'radar_sw' },
   { id: 'TDS',  label: 'Debris Sig.', legend: 'radar_tds' },
 ];
 
@@ -2179,6 +2179,9 @@ async function updateLegend(param) {
     }
 
     legendTicks.innerHTML = '';
+    // Category names sit mid-band, so none of them is pinned to a bar edge.
+    legendTicks.classList.toggle('centered', Boolean(data.categories?.length));
+    legendTicks.style.minHeight = '';
     const ticks = data.tick_vals?.length ? data.tick_vals
       : Array.from({length: 5}, (_, i) => data.vmin + (data.vmax - data.vmin) * i / 4);
     ticks.forEach((v, i) => {
@@ -2187,7 +2190,37 @@ async function updateLegend(param) {
       sp.textContent = data.tick_labels?.[i] ?? Number(v.toFixed(Math.abs(data.vmax - data.vmin) < 5 ? 2 : 0));
       legendTicks.appendChild(sp);
     });
+    keepCenteredTicksInside(legendTicks);
   } catch { if (requestId === mobileLegendRequestId) legendBar.classList.add('hidden'); }
+}
+
+/**
+ * Keep centred category labels inside the bar and apart: a label that would
+ * crowd its neighbour wraps within its own band, and one that would run past
+ * either end of the bar is nudged back inside it.
+ */
+function keepCenteredTicksInside(container) {
+  if (!container.classList.contains('centered')) return;
+  const box = container.getBoundingClientRect();
+  if (!box.width) return;
+  const band = box.width / container.children.length;
+  let prevRight = -Infinity;
+  const inside = (r) => (r.right > box.right ? box.right - r.right : r.left < box.left ? box.left - r.left : 0);
+  for (const span of container.children) {
+    let r = span.getBoundingClientRect();
+    let shift = inside(r);
+    if (r.left + shift < prevRight + 8) {
+      span.style.whiteSpace = 'normal';
+      span.style.width = `${band - 8}px`;
+      span.style.textAlign = 'center';
+      r = span.getBoundingClientRect();
+      shift = inside(r);
+      // Labels are absolutely positioned, so make room for the extra line.
+      container.style.minHeight = `${Math.ceil(r.bottom - box.top)}px`;
+    }
+    if (shift) span.style.transform = `translateX(calc(-50% + ${shift}px))`;
+    prevRight = r.right + shift;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════

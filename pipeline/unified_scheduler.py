@@ -17,6 +17,7 @@ import ctypes
 import fcntl
 import gc
 import hashlib
+import http.client
 import json
 import logging
 import logging.handlers
@@ -177,6 +178,7 @@ from .models.href import (
     PARAM_SEARCH_STRINGS as HREF_SEARCH,
     MEAN_PARAM_SEARCH_STRINGS as HREF_MEAN_SEARCH,
     PROB_PARAM_SEARCH_STRINGS as HREF_PROB_SEARCH,
+    PMMN_PARAM_SEARCH_STRINGS as HREF_PMMN_SEARCH,
     SOURCES_PRIORITY as HREF_SOURCES,
     get_run_fxx as _href_fxx,
 )
@@ -188,8 +190,13 @@ from .models.rrfs import (
 )
 from .models.gefs import (
     DERIVED_PARAMS as GEFS_DERIVED,
-    PARAM_SEARCH_STRINGS as GEFS_SEARCH,
     SOURCES_PRIORITY as GEFS_SOURCES,
+    SPREAD_MEMBER as GEFS_SPREAD_MEMBER,
+    SPREAD_SEARCH_STRINGS as GEFS_SPREAD_SEARCH,
+    SURFACE_SEARCH_STRINGS as GEFS_SEARCH,
+    UPPER_AIR_MEMBER as GEFS_UPPER_AIR_MEMBER,
+    UPPER_AIR_PRODUCT as GEFS_UPPER_AIR_PRODUCT,
+    UPPER_AIR_SEARCH_STRINGS as GEFS_UPPER_AIR_SEARCH,
     get_run_fxx as _gefs_fxx,
 )
 
@@ -354,6 +361,10 @@ DOWNLOAD_SCAN_PAUSE_SECONDS = 0.1
 DOWNLOAD_ACTIVE_SCAN_INTERVAL_SECONDS = _env_int("PIPELINE_DOWNLOAD_ACTIVE_SCAN_INTERVAL", 5)
 DOWNLOAD_IDLE_SCAN_INTERVAL_SECONDS = _env_int("PIPELINE_DOWNLOAD_IDLE_SCAN_INTERVAL", 15)
 DOWNLOAD_RETRY_BACKOFF_SECONDS = _env_int("PIPELINE_DOWNLOAD_RETRY_BACKOFF_SECONDS", 20)
+# How long an hour waits for parts appended to its surface subset (HRRR
+# wrfprs, GEFS 0.5 degree member and spread) before rendering without them.
+# GEFS spread trailed the control member by up to 16.5 min on 2026-10-20.
+APPEND_GRACE_SECONDS = _env_int("PIPELINE_APPEND_GRACE_SECONDS", 1200)
 DOWNLOAD_PROGRESSIVE_WINDOW_SIZE = _env_int(
     "PIPELINE_DOWNLOAD_PROGRESSIVE_WINDOW_SIZE", 7
 )
@@ -557,7 +568,7 @@ class DownloadManager:
                             break
 
                     # Check local cache first
-                    cached = _find_cached_grib(model, run_dt, fxx)
+                    cached = _find_cached_grib(model, run_dt, fxx, require_complete=True)
                     if cached is not None:
                         with self._lock:
                             self._active[model_name][2][fxx] = cached
@@ -744,6 +755,17 @@ def _download_subset_via_idx(herbie_obj: Herbie, patterns: list[str]) -> Path:
         raise ValueError("No search patterns provided")
 
     records = _parse_wgrib2_idx(_read_text(str(herbie_obj.idx)))
+    if not records:
+        # ECMWF's JSON-lines index: use Herbie's parsed inventory, matched on
+        # the same search_this text as Herbie.download. Herbie's own subset
+        # download appends each byte range straight to its final file, so a
+        # failed range left truncated subsets that later scans reused.
+        inventory = herbie_obj.inventory()
+        records = [
+            (int(start), None if end != end else int(end), line)
+            for start, end, line in zip(
+                inventory["start_byte"], inventory["end_byte"], inventory["search_this"])
+        ]
     matched_ranges = [
         (start, end)
         for start, end, line in records
@@ -757,9 +779,13 @@ def _download_subset_via_idx(herbie_obj: Herbie, patterns: list[str]) -> Path:
     tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
     grib_src = str(herbie_obj.grib)
 
-    with open(tmp_path, "wb") as out_f:
-        for start, end in merged_ranges:
-            out_f.write(_download_range_bytes(grib_src, start, end))
+    try:
+        with open(tmp_path, "wb") as out_f:
+            for start, end in merged_ranges:
+                out_f.write(_download_range_bytes(grib_src, start, end))
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
     if tmp_path.stat().st_size == 0:
         tmp_path.unlink(missing_ok=True)
@@ -778,10 +804,14 @@ def _combine_grib_parts(base_path: Path, patterns: list[str], part_paths: list[P
     if combined_path.exists() and combined_path.stat().st_size > 0:
         return combined_path
 
-    with open(combined_path, "wb") as combined_f:
+    # Write then rename: the cache lookup prefers the largest subset, so a
+    # half-written combined file must never appear under its final name.
+    tmp_path = combined_path.with_suffix(combined_path.suffix + ".tmp")
+    with open(tmp_path, "wb") as combined_f:
         for part_path in part_paths:
             with open(part_path, "rb") as part_f:
                 combined_f.write(part_f.read())
+    tmp_path.replace(combined_path)
     return combined_path
 
 
@@ -793,6 +823,11 @@ def _download_subset_chunked(herbie_obj: Herbie, patterns: list[str]) -> Path:
 
     try:
         return _download_subset_via_idx(herbie_obj, patterns)
+    except (OSError, http.client.HTTPException):
+        # Network failure: let the caller try another source or the next
+        # scan. Herbie's subset download skips byte ranges that fail and
+        # keeps the rest, which left GEFS subsets missing 2t/2d/tp.
+        raise
     except Exception as exc:
         logger.debug("Direct idx subset failed for %s f%02d, falling back to Herbie: %s",
                      herbie_obj.model, herbie_obj.fxx, exc)
@@ -807,15 +842,7 @@ def _download_subset_chunked(herbie_obj: Herbie, patterns: list[str]) -> Path:
             raise FileNotFoundError(chunk_path)
         chunk_paths.append(chunk_path)
 
-    combined_path = _combined_subset_path(chunk_paths[0], patterns)
-    if combined_path.exists() and combined_path.stat().st_size > 0:
-        return combined_path
-
-    with open(combined_path, "wb") as combined_f:
-        for chunk_path in chunk_paths:
-            with open(chunk_path, "rb") as chunk_f:
-                combined_f.write(chunk_f.read())
-    return combined_path
+    return _combine_grib_parts(chunk_paths[0], patterns, chunk_paths)
 
 # Suppress Herbie's verbose internal logging (index errors, "remake" warnings)
 logging.getLogger("herbie").setLevel(logging.CRITICAL)
@@ -902,6 +929,7 @@ class ModelConfig:
     run_hours: list[int]
     hourly_precip: bool = False  # subtract prev fxx for hourly precip
     snow_products: bool = False  # compute Kuchera / 10:1 snow
+    precip_bucket_hours: int = 0  # APCP resets every N hours (NAM: 3); 0 = run total
     herbie_kwargs: dict = field(default_factory=dict)  # extra Herbie args (domain, member)
     sounding_cache: bool = False
 
@@ -1084,7 +1112,7 @@ MODELS = [
         param_search=RTMA_SEARCH, prs_search={},
         derived=RTMA_DERIVED, composites={},
         rendered_params=[
-            "temp_2m", "dewpoint_2m", "rh_2m", "wind_speed", "wind_gusts", "psfc",
+            "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "psfc",
             "visibility", "cloud_cover",
         ],
         sources=RTMA_SOURCES, get_fxx=_rtma_fxx,
@@ -1100,7 +1128,7 @@ MODELS = [
             "reflectivity", "precip_type", "precip",
             "mucape", "mucin", "mlcape", "mlcin", "lifted_index",
             "vil", "lightning", "cloud_cover",
-            "srh_01km", "srh_03km", "shear_06km", "shear_01km",
+            "srh_01km", "srh_03km", "shear_06km",
             "uh_25km", "uh_03km",
             "lcl", "visibility", "snow_depth", "frzlvl",
             "pwat", "pbl_height", "echo_tops",
@@ -1109,10 +1137,13 @@ MODELS = [
             "omega_700mb", "vort_500mb",
             "wind_850mb", "wind_700mb", "wind_500mb", "wind_250mb",
             "rh_850mb", "rh_700mb",
-            "cti", "stp", "scp", "smi", "ship", "dcp", "citi", "cvi", "llmt", "ascent", "hp_risk",
+            "cti", "stp", "scp", "ship", "dcp", "citi", "cvi", "llmt", "ascent", "hp_risk",
+            "precip_12h", "weasd", "frozen_pct",
+            "kuchera_6hr", "kuchera_12hr", "snow10_12hr",
         ],
         sources=NAM3KM_SOURCES, get_fxx=_nam3km_fxx,
         run_hours=[0, 6, 12, 18],
+        hourly_precip=True, snow_products=True, precip_bucket_hours=3,
         sounding_cache=True,
     ),
     ModelConfig(
@@ -1124,15 +1155,14 @@ MODELS = [
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
             "reflectivity", "precip_type", "precip",
             "cape", "cin", "mucape", "mucin", "mlcape", "mlcin",
-            "lifted_index", "pwat", "cape_03km", "lcl",
+            "lifted_index", "pwat", "cape_03km",
             "cloud_cover", "visibility", "snow_depth",
             "echo_tops", "pbl_height", "weasd",
             "srh_01km", "srh_03km", "shear_06km",
             "temp_850mb", "temp_700mb", "temp_500mb", "temp_925mb",
-            "dewpoint_850mb",
             "omega_700mb", "vort_500mb", "lightning",
             "wind_850mb", "wind_500mb", "wind_300mb", "wind_250mb",
-            "rh_700mb", "rh_850mb", "frzlvl", "frozen_pct",
+            "rh_700mb", "rh_850mb", "frzlvl",
         ],
         sources=RAP_SOURCES, get_fxx=_rap_fxx,
         run_hours=list(range(24)),
@@ -1146,10 +1176,10 @@ MODELS = [
         rendered_params=[
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
             "reflectivity", "precip",
-            "cape", "cin", "mucape", "mucin", "mlcape", "mlcin",
-            "lifted_index", "pwat", "cape_03km", "lcl",
-            "vil", "cloud_cover", "visibility",
-            "srh_01km", "srh_03km", "shear_06km", "shear_01km",
+            "cape", "cin", "mucape", "mucin",
+            "lifted_index", "pwat",
+            "cloud_cover", "visibility",
+            "srh_03km", "shear_06km",
             "echo_tops", "lightning",
             "snow_depth", "frzlvl",
             "temp_850mb", "temp_700mb", "temp_500mb", "temp_925mb",
@@ -1184,7 +1214,7 @@ MODELS = [
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
             "precip", "visibility",
             # Instability
-            "cape", "cin", "mucape", "mucin", "mlcape", "mlcin", "cape_03km",
+            "cape", "cin", "mucape", "mucin", "mlcape", "mlcin",
             "lifted_index", "pwat",
             "pbl_height", "weasd", "frzlvl",
             # Helicity (GFS only has 0-3km)
@@ -1230,19 +1260,18 @@ MODELS = [
         derived=HREF_DERIVED, composites={},
         rendered_params=[
             # Surface
-            "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
-            # Reflectivity and probabilities
-            "reflectivity", "refl_probability_40dbz",
+            "temp_2m", "dewpoint_2m", "wind_speed", "mslp",
+            # Reflectivity (pmmn product) and probability
+            "reflectivity", "echo_tops", "refl_probability_40dbz",
             # Convective
             "cape", "cin", "cape_probability",
-            "srh_01km", "srh_03km", "uh_25km_probability",
+            "srh_03km", "uh_25km_probability",
             # Pressure levels
             "temp_850mb", "temp_700mb", "temp_500mb",
             "wind_850mb", "wind_500mb",
-            "rh_700mb", "rh_850mb",
+            "rh_700mb",
             # Precip
             "precip", "precip_probability",
-            "frozen_pct",
             # Other
             "visibility", "cloud_cover", "pwat",
         ],
@@ -1262,7 +1291,7 @@ MODELS = [
             "precip", "reflectivity", "refl_1km",
             # Convective
             "cape", "cin", "cape_ml", "cin_ml",
-            "srh_01km", "srh_03km", "uh_25km", "uh_02km",
+            "srh_01km", "srh_03km", "uh_25km",
             "shear_01km", "shear_06km",
             # Pressure levels
             "temp_925mb", "temp_850mb", "temp_700mb", "temp_500mb", "temp_300mb", "temp_250mb",
@@ -1286,22 +1315,15 @@ MODELS = [
         param_search=GEFS_SEARCH, prs_search={},
         derived=GEFS_DERIVED, composites={},
         rendered_params=[
-            # Surface
+            # Surface: 0.25 degree pgrb2s control member
             "temp_2m", "dewpoint_2m", "wind_speed", "wind_gusts", "mslp",
-            # Precip (6-hourly accumulations)
-            "precip_6h", "precip_probability_6h_05in", "precip_probability_6h_1in",
-            "snowfall_6h", "snowfall_probability_6h_1in",
-            # Pressure levels — comprehensive
-            "temp_925mb", "temp_850mb", "temp_700mb", "temp_500mb", "temp_300mb", "temp_250mb", "temp_200mb",
+            "precip_6h", "pwat", "cape", "cloud_cover",
+            # Pressure levels: 0.5 degree pgrb2ap5, appended per hour (no 300 mb TMP)
+            "temp_925mb", "temp_850mb", "temp_700mb", "temp_500mb", "temp_250mb", "temp_200mb",
             "wind_925mb", "wind_850mb", "wind_700mb", "wind_500mb", "wind_300mb", "wind_250mb", "wind_200mb",
             "rh_850mb", "rh_700mb", "rh_500mb",
-            # Ensemble-specific
-            "gh_500mb_spread", "gh_500mb_anomaly",
-            "pwat", "pwat_probability_1in",
-            "cape", "cape_probability_1000",
-            # Cloud
-            "cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high",
-            "lifted_index",
+            # Ensemble spread (gespr)
+            "gh_500mb_spread",
         ],
         sources=GEFS_SOURCES, get_fxx=_gefs_fxx,
         run_hours=[0, 6, 12, 18],
@@ -1376,8 +1398,12 @@ def _get_herbie_cached(priority: list[str], **kwargs) -> Herbie:
     cached = _herbie_init_cache.get(key)
     if cached is not None:
         herbie_obj, cached_at = cached
-        # Don't serve stale negative results — fxx may have been published since
-        if herbie_obj.grib is not None or (now - cached_at) < _HERBIE_CACHE_TTL:
+        # Don't serve stale negative results — fxx (or its idx, which NOMADS
+        # can publish after the GRIB) may have been published since
+        if (
+            (herbie_obj.grib is not None and herbie_obj.idx is not None)
+            or (now - cached_at) < _HERBIE_CACHE_TTL
+        ):
             return herbie_obj
 
     H = Herbie(priority=priority, **kwargs)
@@ -1386,6 +1412,182 @@ def _get_herbie_cached(priority: list[str], **kwargs) -> Herbie:
     if len(_herbie_init_cache) > 200:
         _herbie_init_cache.clear()
     return H
+
+
+def _append_gefs_upper_air(model: ModelConfig, run_dt: datetime, fxx: int,
+                           surface_path: Path, priority: list[str]) -> Path | None:
+    """Append GEFS 0.5 degree pressure levels and 500 mb spread to a surface subset.
+
+    The 0.25 degree pgrb2s file has surface fields only. The member's
+    pgrb2ap5 fields and the spread are both waited for (a miss returns None,
+    retried next scan; gespr is computed after all members, so it trails by
+    minutes). Past APPEND_GRACE_SECONDS a missing member part renders the
+    surface file alone and a missing spread is skipped. The combined file
+    keeps the surface file's canonical name so the cache lookup finds it.
+    The two grids differ (1440x721 vs 720x361); every GEFS overlay is
+    rendered on fixed CONUS bounds and each field keeps its own lat/lon.
+    """
+    sources = list(dict.fromkeys(
+        [*priority, *(s for s in model.sources if SOURCE_CIRCUIT.available(model.name, s)), "aws"]
+    ))
+    part_paths = [Path(surface_path)]
+    patterns = list(model.param_search.values())
+    for member, search_map, required in (
+        (GEFS_UPPER_AIR_MEMBER, GEFS_UPPER_AIR_SEARCH, True),
+        (GEFS_SPREAD_MEMBER, GEFS_SPREAD_SEARCH, False),
+    ):
+        part = None
+        for source in sources:
+            try:
+                herbie_obj = _get_herbie_cached(
+                    priority=[source],
+                    date=run_dt.strftime("%Y-%m-%d %H:%M"),
+                    model=model.herbie_model,
+                    product=GEFS_UPPER_AIR_PRODUCT,
+                    fxx=fxx,
+                    member=member,
+                    save_dir=str(GRIB_CACHE_DIR),
+                    overwrite=False,
+                    verbose=False,
+                )
+                if herbie_obj.grib is None:
+                    continue
+                part = Path(_download_subset_chunked(herbie_obj, list(search_map.values())))
+                break
+            except Exception as exc:
+                logger.debug("[GEFS] fxx=%02d %s %s from %s failed: %s",
+                             fxx, GEFS_UPPER_AIR_PRODUCT, member, source, _exc_text(exc))
+        if part is None or not part.exists() or part.stat().st_size == 0:
+            expired, waited = _append_wait_expired(model, run_dt, fxx)
+            if not expired:
+                logger.info("[GEFS] fxx=%02d 0.5 degree %s fields not available yet",
+                            fxx, member)
+                return None
+            if required:
+                logger.warning("[GEFS] fxx=%02d 0.5 degree %s fields unavailable after %ds, "
+                               "rendering surface fields only", fxx, member, waited)
+                return Path(surface_path)
+            logger.warning("[GEFS] fxx=%02d 0.5 degree %s fields unavailable after %ds, skipping",
+                           fxx, member, waited)
+            continue
+        part_paths.append(part)
+        patterns.extend(search_map.values())
+    _append_found(model, run_dt, fxx)
+    return _combine_grib_parts(Path(surface_path), patterns, part_paths)
+
+
+def _prs_patterns(model: ModelConfig) -> list[str]:
+    """Search patterns of a surface subset with the prs fields appended."""
+    return list(model.param_search.values()) + list(model.prs_search.values())
+
+
+def _exc_text(exc: BaseException) -> str:
+    """First line of an exception, never empty."""
+    text = str(exc).strip().splitlines()
+    return f"{type(exc).__name__}: {text[0][:200]}" if text else type(exc).__name__
+
+
+_append_missing_since: dict[tuple[str, str, int], float] = {}
+
+
+def _append_wait_expired(model: ModelConfig, run_dt: datetime, fxx: int) -> tuple[bool, int]:
+    """Record a missing appended part; return (grace expired, seconds waited)."""
+    key = (model.name, run_dt.strftime("%Y%m%d%H"), fxx)
+    now = time.time()
+    first_miss = _append_missing_since.setdefault(key, now)
+    if len(_append_missing_since) > 256:
+        for stale in [k for k, t in _append_missing_since.items()
+                      if now - t > 4 * APPEND_GRACE_SECONDS]:
+            _append_missing_since.pop(stale, None)
+    waited = int(now - first_miss)
+    if waited < APPEND_GRACE_SECONDS:
+        return False, waited
+    _append_missing_since.pop(key, None)
+    return True, waited
+
+
+def _append_found(model: ModelConfig, run_dt: datetime, fxx: int) -> None:
+    _append_missing_since.pop((model.name, run_dt.strftime("%Y%m%d%H"), fxx), None)
+
+
+def _complete_subset_names(model: ModelConfig, canonical: str) -> list[str] | None:
+    """Names of the combined files that hold every field an hour renders from.
+
+    None for models whose download is a single subset. The scan only
+    registers these, so an hour whose appended part is still pending is
+    retried instead of rendered from its surface subset.
+    """
+    base = Path(canonical)
+    if model.prs_search:
+        return [_combined_subset_path(base, _prs_patterns(model)).name]
+    if model.name == "gefs":
+        upper = list(model.param_search.values()) + list(GEFS_UPPER_AIR_SEARCH.values())
+        return [
+            _combined_subset_path(base, upper + list(GEFS_SPREAD_SEARCH.values())).name,
+            _combined_subset_path(base, upper).name,
+        ]
+    return None
+
+
+def _append_prs_fields(model: ModelConfig, run_dt: datetime, fxx: int,
+                       surface_path: Path, priority: list[str]) -> Path | None:
+    """Append the model's prs (pressure-level) fields to a surface subset.
+
+    NOMADS often publishes the wrfprs idx after wrfsfc is ready, so every
+    other source is tried before giving up. A miss returns None and the next scan
+    retries; the surface subset stays cached, so only the prs part is fetched
+    again. Rendering waits rather than re-rendering later: an hour rendered
+    without prs counts as complete (80% of its maps exist) and is never
+    revisited. After APPEND_GRACE_SECONDS of misses the hour falls back
+    to the surface file so a missing wrfprs cannot stall the run.
+
+    The prs part is fetched by idx byte ranges (written to a temp file first;
+    Herbie's own subset download left truncated files after IncompleteRead),
+    and the combined file gets its own name, so the surface subset is never
+    modified and _find_cached_grib(require_complete=True) only finds whole hours.
+    """
+    sources = list(dict.fromkeys(
+        [*priority, *(s for s in model.sources if SOURCE_CIRCUIT.available(model.name, s)), "aws"]
+    ))
+    prs_path = None
+    misses = []
+    for source in sources:
+        try:
+            herbie_obj = _get_herbie_cached(
+                priority=[source],
+                date=run_dt.strftime("%Y-%m-%d %H:%M"),
+                model=model.herbie_model,
+                product="prs",
+                fxx=fxx,
+                save_dir=str(GRIB_CACHE_DIR),
+                overwrite=False,
+                verbose=False,
+                **model.herbie_kwargs,
+            )
+            if herbie_obj.grib is None:
+                misses.append(f"{source}: no grib")
+                continue
+            if herbie_obj.idx is None:
+                misses.append(f"{source}: no idx")
+                continue
+            prs_path = _download_subset_via_idx(herbie_obj, list(model.prs_search.values()))
+            break
+        except Exception as exc:
+            misses.append(f"{source}: {_exc_text(exc)}")
+
+    if prs_path is None:
+        expired, waited = _append_wait_expired(model, run_dt, fxx)
+        if not expired:
+            logger.info("[%s] fxx=%02d prs fields not available yet, retrying next scan (%s)",
+                        model.name.upper(), fxx, "; ".join(misses))
+            return None
+        logger.warning("[%s] fxx=%02d prs fields unavailable after %ds, rendering surface fields only (%s)",
+                       model.name.upper(), fxx, waited, "; ".join(misses))
+        return Path(surface_path)
+
+    _append_found(model, run_dt, fxx)
+    return _combine_grib_parts(Path(surface_path), _prs_patterns(model),
+                               [Path(surface_path), Path(prs_path)])
 
 
 def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
@@ -1558,7 +1760,7 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
         search_patterns = list(model.param_search.values())
         return rrfs_download(run_dt, fxx, search_patterns)
 
-    # HREF uses separate mean/prob products. Download both and concatenate
+    # HREF uses separate mean/prob/pmmn products. Download all three and concatenate
     # so the render worker sees one GRIB containing deterministic + probability fields.
     if model.name == "href":
         def _download_href_product(product: str, search_map: dict[str, str], priority: list[str]) -> Path | None:
@@ -1589,11 +1791,15 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
                 prob_path = _download_href_product("prob", HREF_PROB_SEARCH, priority)
                 if prob_path is not None:
                     part_paths.append(Path(prob_path))
+                pmmn_path = _download_href_product("pmmn", HREF_PMMN_SEARCH, priority)
+                if pmmn_path is not None:
+                    part_paths.append(Path(pmmn_path))
                 if not part_paths:
                     continue
                 combined = _combine_grib_parts(
                     part_paths[0],
-                    list(HREF_MEAN_SEARCH.values()) + list(HREF_PROB_SEARCH.values()),
+                    list(HREF_MEAN_SEARCH.values()) + list(HREF_PROB_SEARCH.values())
+                    + list(HREF_PMMN_SEARCH.values()),
                     part_paths,
                 )
                 logger.info("[%s] [DL] Downloaded fxx=%02d", model.name.upper(), fxx)
@@ -1677,26 +1883,12 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
             if local_path is None:
                 return None
 
-            # Append prs fields if needed (HRRR SRH — currently a no-op)
             if model.prs_search:
-                try:
-                    H_prs = Herbie(
-                        date=run_dt.strftime("%Y-%m-%d %H:%M"),
-                        model=model.herbie_model,
-                        product="prs",
-                        fxx=fxx,
-                        save_dir=str(GRIB_CACHE_DIR),
-                        overwrite=False,
-                        verbose=False,
-                        priority=selected_priority,
-                    )
-                    prs_path = H_prs.download("|".join(model.prs_search.values()))
-                    with open(local_path, "ab") as sfc, open(prs_path, "rb") as prs:
-                        sfc.write(prs.read())
-                except Exception as exc:
-                    logger.warning("[%s] prs append failed fxx=%02d: %s",
-                                   model.name.upper(), fxx, exc)
-
+                return _append_prs_fields(
+                    model, run_dt, fxx, Path(local_path), selected_priority)
+            if model.name == "gefs":
+                return _append_gefs_upper_air(
+                    model, run_dt, fxx, Path(local_path), selected_priority)
             return Path(local_path)
         except Exception as exc:
             if "503" in str(exc) and attempt < _max_retries:
@@ -1729,6 +1921,9 @@ def _download_fxx(model: ModelConfig, run_dt: datetime, fxx: int,
                     local_path = _download_from_herbie(
                         _build_herbie(fallback_sources), fallback_sources,
                     )
+                    if local_path is not None and model.name == "gefs":
+                        return _append_gefs_upper_air(
+                            model, run_dt, fxx, Path(local_path), fallback_sources)
                     if local_path is not None:
                         return local_path
                 except Exception as fallback_exc:
@@ -2466,7 +2661,7 @@ _run_png_index_cache: dict[str, tuple[float, dict[str, set[str]]]] = {}
 _fxx_complete_cache: dict[tuple[str, int], tuple[float, bool]] = {}
 _completed_runs_cache: dict[str, tuple[float, set[str]]] = {}
 _recent_completed_cache: tuple[float, set[str]] | None = None
-_grib_lookup_cache: dict[tuple[str, str, int], tuple[float, Path | None]] = {}
+_grib_lookup_cache: dict[tuple[str, str, int, bool], tuple[float, Path | None]] = {}
 # Per-cache-dir scandir snapshot: canonical GRIB name -> best on-disk path.
 _grib_dir_snapshot_cache: dict[str, tuple[float, dict[str, Path]]] = {}
 
@@ -3185,14 +3380,18 @@ def _detect_pending(model: ModelConfig) -> datetime | None:
     return newest_in_progress
 
 
-def _find_cached_grib(model: ModelConfig, run_dt: datetime, fxx: int) -> Path | None:
+def _find_cached_grib(model: ModelConfig, run_dt: datetime, fxx: int,
+                      require_complete: bool = False) -> Path | None:
     """Resolve an already-downloaded GRIB subset from local cache.
 
     This avoids rebuilding Herbie state and re-checking remote sources for
     prerequisite files (previous precip hour, snow lookback hours) that are
-    usually already present on disk.
+    usually already present on disk. With require_complete, a model that
+    appends parts to its surface subset (HRRR prs, GEFS upper air) only
+    matches the combined file, so an hour whose append is still pending is
+    downloaded (retried) instead of rendered.
     """
-    cache_key = (model.name, run_dt.strftime("%Y%m%d%H"), fxx)
+    cache_key = (model.name, run_dt.strftime("%Y%m%d%H"), fxx, require_complete)
     now = time.time()
     cached = _grib_lookup_cache.get(cache_key)
     if cached is not None and cached[0] > now:
@@ -3232,7 +3431,18 @@ def _find_cached_grib(model: ModelConfig, run_dt: datetime, fxx: int) -> Path | 
 
     dir_index = _grib_dir_index(cache_dir)
     for suffix in suffixes:
-        match = dir_index.get(suffix)
+        complete_names = _complete_subset_names(model, suffix) if require_complete else None
+        if complete_names is None:
+            match = dir_index.get(suffix)
+        else:
+            match = None
+            for name in complete_names:
+                try:
+                    if (cache_dir / name).stat().st_size > 0:
+                        match = cache_dir / name
+                        break
+                except OSError:
+                    continue
         if match is not None:
             _grib_lookup_cache[cache_key] = (now + _GRIB_CACHE_HIT_TTL, match)
             return match
@@ -3344,14 +3554,23 @@ def _build_render_item(
     lookback_strs = None
     if model.snow_products:
         lb: dict[str, str] = {}
-        for product, cfg in SNOW_PRODUCTS.items():
-            lb_fxx = fxx - cfg["hours"]
-            if lb_fxx > 0:
-                lb_path = downloaded.get(lb_fxx)
-                if lb_path is None:
-                    lb_path = _find_cached_grib(model, run_dt, lb_fxx)
-                if lb_path is not None:
-                    lb[str(lb_fxx)] = str(lb_path)
+        needed: set[int] = set()
+        bucket = model.precip_bucket_hours
+        for cfg in SNOW_PRODUCTS.values():
+            window_start = fxx - cfg["hours"]
+            needed.add(window_start)
+            if bucket:
+                # Bucket ends inside (and just before) the window
+                needed.update(
+                    k for k in range(max(window_start - bucket, 1), fxx)
+                    if k % bucket == 0
+                )
+        for lb_fxx in sorted(k for k in needed if k > 0):
+            lb_path = downloaded.get(lb_fxx)
+            if lb_path is None:
+                lb_path = _find_cached_grib(model, run_dt, lb_fxx)
+            if lb_path is not None:
+                lb[str(lb_fxx)] = str(lb_path)
         lookback_strs = lb
 
     return {

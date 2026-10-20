@@ -44,8 +44,6 @@ PARAM_SEARCH_STRINGS = {
     "cin":          ":CIN:surface:",
     "mucape":       ":CAPE:180-0 mb above ground:",
     "mucin":        ":CIN:180-0 mb above ground:",
-    "mlcape":       ":CAPE:90-0 mb above ground:",
-    "mlcin":        ":CIN:90-0 mb above ground:",
     "lifted_index": ":4LFTX:180-0 mb above ground:",
     "pwat":         ":PWAT:entire atmosphere",
     
@@ -59,8 +57,7 @@ PARAM_SEARCH_STRINGS = {
     "srh_03km":     ":HLCY:3000-0 m above ground:",
     
     # -- Reflectivity --
-    "reflectivity": ":REFC:entire atmosphere (considered as a single layer):",
-    "vil":          ":VIL:entire atmosphere",
+    "reflectivity": ":REFC:entire atmosphere",
     
     # -- Pressure levels --
     "temp_850mb":   ":TMP:850 mb:",
@@ -79,19 +76,11 @@ PARAM_SEARCH_STRINGS = {
     # -- Winter --
     "frzlvl":       ":HGT:0C isotherm:",
 
-    # -- Wind shear 0-1km --
-    "ushear_01km":  ":VUCSH:0-1000 m above ground:",
-    "vshear_01km":  ":VVCSH:0-1000 m above ground:",
-
-    # -- Helicity 0-1km --
-    "srh_01km":     ":HLCY:1000-0 m above ground:",
-
-    # -- Storm chase extras --
-    "lcl":          ":HGT:level of adiabatic condensation from sfc:",
-    "cape_03km":    ":CAPE:0-3000 m above ground:",
+    # awphys has no 90-0 mb CAPE/CIN, 0-3 km CAPE, LCL, VIL, 0-1 km shear
+    # or 0-1 km SRH (checked against the 2026-10-19 inventories).
 
     # -- Additional convective / storm fields --
-    "echo_tops":    ":RETOP:entire atmosphere:",
+    "echo_tops":    ":RETOP:entire atmosphere",
     "lightning":    ":LTNG:surface:",
     "vort_500mb":   ":ABSV:500 mb:",
     "temp_925mb":   ":TMP:925 mb:",
@@ -202,7 +191,6 @@ SOURCES_PRIORITY = ["nomads", "aws"]
 DERIVED_PARAMS = {
     "wind_speed":   ("ugrd_10m", "vgrd_10m"),
     "shear_06km":   ("ushear_06km", "vshear_06km"),
-    "shear_01km":   ("ushear_01km", "vshear_01km"),
     "wind_850mb":   ("ugrd_850mb", "vgrd_850mb"),
 }
 

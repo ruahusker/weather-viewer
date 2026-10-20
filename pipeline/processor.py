@@ -87,11 +87,6 @@ try:
     _NAM_LEVELS = {
         "mslp":         {"typeOfLevel": "meanSea"},
         "mucin":        {"typeOfLevel": "pressureFromGroundLayer", "topLevel": 18000},
-        # NAM uses atmosphereSingleLayer where HRRR uses atmosphere/cloudTop
-        "reflectivity": {"typeOfLevel": "atmosphereSingleLayer"},
-        "vil":          {"typeOfLevel": "atmosphereSingleLayer"},
-        "echo_tops":    {"typeOfLevel": "atmosphereSingleLayer"},
-        "cloud_cover":  {"typeOfLevel": "atmosphereSingleLayer"},
         # NAM lightning is on the surface level, not atmosphere
         "lightning":    {"typeOfLevel": "surface"},
     }
@@ -126,11 +121,47 @@ SPECIAL_MATCH_CRITERIA = {
         {"discipline": 0, "parameterCategory": 1, "parameterNumber": 8,
          "typeOfLevel": "surface", "stepType": "accum"},
     ],
+    # ECMWF IFS publishes 10fg3 instead of 10fg after 90 h.
+    "wind_gusts": [
+        {"shortName": "10fg3", "typeOfLevel": "heightAboveGround", "level": 10},
+    ],
     "reflectivity": [
         {
             "shortName": "refc",
             "typeOfLevel": "atmosphereSingleLayer",
         },
+        # RRFS encodes REFC as WMO 0.16.5 (composite reflectivity), no shortName
+        {
+            "discipline": 0,
+            "parameterCategory": 16,
+            "parameterNumber": 5,
+            "typeOfLevel": "atmosphereSingleLayer",
+        },
+    ],
+    # NAM, RAP, RTMA and RRFS put column fields on atmosphereSingleLayer
+    # where HRRR uses atmosphere.
+    "vil": [
+        {"shortName": "veril", "typeOfLevel": "atmosphereSingleLayer"},
+    ],
+    "cloud_cover": [
+        {"shortName": "tcc", "typeOfLevel": "atmosphereSingleLayer", "stepType": "instant"},
+        # ECCC (GDPS) total cloud: unknown shortName, surface level
+        {"discipline": 0, "parameterCategory": 6, "parameterNumber": 1,
+         "typeOfLevel": "surface"},
+    ],
+    # GDPS surface CAPE/CIN have unknown shortNames in eccodes.
+    "cape_surface": [
+        {"discipline": 0, "parameterCategory": 7, "parameterNumber": 6,
+         "typeOfLevel": "surface"},
+    ],
+    "cin_surface": [
+        {"discipline": 0, "parameterCategory": 7, "parameterNumber": 7,
+         "typeOfLevel": "surface"},
+    ],
+    # NCEP-local HPBL (0.3.196) has no eccodes shortName (NAM, RAP, GFS).
+    "pbl_height": [
+        {"discipline": 0, "parameterCategory": 3, "parameterNumber": 196,
+         "typeOfLevel": "surface"},
     ],
     "omega_700mb": [
         {
@@ -149,6 +180,19 @@ SPECIAL_MATCH_CRITERIA = {
             "typeOfLevel": "cloudTop",
             "parameterCategory": 16,
             "parameterNumber": 3,
+        },
+        # RETOP on the column level: WMO 0.16.3 (RAP) or NCEP-local 0.16.197 (NAM)
+        {
+            "discipline": 0,
+            "typeOfLevel": "atmosphereSingleLayer",
+            "parameterCategory": 16,
+            "parameterNumber": 3,
+        },
+        {
+            "discipline": 0,
+            "typeOfLevel": "atmosphereSingleLayer",
+            "parameterCategory": 16,
+            "parameterNumber": 197,
         },
     ],
     "snowfall": [
@@ -224,6 +268,7 @@ class GribField:
     lat: np.ndarray
     lon: np.ndarray
     valid_time: datetime | None = None
+    start_step: int | None = None  # accumulation start (hours) for bucketed fields
 
 
 def _safe_get(msgid, key, default=None):
@@ -258,6 +303,10 @@ def _extract_field(msgid) -> GribField:
     nj = eccodes.codes_get(msgid, "Nj")
     # Use in-place conversion if possible
     vals = eccodes.codes_get_values(msgid).reshape(nj, ni).astype(np.float32, copy=False)
+    # Bitmap-masked points (HREF's frame around CONUS, NAM nest edges) come
+    # back as missingValue; make them NaN so they render transparent.
+    if _safe_get(msgid, "bitmapPresent", 0) == 1:
+        vals[vals == np.float32(eccodes.codes_get_double(msgid, "missingValue"))] = np.nan
     if _safe_get(msgid, "alternativeRowScanning", 0) == 1:
         if _safe_get(msgid, "jPointsAreConsecutive", 0) == 0:
             vals[1::2] = vals[1::2, ::-1]
@@ -286,6 +335,7 @@ def _extract_field(msgid) -> GribField:
     return GribField(
         values=vals, lat=lats, lon=lons,
         valid_time=_get_valid_time(msgid),
+        start_step=_safe_get(msgid, "startStep"),
     )
 
 
@@ -435,7 +485,11 @@ class FieldProcessor:
             data *= 1.944  # m/s → knots
             return data
         if param in ("precip", "precip_6h"):
+            data[data >= 9990.0] = np.nan  # bitmap-masked points (NAM nest edges)
             data /= 25.4
+            return data
+        if param in ("cape_surface", "cin_surface"):
+            data[data >= 9990.0] = np.nan  # GDPS bitmap-masks points without a parcel
             return data
         if param == "mslp":
             data /= 100.0
@@ -484,12 +538,45 @@ class FieldProcessor:
             return data
         return data
 
-    def _load_raw_precip(self, grib_path: Path) -> np.ndarray | None:
-        """Load raw accumulated precip in inches from a GRIB file."""
+    def _load_raw_precip(self, grib_path: Path) -> tuple[np.ndarray, int] | None:
+        """Load raw accumulated precip (inches) and its accumulation start hour."""
         field = self.load_field(grib_path, "precip")
         if field is None:
             return None
-        return self._convert_units("precip", field.values)
+        raw = field.values
+        while raw.ndim > 2 and raw.shape[0] <= 2:
+            raw = raw[0]
+        return self._convert_units("precip", raw), field.start_step or 0
+
+    def _accum_between(self, f_end: int, f_start: int, gribs: dict[int, Path],
+                       current: tuple[np.ndarray, int] | None = None,
+                       ) -> np.ndarray | None:
+        """Precip accumulated over (f_start, f_end], in inches.
+
+        Follows each file's own accumulation start, so it handles both
+        run-total APCP (HRRR, RAP) and resetting buckets (NAM 3-hourly):
+        a bucket starting inside the window adds the earlier part, one
+        starting before it subtracts the part outside. ``current`` is the
+        already-loaded (values, start) for ``f_end``. Returns None when a
+        needed file is missing.
+        """
+        if f_end <= f_start:
+            return None
+        if current is None:
+            path = gribs.get(f_end)
+            if path is None:
+                return None
+            current = self._load_raw_precip(path)
+            if current is None:
+                return None
+        values, start = current
+        if start == f_start:
+            return values
+        if start > f_start:
+            earlier = self._accum_between(start, f_start, gribs)
+            return None if earlier is None else values + earlier
+        outside = self._accum_between(f_start, start, gribs)
+        return None if outside is None else values - outside
 
     def _compute_snow_products(self, result, grib_path, fxx, lookback_gribs,
                                accum_precip_inches=None):
@@ -500,8 +587,8 @@ class FieldProcessor:
                                  When supplied, skips the redundant GRIB re-scan.
         """
         if accum_precip_inches is not None and "_precip_meta" in result:
-            current_apcp = accum_precip_inches
             meta = result["_precip_meta"]
+            current = (accum_precip_inches, meta.get("start_step", 0))
             lat, lon, valid_time = meta["lat"], meta["lon"], meta["valid_time"]
         else:
             field = self.load_field(grib_path, "precip")
@@ -510,7 +597,7 @@ class FieldProcessor:
             raw_apcp = field.values.copy()
             while raw_apcp.ndim > 2 and raw_apcp.shape[0] <= 2:
                 raw_apcp = raw_apcp[0]
-            current_apcp = self._convert_units("precip", raw_apcp)
+            current = (self._convert_units("precip", raw_apcp), field.start_step or 0)
             lat, lon = field.lat, field.lon
             valid_time = field.valid_time
 
@@ -531,20 +618,12 @@ class FieldProcessor:
             t2m_c = (result["temp_2m"]["data"] - 32.0) * 5.0 / 9.0
 
         for product, cfg in SNOW_PRODUCTS.items():
-            hours = cfg["hours"]
-            lookback_fxx = fxx - hours
-            if lookback_fxx < 0:
-                prev_apcp = np.zeros_like(current_apcp)
-            elif lookback_fxx == 0:
-                prev_apcp = np.zeros_like(current_apcp)
-            elif lookback_fxx in lookback_gribs:
-                prev_apcp = self._load_raw_precip(lookback_gribs[lookback_fxx])
-                if prev_apcp is None:
-                    continue
-            else:
+            window = self._accum_between(
+                fxx, max(fxx - cfg["hours"], 0), lookback_gribs, current)
+            if window is None:
                 continue
 
-            qpf = np.maximum(current_apcp - prev_apcp, 0.0)
+            qpf = np.maximum(window, 0.0)
             if cfg["method"] == "liquid":
                 snow_inches = qpf
             elif cfg["method"] == "kuchera":
@@ -589,7 +668,10 @@ class FieldProcessor:
 
         for derived, components in DERIVED_PARAMS.items():
             if derived in fetch_params and components[1] is not None:
-                fetch_params.remove(derived)
+                # A directly published magnitude (RTMA/HREF 10 m WIND) is kept
+                # as the fallback; the u/v magnitude replaces it when present.
+                if derived not in GRIB_SHORTNAMES:
+                    fetch_params.remove(derived)
                 for comp in components:
                     if comp is None:
                         continue
@@ -604,6 +686,7 @@ class FieldProcessor:
 
         raw = self.extract_all_params(grib_path, fetch_params)
         result = {}
+        precip_start = (raw["precip"].start_step or 0) if "precip" in raw else 0
 
         for param in list(raw):
             field = raw.pop(param)  # pop to free raw GribField immediately
@@ -626,18 +709,18 @@ class FieldProcessor:
                 "lat": result["precip"]["lat"],
                 "lon": result["precip"]["lon"],
                 "valid_time": result["precip"]["valid_time"],
+                "start_step": precip_start,
             }
 
-        # Hourly precip: subtract previous fxx accumulation
-        if "precip" in result and prev_precip_grib is not None and fxx > 0:
-            prev_field = self.load_field(prev_precip_grib, "precip")
-            if prev_field is not None:
-                raw_prev = prev_field.values
-                while raw_prev.ndim > 2 and raw_prev.shape[0] <= 2:
-                    raw_prev = raw_prev[0]
-                prev_data = self._convert_units("precip", raw_prev)
-                result["precip"]["data"] = np.maximum(
-                    result["precip"]["data"] - prev_data, 0.0)
+        # Hourly precip: the last hour of the accumulation (a bucket that
+        # starts one hour back is already hourly and needs no previous file)
+        if "precip" in result and fxx > 0 and (
+                prev_precip_grib is not None or precip_start == fxx - 1):
+            gribs = {fxx - 1: prev_precip_grib} if prev_precip_grib is not None else {}
+            hourly = self._accum_between(
+                fxx, fxx - 1, gribs, (result["precip"]["data"], precip_start))
+            if hourly is not None:
+                result["precip"]["data"] = np.maximum(hourly, 0.0)
 
         # Derived: magnitude from u/v component pairs
         for derived, (u_key, v_key) in DERIVED_PARAMS.items():

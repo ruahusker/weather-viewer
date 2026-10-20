@@ -432,13 +432,29 @@ class PrecipAccumulationTests(unittest.TestCase):
         result = {'_precip_meta': {'lat': lat, 'lon': lon, 'valid_time': None}}
         current = np.array([[3.0, 1.0], [0.5, 0.0]])
         earlier = np.array([[1.0, 1.0], [0.6, 0.0]])
-        with patch.object(proc, '_load_raw_precip', return_value=earlier) as load, \
+        with patch.object(proc, '_load_raw_precip', return_value=(earlier, 0)) as load, \
              patch.object(proc, 'load_field', return_value=None):
             proc._compute_snow_products(result, Path('f18.grib2'), 18, {6: Path('f06.grib2')},
                                         accum_precip_inches=current)
         load.assert_called_with(Path('f06.grib2'))
         np.testing.assert_allclose(result['precip_12h']['data'], [[2.0, 0.0], [0.0, 0.0]])
         self.assertEqual(api._RENDER_UNDER_VMIN['precip_12h'], 0.01)
+
+    def test_windows_follow_resetting_nam_buckets(self):
+        from pipeline.processor import FieldProcessor
+        proc = FieldProcessor()
+        hourly = {f: np.full((1, 1), float(f)) for f in range(1, 15)}
+        # NAM APCP: each file holds the accumulation since the last 3-hour reset
+        files = {}
+        for f in range(1, 15):
+            start = 3 * ((f - 1) // 3)
+            files[f] = (sum(hourly[k] for k in range(start + 1, f + 1)), start)
+        with patch.object(proc, '_load_raw_precip', side_effect=lambda path: files[path]):
+            for end, start in ((14, 8), (14, 2), (13, 1), (12, 0), (7, 6), (5, 4)):
+                window = proc._accum_between(end, start, {f: f for f in files})
+                expected = sum(range(start + 1, end + 1))
+                np.testing.assert_allclose(window, [[expected]], err_msg=f'({start}, {end}]')
+            self.assertIsNone(proc._accum_between(14, 8, {14: 14, 12: 12}))
 
 
 class PrecipTypeTests(unittest.TestCase):

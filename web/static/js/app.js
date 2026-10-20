@@ -8286,6 +8286,9 @@ async function updateLegend() {
     }
     
     legendTicks.innerHTML = '';
+    // Category names sit mid-band, so none of them is pinned to a bar edge.
+    legendTicks.classList.toggle('centered', Array.isArray(data.categories) && data.categories.length > 0);
+    legendTicks.style.minHeight = '';
     const ticks = Array.isArray(data.tick_vals) && data.tick_vals.length > 0
       ? data.tick_vals
       : null;
@@ -8302,6 +8305,7 @@ async function updateLegend() {
           : Math.abs(value) < 10 && !Number.isInteger(value) ? value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') : Math.round(value);
         legendTicks.appendChild(tick);
       });
+      keepCenteredTicksInside(legendTicks);
     } else if (data.vmin !== undefined && data.vmax !== undefined) {
       const steps = 5;
       for (let i = 0; i <= steps; i++) {
@@ -8319,6 +8323,35 @@ async function updateLegend() {
   if (state.dataSource === 'models') {
     updateMapInfoForModel();
   }
+}
+
+/**
+ * Keep centred category labels inside the bar and apart: a label that would
+ * crowd its neighbour wraps within its own band, and one that would run past
+ * either end of the bar is nudged back inside it.
+ */
+function keepCenteredTicksInside(container) {
+  if (!container.classList.contains('centered')) return;
+  const box = container.getBoundingClientRect();
+  if (!box.width) return;
+  const band = box.width / container.children.length;
+  let prevRight = -Infinity;
+  const inside = (r) => (r.right > box.right ? box.right - r.right : r.left < box.left ? box.left - r.left : 0);
+  for (const span of container.children) {
+    let r = span.getBoundingClientRect();
+    let shift = inside(r);
+    if (r.left + shift < prevRight + 8) {
+      span.style.whiteSpace = 'normal';
+      span.style.width = `${band - 8}px`;
+      span.style.textAlign = 'center';
+      r = span.getBoundingClientRect();
+      shift = inside(r);
+      // Labels are absolutely positioned, so make room for the extra line.
+      container.style.minHeight = `${Math.ceil(r.bottom - box.top)}px`;
+    }
+    if (shift) span.style.transform = `translateX(calc(-50% + ${shift}px))`;
+    prevRight = r.right + shift;
+  }
 }
 
 async function refreshModelStatus() {
